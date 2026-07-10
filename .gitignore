@@ -1,0 +1,81 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+
+.DS_Store
+# Frontend / build output
+dist/
+build/
+.out/
+coverage/
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+uv.lock
+*.egg
+# Environment variables
+.env
+.env.*
+!.env.example
+!.env.sample
+# infra/.env.deploy is the COMMITTED single source of truth for non-secret deploy
+# config (secrets stay in Key Vault). Keep it tracked despite the .env.* rule above.
+!infra/.env.deploy
+.langgraph_*
+# TypeScript / Vite
+*.tsbuildinfo
+vite.config.*.timestamp-*
+vite.config.*.mjs.timestamp-*
+
+uv.lock
+# Python / backend
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local deployment/tooling state
+.netlify/
+.railway/
+.vercel/
+# Stable local Postgres password for the dev container (never commit)
+infra/.pg_password
+docker-compose.override.yml
+SERVICENOW_GAP_ANALYSIS.md
+SERVICENOW_TESTCASE_GAP_ANALYSIS.md
+README_FIN_ServiceNow_Agent.md
+docker-compose.yml
+
+# ServiceNow test-case source spec + local scratch dumps (not project code)
+servicenow_intent_test_cases_v4*.xlsx
+_sn_cases_dump.json
+# Claude Code local workflow/tooling scripts
+.claude/
+# Local learning notes / scratch plans (not project code)
+docs/learning/
+docs/learning/00_MASTER_PLAN.md

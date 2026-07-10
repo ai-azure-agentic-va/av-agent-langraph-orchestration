@@ -1,0 +1,16 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "python_version": "3.11",
+  "dependencies": ["."],
+  "graphs": {
+    "chat": "./src/v1/core/agent.py:build_agent"
+  },
+  "http": {
+    "app": "./src/v1/api/main.py:app",
+    "enable_custom_route_auth": true
+  },
+  "auth": {
+    "path": "./src/v1/utils/auth.py:auth"
+  },
+  "env": ".env"
+}

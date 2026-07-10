@@ -1,0 +1,51 @@
+[project]
+name = "deepagent-copilotkit-agui-backend"
+version = "0.1.0"
+description = "FastAPI + LangGraph DeepAgent + CopilotKit AG-UI + Postgres checkpointer demo"
+requires-python = ">=3.11"
+dependencies = [
+  # Pin <0.137: FastAPI 0.137 made include_router() insert a lazy `_IncludedRouter`
+  # (a BaseRoute with no `.app`). langgraph_api 0.10.0's apply_middleware() walks
+  # app.routes and wraps route.app, so with enable_custom_route_auth it raises
+  # "route ... has no app". Lift this cap once langgraph_api handles _IncludedRouter.
+  "fastapi>=0.115.0,<0.137",
+  "uvicorn[standard]>=0.34.0",
+  "pydantic-settings>=2.7.0",
+  "python-dotenv>=1.0.1",
+  "langchain>=1.0.0",
+  "langchain-core>=1.0.0",
+  "langchain-openai>=0.3.0",
+  "langgraph>=1.0.0",
+  "deepagents>=0.0.6",
+  "copilotkit>=0.1.0",
+  "ag-ui-langgraph[fastapi]>=0.0.36,<0.1.0",
+  "langgraph-checkpoint-postgres>=2.0.0",
+  "psycopg[binary]>=3.2.0",
+  "psycopg-pool>=3.2.0",
+  "rich>=13.9.0",
+  "httpx>=0.27.0",
+  "aiohttp>=3.9.0",
+  "azure-identity>=1.16.0",
+  "azure-keyvault-secrets>=4.8.0",
+  "azure-search-documents>=11.5.0",
+  "langsmith>=0.1.95",
+  "pydantic>=2.8.0",
+  "pyjwt[crypto]>=2.8.0",
+  "redis>=5.0.0",
+  "structlog>=24.1.0",
+  "tenacity>=8.5.0",
+  "ag-ui-protocol>=0.1.18",
+  "langchain-azure-ai>=1.2.3",
+  "langgraph-cli[inmem]>=0.4.27",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["v1*"]
+
+[tool.ruff]
+line-length = 100

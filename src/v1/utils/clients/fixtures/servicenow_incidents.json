@@ -1,0 +1,3530 @@
+{
+  "incidents": [
+    {
+      "_mock_note": "CLOSED-1 | Type A (explicit data source) | Core Banking - Transaction Ledger",
+      "sys_id": "aa01bb02cc03dd04ee05ff06aa07bb08",
+      "number": "INC3011201",
+      "short_description": "(AutoTkt) PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST failure in ADF",
+      "description": "Automated alert: the ADF pipeline PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST failed during its scheduled run. The copy activity for the Core Banking Transaction Ledger segment timed out against the source. No data landed for int_core_banking.transaction_ledger and cur_core_banking.transaction_ledger is stale. Source file transaction_ledger_extract.dat was not available within the ingest window.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "cause": "Source timeout",
+      "opened_at": "2026-05-10 02:05:11",
+      "sys_created_on": "2026-05-10 02:05:11",
+      "sys_updated_on": "2026-05-11 17:00:00",
+      "resolved_at": "2026-05-10 06:48:30",
+      "closed_at": "2026-05-11 17:00:00",
+      "resolution_notes": "ADF copy activity timed out because the Core Banking source system was slow. Re-triggered PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST after source recovered. Data landed in int_core_banking.transaction_ledger, CUR layer refreshed, and row counts reconciled across RAW, INT, and CUR.",
+      "configuration_item": {
+        "value": "plcb04transactionledgerdailyingest",
+        "display_value": "PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3011201"
+    },
+    {
+      "_mock_note": "CLOSED-2 | Type B (key fields only - needs STTM lookup) | Debit Card - Transaction Clearing",
+      "sys_id": "bb02cc03dd04ee05ff06aa07bb08cc09",
+      "number": "INC3025540",
+      "short_description": "Duplicate clearing_txn_id values detected in cur_txn_clearing after partial retry",
+      "description": "A downstream analytics query flagged 14,200 duplicate clearing_txn_id values in the Debit Card cur_txn_clearing table. The duplicates appeared after a partial retry of the INT-to-CUR pipeline. The clearing_txn_id column is the business key for this segment. Investigation confirmed that the retry re-inserted rows already committed in int_txn_clearing without a merge-on-key guard.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": ""
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "cause": "Duplicate load",
+      "opened_at": "2026-05-04 03:11:58",
+      "sys_created_on": "2026-05-04 03:11:58",
+      "sys_updated_on": "2026-05-06 17:25:40",
+      "resolved_at": "2026-05-05 09:02:13",
+      "closed_at": "2026-05-06 17:25:40",
+      "resolution_notes": "Duplicate rows caused by partial retry without idempotency guard. Deduplicated cur_txn_clearing on clearing_txn_id. Added merge-on-key idempotency check (MERGE INTO logic keyed on clearing_txn_id) to the INT-to-CUR pipeline to prevent duplicate inserts on retry.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3025540"
+    },
+    {
+      "_mock_note": "CLOSED-3 | Type A (explicit data source) | Loan Application - Applicant Master",
+      "sys_id": "cc03dd04ee05ff06aa07bb08cc09dd0a",
+      "number": "INC2965100",
+      "short_description": "Loan Application Applicant Master schema drift - app_master.dat has 3 new columns",
+      "description": "After a source system release, the Loan Application Applicant Master file app_master.dat added 3 new columns not present in the STTM. The ADF pipeline PL-LA-01-APP-MASTER-RAW-INGEST failed on schema validation. int_app_master was not refreshed. The STTM for Loan Application defines 31 raw attributes for the APP_MASTER segment but the source now sends 34.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "R0003",
+        "display_value": ""
+      },
+      "cause": "Schema drift",
+      "opened_at": "2026-04-15 18:05:44",
+      "sys_created_on": "2026-04-15 18:05:44",
+      "sys_updated_on": "2026-04-18 10:30:12",
+      "resolved_at": "2026-04-17 11:20:00",
+      "closed_at": "2026-04-18 10:30:12",
+      "resolution_notes": "Schema drift from source system release. Loan Application STTM updated from 31 to 34 raw attributes for APP_MASTER segment. Pipeline schema validation rule adjusted. Re-ran PL-LA-01-APP-MASTER-RAW-INGEST. INT and CUR layers refreshed. Row counts reconciled. No data loss.",
+      "configuration_item": {
+        "value": "plla01appmasterrawingest",
+        "display_value": "PL-LA-01-APP-MASTER-RAW-INGEST"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2965100"
+    },
+    {
+      "_mock_note": "CLOSED-4 | Type B (key fields only - needs STTM lookup) | Real Estate Pricing - Comparable Sales Master",
+      "sys_id": "dd04ee05ff06aa07bb08cc09dd0aee0b",
+      "number": "INC2880300",
+      "short_description": "Concurrent write conflict on cur_rel.comparable_sales_master Delta table during merge",
+      "description": "The Real Estate Pricing INT-to-CUR delta merge step for cur_rel.comparable_sales_master threw a ConcurrentAppendException. The merge was processing comparable_sales.dat records when an overlapping Databricks job attempted to write to the same Delta table partition. The subject-property-to-comp grain data did not reach the Curated layer. Downstream pricing_adjustments_forecasts pipeline also failed because it depends on refreshed comps data.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "cause": "Cluster issue",
+      "opened_at": "2026-03-12 16:22:07",
+      "sys_created_on": "2026-03-12 16:22:07",
+      "sys_updated_on": "2026-03-14 19:41:33",
+      "resolved_at": "2026-03-13 21:15:48",
+      "closed_at": "2026-03-14 19:41:33",
+      "resolution_notes": "ConcurrentAppendException caused by overlapping job schedules on the same Delta table partition. Serialized the merge step for cur_rel.comparable_sales_master to prevent concurrent writes. Adjusted Databricks job scheduling to avoid overlap. Retried pipeline and Curated layer refreshed. Downstream pricing_adjustments_forecasts completed successfully. No data loss.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2880300"
+    },
+    {
+      "_mock_note": "CLOSED-5 | Type A (explicit data source) | Payments Enterprise - Payment Transactions",
+      "sys_id": "ee05ff06aa07bb08cc09dd0aee0bff0c",
+      "number": "INC3045600",
+      "short_description": "Payments Enterprise payment_txn_src daily file missing from landing zone",
+      "description": "The Payments Enterprise payment_txn_src daily SFTP file was not delivered to abfss://landing@prod/payments/txn/ for the 2026-05-15 cycle. This is the core payment transactions feed from the gateway and processor. Without it, raw.payments_payment_txn was not loaded and the INT and Curated layers were not refreshed. Downstream settlement matching, chargeback analytics, and merchant reporting were all stale.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "cause": "Authentication issue",
+      "opened_at": "2026-05-15 06:00:00",
+      "sys_created_on": "2026-05-15 06:00:00",
+      "sys_updated_on": "2026-05-16 15:00:00",
+      "resolved_at": "2026-05-15 14:30:00",
+      "closed_at": "2026-05-16 15:00:00",
+      "resolution_notes": "Payment gateway SFTP job failed due to credential expiry. Credentials renewed, file re-delivered, and pipeline backfilled. All layers refreshed. No data loss. Added file-arrival SLA monitor for payment_txn_src.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3045600"
+    },
+    {
+      "_mock_note": "OPEN-1 | Type B (key fields only - needs STTM lookup) | Core Banking - Account Balance Snapshot",
+      "sys_id": "ff06aa07bb08cc09dd0aee0bff0c0011",
+      "number": "INC3185010",
+      "short_description": "Core Banking - Row count mismatch on snapshot_date key in cur_core_banking.account_balance_snapshot",
+      "description": "Source-to-target reconciliation flagged a row count mismatch. The daily extract had 103,000 rows but only 98,412 landed in the CUR table keyed on snapshot_date. The INT-to-CUR transformation is dropping records where snapshot_date is null. The STTM defines snapshot_date as the primary business key for this segment and it should never be null in the source, but 4,588 records arrived with null values. Downstream balance reporting is incomplete.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Data quality",
+      "opened_at": "2026-05-28 08:14:10",
+      "sys_created_on": "2026-05-28 08:14:10",
+      "sys_updated_on": "2026-06-01 11:42:55",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3185010"
+    },
+    {
+      "_mock_note": "OPEN-2 | Type A (explicit data source) | Core Banking - KYC Profile",
+      "sys_id": "0011aa07bb08cc09dd0aee0bff0c0022",
+      "number": "INC3190020",
+      "short_description": "Core Banking KYC Profile - 8 PII fields loaded unencrypted in int_core_banking.kyc_profile",
+      "description": "The Core Banking KYC Profile segment (kyc_profile_extract.dat) loaded into int_core_banking.kyc_profile without the required encryption on 8 PII-sensitive fields. The STTM specifies Sensitive Field Count = 8 for this segment including national_id, passport_number, and tax_id. A pipeline configuration change on PL-CB-11-KYC-PROFILE-RAW-INT disabled the encryption data flow. Security team has been notified of the exposure window.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "6",
+        "display_value": "Resolved"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "cause": "Configuration error",
+      "opened_at": "2026-05-28 15:00:00",
+      "sys_created_on": "2026-05-28 15:00:00",
+      "sys_updated_on": "2026-05-29 10:00:00",
+      "resolved_at": "2026-05-29 08:00:00",
+      "closed_at": "",
+      "resolution_notes": "Pipeline configuration change inadvertently disabled PII encryption. Re-enabled encryption data flow in PL-CB-11-KYC-PROFILE-RAW-INT. Purged unencrypted records from int_core_banking.kyc_profile and reprocessed. All 8 PII fields now encrypted. Security incident report filed. Awaiting security team sign-off to close.",
+      "configuration_item": {
+        "value": "plcb11kycprofilerawint",
+        "display_value": "PL-CB-11-KYC-PROFILE-RAW-INT"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3190020"
+    },
+    {
+      "_mock_note": "OPEN-3 | Type A (explicit data source) | Debit Card - Cardholder Master",
+      "sys_id": "0022bb08cc09dd0aee0bff0c00110033",
+      "number": "INC3195030",
+      "short_description": "Debit Card Cardholder Master PII masking failure in INT layer after deployment",
+      "description": "The Debit Card Cardholder Master segment loaded into int_cardholder_master without applying the required PII masking on sensitive fields. The STTM specifies 9 PII-sensitive fields for this segment including cardholder_name, card_number, and date_of_birth. The ADF pipeline PL-DC-01-CARDHOLDER-MASTER-RAW-INT skipped the masking step due to a linked service misconfiguration after the latest deployment to DebitCard_PROD_AzureDataFactory.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Configuration error",
+      "opened_at": "2026-06-02 13:22:04",
+      "sys_created_on": "2026-06-02 13:22:04",
+      "sys_updated_on": "2026-06-02 13:22:04",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "pldc01cardholdermasterrawint",
+        "display_value": "PL-DC-01-CARDHOLDER-MASTER-RAW-INT"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3195030"
+    },
+    {
+      "_mock_note": "OPEN-4 | Type B (key fields only - needs STTM lookup) | Debit Card - Fraud Alerts",
+      "sys_id": "0033cc09dd0aee0bff0c001100220044",
+      "number": "INC3198040",
+      "short_description": "int_fraud_alerts stale - fraud_alert_id records not refreshed for 2 days",
+      "description": "The Debit Card int_fraud_alerts table has not been refreshed in 2 consecutive days. The last successful load timestamp for fraud_alert_id is 2026-05-30 and no new records have arrived since. The source file has not landed at the expected raw path. The vendor providing the fraud alert feed acknowledged a system outage on their side. cur_fraud_alerts is also stale and downstream fraud analytics are running on outdated data.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "3",
+        "display_value": "On Hold"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Vendor outage",
+      "opened_at": "2026-06-01 07:33:21",
+      "sys_created_on": "2026-06-01 07:33:21",
+      "sys_updated_on": "2026-06-02 09:14:02",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3198040"
+    },
+    {
+      "_mock_note": "OPEN-5 | Type B (key fields only - needs STTM lookup) | Loan Application - Underwriting Decision",
+      "sys_id": "0044dd0aee0bff0c0011002200330055",
+      "number": "INC3200050",
+      "short_description": "cur_underwriting missing 2,400 records - null underwriting_decision_status in INT-to-CUR",
+      "description": "The Loan Application cur_underwriting table is missing 2,400 application records. The INT-to-CUR transformation dropped records where the derived field underwriting_decision_status was null. The source file underwriting.dat loaded correctly into int_underwriting but the derivation logic for underwriting_decision_status was not applied after a recent pipeline update. The STTM defines this as a derived field with a CASE WHEN business rule, but the rule is returning null for a subset of records.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Transformation logic error",
+      "opened_at": "2026-05-30 09:50:36",
+      "sys_created_on": "2026-05-30 09:50:36",
+      "sys_updated_on": "2026-06-01 08:05:14",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3200050"
+    },
+    {
+      "_mock_note": "OPEN-6 | Type A (explicit data source) | Real Estate Pricing - Property Valuation Master",
+      "sys_id": "0055ee0bff0c00110022003300440066",
+      "number": "INC3205060",
+      "short_description": "Real Estate Pricing Property Valuation Master - AVM vendor API returning HTTP 503",
+      "description": "The Real Estate Pricing Property Valuation Master segment failed to ingest. The AVM vendor API extract for valuation_master.dat has been returning HTTP 503 for 6 consecutive hours. No data has landed at /mnt/landing/rel/vendor/valuation/ and the tables raw_rel.valuation, int_rel.property_valuation_master, and cur_rel.property_valuation_master are stale. This is impacting downstream pricing benchmark calculations and the Comparable Sales Master pipeline which depends on refreshed valuation data.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Vendor API failure",
+      "opened_at": "2026-06-03 06:45:19",
+      "sys_created_on": "2026-06-03 06:45:19",
+      "sys_updated_on": "2026-06-03 06:45:19",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3205060"
+    },
+    {
+      "_mock_note": "OPEN-7 | Type B (key fields only - needs STTM lookup) | Real Estate Pricing - Neighborhood Market Trends",
+      "sys_id": "0066ff0c001100220033004400550077",
+      "number": "INC3208070",
+      "short_description": "raw_rel.neighborhood partial load - only 15 of 42 census tracts landed",
+      "description": "The Real Estate Pricing monthly reference dataset load into raw_rel.neighborhood is incomplete. Only 15 of the expected 42 census tracts landed after the blob transfer from /mnt/landing/rel/reference/neighborhood/. The file neighborhood_trends.dat appears truncated. int_rel.neighborhood_market_trends and cur_rel.neighborhood_market_trends have incomplete neighborhood-level data, affecting price adjustment calculations for 27 missing tracts.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Incomplete file transfer",
+      "opened_at": "2026-06-01 02:00:00",
+      "sys_created_on": "2026-06-01 02:00:00",
+      "sys_updated_on": "2026-06-02 08:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3208070"
+    },
+    {
+      "_mock_note": "OPEN-8 | Type B (key fields only - needs STTM lookup) | Relationship Manager - Customer Master",
+      "sys_id": "007700110022003300440055006600880",
+      "number": "INC3210080",
+      "short_description": "int_rm_customer_master truncated - customer_id count 62K vs expected 100K+",
+      "description": "The Relationship Manager int_rm_customer_master table shows only 62,000 customer_id records instead of the expected 100,000+. The daily mainframe batch extract appears to have been truncated during the SFTP transfer to /landing/rm/customer_master/. The copybook RM_01_CUSTOMER_MASTER_CPY was applied but the resulting INT table is incomplete. cur_rm_customer_master is also short by approximately 38,000 records, impacting downstream customer relationship analytics.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Incomplete file transfer",
+      "opened_at": "2026-06-01 04:15:00",
+      "sys_created_on": "2026-06-01 04:15:00",
+      "sys_updated_on": "2026-06-02 10:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3210080"
+    },
+    {
+      "_mock_note": "OPEN-9 | Type B (key fields only - needs STTM lookup) | Customer Enterprise - Customer Interaction",
+      "sys_id": "008800220033004400550066007700990",
+      "number": "INC3215090",
+      "short_description": "raw.customer_cust_interaction 4-hour lag - interaction_id offset growing",
+      "description": "The Customer Enterprise raw.customer_cust_interaction table is lagging by 4 hours. The consumer group offset for interaction_id is growing, with the last processed interaction_ts timestamp 4 hours behind real time. Records are not landing at abfss://landing@prod/customer/interaction/ in a timely manner. The hourly micro-batch ingestion appears to be backed up. INT and Curated layers for customer interaction data are stale, impacting customer contact event analytics.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Kafka consumer lag",
+      "opened_at": "2026-06-02 14:00:00",
+      "sys_created_on": "2026-06-02 14:00:00",
+      "sys_updated_on": "2026-06-02 14:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3215090"
+    },
+    {
+      "_mock_note": "OPEN-10 | Type B (key fields only - needs STTM lookup) | Payments Enterprise - Settlement Batches",
+      "sys_id": "009900330044005500660077008800aa0",
+      "number": "INC3220100",
+      "short_description": "settlement_batch_id count mismatch in raw.payments_settlement - 47 batches missing",
+      "description": "The settlement_batch_id counts in raw.payments_settlement do not match the control totals provided by the processor. 47 settlement batches are missing from the INT layer. The daily feed delivered to abfss://landing@prod/payments/settlement/ appears truncated. Downstream chargeback reconciliation and merchant analytics are impacted because settlement matching depends on complete batch data. The settlement_updated_ts for the last valid batch is 6 hours behind expected.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Incomplete file transfer",
+      "opened_at": "2026-06-02 08:00:00",
+      "sys_created_on": "2026-06-02 08:00:00",
+      "sys_updated_on": "2026-06-03 11:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3220100"
+    },
+    {
+      "_mock_note": "OPEN-11 | Logistics Enterprise - Shipment Line | Added for Summarize intent",
+      "sys_id": "00aa00440055006600770088009900bb0",
+      "number": "INC3225110",
+      "short_description": "Logistics shipment_line_src records not loading - delimiter mismatch in Landing-to-Raw",
+      "description": "The Logistics Enterprise shipment_line_src daily feed landed at abfss://landing@prod/logistics/shipment_line/ but records are not parsing into raw.logistics_shipment_line. The Landing-to-Raw hop is failing because the source switched from comma-delimited to pipe-delimited JSON without notice. All 13 mapped columns (shipment_line_id, shipment_id, sku_id, quantity, unit_price, line_status, etc.) are returning null in the RAW table. The STTM Hop1_Landing_Raw mapping expects trim(source) transformations on string fields and cast() on decimals, but the parser cannot split fields due to the delimiter change. INT and Curated layers have zero new shipment line records for today. Shipment header data (shipment_src) is unaffected.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Source format change",
+      "opened_at": "2026-06-02 05:30:00",
+      "sys_created_on": "2026-06-02 05:30:00",
+      "sys_updated_on": "2026-06-03 09:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3225110"
+    },
+    {
+      "_mock_note": "CLOSED-6 | HOP Enterprise - SRC_ORDERS DQ failures | Added for Summarize intent",
+      "sys_id": "00bb0055006600770088009900aa00cc0",
+      "number": "INC3230120",
+      "short_description": "HOP Enterprise SRC_ORDERS - 2,800 records failing DQ on order_amt during Raw-to-INT",
+      "description": "The HOP Enterprise SRC_ORDERS feed had 2,800 records fail DQ validation during the Raw-to-INT hop (Hop2). The DQ_Rules tab in the HOP STTM specifies order_amt as mandatory with a Not Null check and datatype decimal(18,2). The source sent empty strings in the order_amt field for these records, causing the cast(trim(source) as decimal(18,2)) transformation to fail. The records were quarantined in the DQ error table and did not reach the INT layer (int.orders). Curated layer was also short by 2,800 orders. The source team confirmed a bug in their extraction job that sent empty strings instead of 0.00 for zero-value orders.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-05-18 03:00:00",
+      "sys_created_on": "2026-05-18 03:00:00",
+      "sys_updated_on": "2026-05-20 16:00:00",
+      "resolved_at": "2026-05-19 14:00:00",
+      "closed_at": "2026-05-20 16:00:00",
+      "resolution_notes": "Source extraction bug sent empty strings for zero-value order_amt. Source team patched extraction to send 0.00. Re-extracted and reloaded 2,800 records. DQ validation passed. INT and Curated layers reconciled. Added coalesce(order_amt, 0.00) as defensive default in the Raw-to-INT transformation per STTM Mapping Rules Default logic type.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3230120"
+    },
+    {
+      "_mock_note": "OPEN-12 | Pipeline Failure | Core Banking - Deposit Account Master | Added for Pipeline Incidents intent",
+      "sys_id": "00cc006600770088009900aa00bb00dd0",
+      "number": "INC3235130",
+      "short_description": "(AutoTkt) PL-CB-02-DEPOSIT-ACCT-MASTER-RAW-INGEST pipeline failed - auth token expired",
+      "description": "Automated alert: ADF pipeline PL-CB-02-DEPOSIT-ACCT-MASTER-RAW-INGEST failed at the copy activity step. The service principal auth token used to connect to the Core Banking source system expired overnight. The pipeline could not pull deposit_account_master_extract.dat from the source. int_core_banking.deposit_account_master and cur_core_banking.deposit_account_master are stale. This is a pipeline infrastructure failure, not a data quality issue - the source data is available but the pipeline cannot authenticate to retrieve it.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Authentication issue",
+      "opened_at": "2026-06-02 03:15:00",
+      "sys_created_on": "2026-06-02 03:15:00",
+      "sys_updated_on": "2026-06-03 08:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plcb02depositacctmasterrawingest",
+        "display_value": "PL-CB-02-DEPOSIT-ACCT-MASTER-RAW-INGEST"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3235130"
+    },
+    {
+      "_mock_note": "OPEN-13 | Pipeline Failure | Debit Card - Merchant Master | Added for Pipeline Incidents intent",
+      "sys_id": "00dd007700880099aa00bb00cc00ee000",
+      "number": "INC3240140",
+      "short_description": "PL-DC-07-MERCHANT-MASTER-RAW-INT pipeline failed - linked service connection refused",
+      "description": "The ADF pipeline PL-DC-07-MERCHANT-MASTER-RAW-INT failed during the data flow step. The linked service to the Debit Card INT database returned a connection refused error. All records from raw_merchant_master could not be transformed into int_merchant_master. The cur_merchant_master table is stale, impacting downstream merchant enrichment for transaction authorization and clearing segments. The pipeline has been failing since the 2026-06-02 scheduled run. Other Debit Card pipelines connecting to the same INT database are also at risk.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Connection failure",
+      "opened_at": "2026-06-02 04:30:00",
+      "sys_created_on": "2026-06-02 04:30:00",
+      "sys_updated_on": "2026-06-02 04:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "pldc07merchantmasterrawint",
+        "display_value": "PL-DC-07-MERCHANT-MASTER-RAW-INT"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3240140"
+    },
+    {
+      "_mock_note": "OPEN-14 | Pipeline Failure | Loan Application - Repayment Schedule | Added for Pipeline Incidents intent",
+      "sys_id": "00ee008800990aaa0bbb0ccc0ddd0fff0",
+      "number": "INC3245150",
+      "short_description": "(AutoTkt) PL-LA-12-REPAY-SCHEDULE-RAW-INGEST aborted - source connection timeout",
+      "description": "Automated alert: ADF pipeline PL-LA-12-REPAY-SCHEDULE-RAW-INGEST aborted after 3 consecutive retry failures. The copy activity could not establish a connection to the Loan Application source system to pull repay_schedule.dat from /mnt/raw/loan_application/repay_schedule/. The source system appears to be under heavy load during month-end batch processing. int_repay_schedule and cur_repay_schedule have not been refreshed. Downstream repayment analytics are stale. The pipeline is configured with 3 retries at 10-minute intervals, all of which timed out.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Source timeout",
+      "opened_at": "2026-06-01 03:45:00",
+      "sys_created_on": "2026-06-01 03:45:00",
+      "sys_updated_on": "2026-06-02 12:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plla12repayschedulerawingest",
+        "display_value": "PL-LA-12-REPAY-SCHEDULE-RAW-INGEST"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3245150"
+    },
+    {
+      "_mock_note": "CLOSED-7 | Vendor outage historical | Debit Card - POS Terminal Master | Added for Historical Resolution intent",
+      "sys_id": "00ff009900aa00bb00cc00dd00ee01100",
+      "number": "INC3032200",
+      "short_description": "Debit Card POS Terminal Master feed delayed - vendor maintenance window",
+      "description": "The Debit Card POS Terminal Master daily feed \n      (pos_terminal_master.dat) was not delivered for 2 consecutive days. \n      The vendor providing the POS terminal reference data had an unannounced\n       maintenance window. raw_pos_terminal_master, int_pos_terminal_master, \n              and cur_pos_terminal_master were stale. Downstream ATM Activity and Transaction Authorization enrichment were running on outdated terminal data, causing mismatches in terminal_id lookups.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "cause": "Vendor outage",
+      "opened_at": "2026-03-10 06:00:00",
+      "sys_created_on": "2026-03-10 06:00:00",
+      "sys_updated_on": "2026-03-13 15:00:00",
+      "resolved_at": "2026-03-12 10:30:00",
+      "closed_at": "2026-03-13 15:00:00",
+      "resolution_notes": "Vendor outage caused 2-day feed gap. Resolution steps: (1) Confirmed with vendor that maintenance was complete. (2) Vendor re-delivered pos_terminal_master.dat for both missed days. (3) Re-triggered PL-DC-11-POS-TERMINAL-RAW-INGEST for backfill. (4) Validated row counts across RAW, INT, CUR. Terminal_id lookups reconciled. (5) Added vendor maintenance schedule to DEPS monitoring calendar. (6) Configured file-arrival SLA alert at 24-hour threshold so delayed feeds are flagged before downstream pipelines run on stale data.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3032200"
+    },
+    {
+      "_mock_note": "CLOSED-8 | Kafka lag historical | Customer Enterprise - Customer Interaction | Added for Historical Resolution intent",
+      "sys_id": "01100aa00bb00cc00dd00ee00ff002200",
+      "number": "INC2920400",
+      "short_description": "Customer Enterprise customer_interaction_src Kafka consumer rebalancing caused 6-hour lag",
+      "description": "The Customer Enterprise customer_interaction_src Kafka micro-batch ingestion experienced a 6-hour lag after a broker restart triggered a consumer group rebalancing storm. The consumer group for interaction_id events lost its partition assignments repeatedly, causing the offset to fall behind. Records stopped landing at abfss://landing@prod/customer/interaction/ and raw.customer_cust_interaction went stale. INT and Curated customer interaction tables were not refreshed during the lag window.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "cause": "Kafka consumer lag",
+      "opened_at": "2026-02-08 09:00:00",
+      "sys_created_on": "2026-02-08 09:00:00",
+      "sys_updated_on": "2026-02-10 17:00:00",
+      "resolved_at": "2026-02-09 15:00:00",
+      "closed_at": "2026-02-10 17:00:00",
+      "resolution_notes": "Kafka consumer group rebalancing storm after broker restart. Resolution steps: (1) Increased session.timeout.ms from 10s to 45s to prevent premature partition revocation. (2) Increased max.poll.interval.ms from 300s to 600s to allow longer processing windows. (3) Set group.instance.id for static membership to avoid unnecessary rebalances on transient disconnects. (4) Consumer backlog cleared within 2 hours of config push. All interaction events caught up and INT/Curated layers refreshed. (5) Added consumer lag alerting at 2-hour threshold on the interaction_id topic. (6) Documented Kafka tuning parameters in the platform runbook.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2920400"
+    },
+    {
+      "_mock_note": "DC-DQ-1 | Cardholder Master | Missing data - completeness",
+      "sys_id": "dc0001aa01bb01cc01dd01ee01ff0100",
+      "number": "INC3250160",
+      "short_description": "cur_cardholder_master missing 3,200 records - null cardholder_id dropped during INT-to-CUR",
+      "description": "Missing data: source-to-target reconciliation on the Debit Card Cardholder Master segment flagged 3,200 records missing from cur_cardholder_master. The daily extract delivered 85,000 records but only 81,800 landed in the CUR table. The INT-to-CUR transformation is dropping records where cardholder_id is null. The STTM defines cardholder_id as the primary business key and it should never be null, but the source sent 3,200 records with empty cardholder_id values. Downstream cardholder analytics and card-to-customer linkage reports are incomplete.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "cause": "Data quality",
+      "opened_at": "2026-04-10 03:20:00",
+      "sys_created_on": "2026-04-10 03:20:00",
+      "sys_updated_on": "2026-04-12 16:00:00",
+      "resolved_at": "2026-04-11 09:15:00",
+      "closed_at": "2026-04-12 16:00:00",
+      "resolution_notes": "Root cause: source extraction bug sent empty cardholder_id for batch of newly onboarded cardholders. Source team patched extraction. 3,200 records re-extracted and reloaded. Row counts reconciled across RAW, INT, CUR. Added NOT NULL assertion on cardholder_id in the DQ rules layer.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3250160"
+    },
+    {
+      "_mock_note": "DC-DQ-2 | Cardholder Master | Missing data - timeliness",
+      "sys_id": "dc0002aa02bb02cc02dd02ee02ff0200",
+      "number": "INC3255170",
+      "short_description": "int_cardholder_master stale - daily feed not delivered for 18 hours past SLA",
+      "description": "Missing data: the Debit Card Cardholder Master daily feed (cardholder_master.dat) has not been delivered to the landing zone for 18 hours past the expected SLA window. The last successful load timestamp is 2026-05-20 02:00:00. raw_cardholder_master, int_cardholder_master, and cur_cardholder_master are all stale. Downstream card issuance reports and cardholder verification lookups are running on day-old data. The source system batch job appears to be hung.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Data Availability",
+      "opened_at": "2026-05-21 08:00:00",
+      "sys_created_on": "2026-05-21 08:00:00",
+      "sys_updated_on": "2026-05-22 10:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3255170"
+    },
+    {
+      "_mock_note": "DC-DQ-3 | Cardholder Master | Missing data - completeness partial file",
+      "sys_id": "dc0003aa03bb03cc03dd03ee03ff0300",
+      "number": "INC3260180",
+      "short_description": "raw_cardholder_master partial load - only 40K of expected 85K records landed",
+      "description": "Missing data: the Debit Card Cardholder Master file cardholder_master.dat was only partially delivered. 40,000 records landed in raw_cardholder_master versus the expected 85,000. The file appears truncated at the SFTP transfer stage. int_cardholder_master and cur_cardholder_master are missing approximately 45,000 cardholder records. Card issuance and activation reports are incomplete. The SFTP transfer log shows the connection was reset mid-transfer.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "cause": "Incomplete file transfer",
+      "opened_at": "2026-03-15 04:00:00",
+      "sys_created_on": "2026-03-15 04:00:00",
+      "sys_updated_on": "2026-03-17 15:00:00",
+      "resolved_at": "2026-03-16 11:00:00",
+      "closed_at": "2026-03-17 15:00:00",
+      "resolution_notes": "SFTP connection reset during file transfer caused truncation. Re-initiated SFTP transfer after network stabilization. Full 85,000 records delivered and loaded. Row counts reconciled across RAW, INT, CUR. Added file-size validation check before pipeline trigger to catch truncated files.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3260180"
+    },
+    {
+      "_mock_note": "DC-DQ-4 | Debit Card Account | Missing data - completeness",
+      "sys_id": "dc0004aa04bb04cc04dd04ee04ff0400",
+      "number": "INC3265190",
+      "short_description": "cur_debit_card_account missing 1,800 records - account_id null in source extract",
+      "description": "Missing data: the Debit Card Account segment shows 1,800 records missing from cur_debit_card_account. The source extract had 102,000 records but only 100,200 reached the CUR layer. The INT-to-CUR step dropped records where account_id was null. The STTM defines account_id as the primary business key for this segment. Source team confirmed a migration script left 1,800 newly created debit card accounts without account_id values. Downstream account balance and card-to-account linkage reporting are incomplete.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-04-22 05:30:00",
+      "sys_created_on": "2026-04-22 05:30:00",
+      "sys_updated_on": "2026-04-24 14:00:00",
+      "resolved_at": "2026-04-23 10:45:00",
+      "closed_at": "2026-04-24 14:00:00",
+      "resolution_notes": "Source migration script bug left null account_id for 1,800 new accounts. Source team patched and re-extracted. Records reloaded into RAW, INT, CUR. Row counts reconciled. Added source-side NOT NULL constraint on account_id.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3265190"
+    },
+    {
+      "_mock_note": "DC-DQ-5 | Debit Card Account | Missing data - timeliness",
+      "sys_id": "dc0005aa05bb05cc05dd05ee05ff0500",
+      "number": "INC3270200",
+      "short_description": "Debit Card Account daily refresh 12 hours late - source batch job scheduling conflict",
+      "description": "Missing data: the Debit Card Account daily extract has not arrived for 12 hours past the expected delivery window. The source system batch scheduler reports a job conflict that delayed the debit_card_account_extract.dat generation. raw_debit_card_account, int_debit_card_account, and cur_debit_card_account have not been refreshed since yesterday. Account status checks and card activation workflows are running on stale account data.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "cause": "Source timeout",
+      "opened_at": "2026-05-05 06:00:00",
+      "sys_created_on": "2026-05-05 06:00:00",
+      "sys_updated_on": "2026-05-06 17:00:00",
+      "resolved_at": "2026-05-05 18:30:00",
+      "closed_at": "2026-05-06 17:00:00",
+      "resolution_notes": "Source batch job conflict resolved by adjusting job priority. Extract delivered 12 hours late. Pipeline backfilled. RAW, INT, CUR layers refreshed. Row counts reconciled. Requested source team add dedicated job slot for debit card account extract to prevent recurrence.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3270200"
+    },
+    {
+      "_mock_note": "DC-DQ-6 | Debit Card Account | Missing data - completeness zero records",
+      "sys_id": "dc0006aa06bb06cc06dd06ee06ff0600",
+      "number": "INC3275210",
+      "short_description": "int_debit_card_account loaded zero records - empty source file delivered",
+      "description": "Missing data: the Debit Card Account segment loaded zero records into int_debit_card_account. The source file debit_card_account_extract.dat was delivered on time but contained only the header row with no data rows. raw_debit_card_account has the header but zero data records. cur_debit_card_account was not refreshed. All downstream account-level reporting and card-to-account linkage are missing today's data. The source system appears to have generated an empty extract.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "6",
+        "display_value": "Resolved"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-06-10 03:00:00",
+      "sys_created_on": "2026-06-10 03:00:00",
+      "sys_updated_on": "2026-06-11 09:00:00",
+      "resolved_at": "2026-06-10 14:00:00",
+      "closed_at": "",
+      "resolution_notes": "Source system generated empty extract due to database connection pool exhaustion during batch window. Source DBA team resolved connection pool issue. File re-extracted with full 102,000 records. Pipeline re-triggered and all layers refreshed. Awaiting validation sign-off to close.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3275210"
+    },
+    {
+      "_mock_note": "DC-DQ-7 | Card Profile | Missing data - completeness",
+      "sys_id": "dc0007aa07bb07cc07dd07ee07ff0700",
+      "number": "INC3280220",
+      "short_description": "cur_card_profile missing 950 records - card_id values not matching join condition in INT-to-CUR",
+      "description": "Missing data: 950 records are missing from cur_card_profile after the INT-to-CUR transformation. The records exist in int_card_profile but were dropped because their card_id values did not match any cardholder_id in the join lookup against int_cardholder_master. The STTM Join_Lookups tab requires card_profile to join on cardholder_id. These 950 cards belong to a newly onboarded card program whose cardholder records have not yet been loaded. Downstream card utilization and spend analytics are incomplete.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "cause": "Transformation logic error",
+      "opened_at": "2026-04-18 07:00:00",
+      "sys_created_on": "2026-04-18 07:00:00",
+      "sys_updated_on": "2026-04-20 16:00:00",
+      "resolved_at": "2026-04-19 13:00:00",
+      "closed_at": "2026-04-20 16:00:00",
+      "resolution_notes": "950 card_profile records dropped because corresponding cardholder_master records were not yet loaded for the new card program. Coordinated load sequence: cardholder_master loaded first, then card_profile re-processed. All 950 records now in CUR. Added dependency check to ensure cardholder_master loads before card_profile INT-to-CUR runs.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3280220"
+    },
+    {
+      "_mock_note": "DC-DQ-8 | Card Profile | Missing data - timeliness",
+      "sys_id": "dc0008aa08bb08cc08dd08ee08ff0800",
+      "number": "INC3285230",
+      "short_description": "raw_card_profile not refreshed for 2 days - SFTP credentials expired",
+      "description": "Missing data: the Debit Card Card Profile segment has not been refreshed for 2 consecutive days. The source file card_profile.dat has not landed at the expected raw path. The SFTP service account credentials used to pull the file expired on 2026-05-25. raw_card_profile, int_card_profile, and cur_card_profile are all stale. Card status and card feature reporting are running on 2-day-old data. New card activations and profile updates are not reflected.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "cause": "Authentication issue",
+      "opened_at": "2026-05-27 06:00:00",
+      "sys_created_on": "2026-05-27 06:00:00",
+      "sys_updated_on": "2026-05-29 14:00:00",
+      "resolved_at": "2026-05-28 10:00:00",
+      "closed_at": "2026-05-29 14:00:00",
+      "resolution_notes": "SFTP credentials expired. Renewed credentials with 12-month validity. Backfilled 2 missing days of card_profile.dat. RAW, INT, CUR layers refreshed. Row counts reconciled. Added credential expiry alerting at 30-day threshold.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3285230"
+    },
+    {
+      "_mock_note": "DC-DQ-9 | Card Profile | Missing data - completeness null key fields",
+      "sys_id": "dc0009aa09bb09cc09dd09ee09ff0900",
+      "number": "INC3290240",
+      "short_description": "int_card_profile 2,100 records with null card_id - source system upgrade side effect",
+      "description": "Missing data: 2,100 records in int_card_profile have null card_id after the latest source system upgrade. The STTM defines card_id as the primary business key for this segment. The source system upgrade changed the card_id generation sequence, leaving 2,100 in-flight card applications without assigned card_id values. These records are present in raw_card_profile but were quarantined during INT DQ validation. cur_card_profile is short by 2,100 records. Card provisioning and activation tracking are incomplete.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-06-15 04:00:00",
+      "sys_created_on": "2026-06-15 04:00:00",
+      "sys_updated_on": "2026-06-16 11:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3290240"
+    },
+    {
+      "_mock_note": "DC-DQ-10 | Card Status History | Missing data - completeness",
+      "sys_id": "dc0010aa10bb10cc10dd10ee10ff1000",
+      "number": "INC3295250",
+      "short_description": "cur_card_status_history missing 7 days of status transitions - card_status_hist_id gap detected",
+      "description": "Missing data: the Debit Card Card Status History segment is missing 7 days of status transition records in cur_card_status_history. A gap in card_status_hist_id values indicates that status change events from 2026-05-10 through 2026-05-16 were never loaded. The source system was generating the events but the extraction job was silently skipping them due to an incorrect watermark timestamp. Approximately 14,000 status transitions are missing. Card lifecycle reporting and fraud detection rules that depend on status change velocity are affected.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-05-18 09:00:00",
+      "sys_created_on": "2026-05-18 09:00:00",
+      "sys_updated_on": "2026-05-21 16:00:00",
+      "resolved_at": "2026-05-20 15:00:00",
+      "closed_at": "2026-05-21 16:00:00",
+      "resolution_notes": "Source extraction watermark was incorrectly advanced past 7 days of status events. Reset watermark to 2026-05-10. Backfilled 14,000 status transition records. RAW, INT, CUR reconciled. Added daily card_status_hist_id sequence gap monitoring to catch silent skips.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3295250"
+    },
+    {
+      "_mock_note": "DC-DQ-11 | Card Status History | Missing data - timeliness",
+      "sys_id": "dc0011aa11bb11cc11dd11ee11ff1100",
+      "number": "INC3300260",
+      "short_description": "int_card_status_history 36-hour refresh lag - batch extract delayed by mainframe maintenance",
+      "description": "Missing data: the Debit Card Card Status History table int_card_status_history has a 36-hour refresh lag. The mainframe batch extract that generates card_status_history.dat was delayed due to an unscheduled mainframe maintenance window. No new card status transition records have been delivered since 2026-06-08 18:00:00. cur_card_status_history is equally stale. Card block/unblock operations performed in the last 36 hours are not reflected in downstream reporting.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "3",
+        "display_value": "On Hold"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Data Availability",
+      "opened_at": "2026-06-10 06:00:00",
+      "sys_created_on": "2026-06-10 06:00:00",
+      "sys_updated_on": "2026-06-11 10:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3300260"
+    },
+    {
+      "_mock_note": "DC-DQ-12 | Transaction Authorization | Missing data - completeness",
+      "sys_id": "dc0012aa12bb12cc12dd12ee12ff1200",
+      "number": "INC3305270",
+      "short_description": "cur_txn_authorization missing 22,000 records - auth_txn_id count mismatch vs processor totals",
+      "description": "Missing data: the Debit Card Transaction Authorization segment shows a 22,000-record shortfall in cur_txn_authorization compared to the processor's control totals. The daily authorization feed delivered 450,000 records but only 428,000 reached the CUR layer. The INT-to-CUR transformation dropped records where the auth_response_code field was an unexpected value ('ZZ') not handled by the CASE WHEN derivation logic. The STTM defines auth_txn_id as the primary business key. Downstream authorization approval rate reporting and real-time fraud scoring are incomplete.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Transformation logic error",
+      "opened_at": "2026-06-12 05:00:00",
+      "sys_created_on": "2026-06-12 05:00:00",
+      "sys_updated_on": "2026-06-13 14:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3305270"
+    },
+    {
+      "_mock_note": "DC-DQ-13 | Transaction Authorization | Missing data - timeliness",
+      "sys_id": "dc0013aa13bb13cc13dd13ee13ff1300",
+      "number": "INC3310280",
+      "short_description": "raw_txn_authorization 8-hour lag - real-time auth feed Kafka topic partition reassignment",
+      "description": "Missing data: the Debit Card Transaction Authorization real-time feed has an 8-hour lag. The Kafka topic partition for authorization events was reassigned during a broker scaling event and the consumer group lost its offsets. No new auth_txn_id records have landed in raw_txn_authorization since 2026-05-30 22:00:00. int_txn_authorization and cur_txn_authorization are stale. Real-time fraud detection and authorization decline monitoring are running on 8-hour-old data.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "cause": "Kafka consumer lag",
+      "opened_at": "2026-05-31 06:00:00",
+      "sys_created_on": "2026-05-31 06:00:00",
+      "sys_updated_on": "2026-06-02 15:00:00",
+      "resolved_at": "2026-06-01 08:00:00",
+      "closed_at": "2026-06-02 15:00:00",
+      "resolution_notes": "Kafka partition reassignment during broker scaling caused consumer offset loss. Reset consumer offsets to the last committed position. Consumer caught up within 3 hours. All 8 hours of backlogged authorization events processed. RAW, INT, CUR refreshed. Added static consumer group membership to prevent offset loss during rebalancing.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3310280"
+    },
+    {
+      "_mock_note": "DC-DQ-14 | Transaction Authorization | Missing data - completeness null auth codes",
+      "sys_id": "dc0014aa14bb14cc14dd14ee14ff1400",
+      "number": "INC3315290",
+      "short_description": "int_txn_authorization 5,400 records quarantined - null auth_txn_id from processor feed",
+      "description": "Missing data: 5,400 records from the Debit Card Transaction Authorization feed were quarantined in the DQ error table during Raw-to-INT processing. The auth_txn_id field, defined as the primary business key in the STTM, was null for these records. The payment processor confirmed a formatting issue in their batch extract that truncated the auth_txn_id column for transactions processed through a specific gateway node. These 5,400 authorizations are missing from int_txn_authorization and cur_txn_authorization. Merchant settlement reconciliation is affected.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-04-28 04:00:00",
+      "sys_created_on": "2026-04-28 04:00:00",
+      "sys_updated_on": "2026-04-30 16:00:00",
+      "resolved_at": "2026-04-29 12:00:00",
+      "closed_at": "2026-04-30 16:00:00",
+      "resolution_notes": "Processor gateway node formatting bug truncated auth_txn_id. Processor patched and re-sent corrected feed. 5,400 records reloaded and DQ validation passed. RAW, INT, CUR reconciled. Added auth_txn_id format validation at landing zone to reject malformed records early.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3315290"
+    },
+    {
+      "_mock_note": "DC-DQ-15 | Transaction Clearing | Missing data - completeness",
+      "sys_id": "dc0015aa15bb15cc15dd15ee15ff1500",
+      "number": "INC3320300",
+      "short_description": "cur_txn_clearing missing 8,500 clearing records - clearing_txn_id null after processor system change",
+      "description": "Missing data: 8,500 records are missing from cur_txn_clearing. The payment processor made an unannounced system change that altered the clearing_txn_id format from numeric to alphanumeric. The STTM DQ rule expects a numeric cast on clearing_txn_id during Raw-to-INT, and the new alphanumeric values failed the cast. Records were quarantined. int_txn_clearing and cur_txn_clearing are short by 8,500 clearing transactions. Settlement matching and reconciliation are incomplete.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "cause": "Source format change",
+      "opened_at": "2026-05-08 04:30:00",
+      "sys_created_on": "2026-05-08 04:30:00",
+      "sys_updated_on": "2026-05-10 17:00:00",
+      "resolved_at": "2026-05-09 14:00:00",
+      "closed_at": "2026-05-10 17:00:00",
+      "resolution_notes": "Processor changed clearing_txn_id format to alphanumeric. Updated STTM DQ rule to accept alphanumeric clearing_txn_id. Re-processed 8,500 quarantined records. RAW, INT, CUR reconciled. Coordinated with processor to receive advance notice of schema changes.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3320300"
+    },
+    {
+      "_mock_note": "DC-DQ-16 | Transaction Clearing | Missing data - timeliness",
+      "sys_id": "dc0016aa16bb16cc16dd16ee16ff1600",
+      "number": "INC3325310",
+      "short_description": "int_txn_clearing not refreshed for 24 hours - clearing file delivery SLA breach",
+      "description": "Missing data: the Debit Card Transaction Clearing daily file has not been delivered for 24 hours. The clearing batch from the processor was expected by 03:00 UTC but has not arrived. raw_txn_clearing, int_txn_clearing, and cur_txn_clearing have not been refreshed since 2026-06-05 03:00:00. Settlement matching for the previous business day cannot complete. Merchant payout calculations are delayed. The processor's operations team has been contacted.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "cause": "Vendor outage",
+      "opened_at": "2026-06-06 06:00:00",
+      "sys_created_on": "2026-06-06 06:00:00",
+      "sys_updated_on": "2026-06-08 14:00:00",
+      "resolved_at": "2026-06-07 10:00:00",
+      "closed_at": "2026-06-08 14:00:00",
+      "resolution_notes": "Processor infrastructure outage delayed clearing file by 28 hours. File delivered after processor restored systems. Pipeline backfilled. RAW, INT, CUR refreshed. Row counts reconciled against processor control totals. Added 6-hour file-arrival SLA alert for clearing feed.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3325310"
+    },
+    {
+      "_mock_note": "DC-DQ-17 | Transaction Clearing | Missing data - completeness duplicate drop",
+      "sys_id": "dc0017aa17bb17cc17dd17ee17ff1700",
+      "number": "INC3330320",
+      "short_description": "cur_txn_clearing short 3,100 records after dedup removed valid clearing reversals",
+      "description": "Missing data: 3,100 records are missing from cur_txn_clearing. The INT-to-CUR deduplication logic incorrectly identified clearing reversal records as duplicates because they share the same clearing_txn_id as the original clearing record. The STTM defines the grain as clearing_txn_id but reversals reuse the original ID with a different clearing_type_cd. The dedup logic was not accounting for clearing_type_cd. Settlement reconciliation shows a 3,100-record shortfall. Refund and chargeback processing are affected.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Transformation logic error",
+      "opened_at": "2026-06-18 05:00:00",
+      "sys_created_on": "2026-06-18 05:00:00",
+      "sys_updated_on": "2026-06-19 12:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3330320"
+    },
+    {
+      "_mock_note": "DC-DQ-18 | Merchant Master | Missing data - completeness",
+      "sys_id": "dc0018aa18bb18cc18dd18ee18ff1800",
+      "number": "INC3335330",
+      "short_description": "cur_merchant_master missing 400 new merchants - merchant_id values rejected by DQ length check",
+      "description": "Missing data: 400 newly onboarded merchant records are missing from cur_merchant_master. The DQ rules in the STTM specify merchant_id must be exactly 15 characters, but the acquiring bank issued 400 new merchant_id values with 16 characters. These records failed DQ validation during Raw-to-INT and were quarantined. int_merchant_master and cur_merchant_master are missing these merchants. Transaction authorization and clearing enrichment cannot resolve merchant names for 400 merchant_id values.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-05-12 07:00:00",
+      "sys_created_on": "2026-05-12 07:00:00",
+      "sys_updated_on": "2026-05-14 16:00:00",
+      "resolved_at": "2026-05-13 11:00:00",
+      "closed_at": "2026-05-14 16:00:00",
+      "resolution_notes": "Acquiring bank expanded merchant_id to 16 characters. Updated DQ rule to accept 15 or 16 character merchant_id. Re-processed 400 quarantined records. RAW, INT, CUR reconciled. Updated STTM documentation with new length specification.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3335330"
+    },
+    {
+      "_mock_note": "DC-DQ-19 | Merchant Master | Missing data - timeliness",
+      "sys_id": "dc0019aa19bb19cc19dd19ee19ff1900",
+      "number": "INC3340340",
+      "short_description": "int_merchant_master stale 3 days - API extract returning empty response",
+      "description": "Missing data: the Debit Card Merchant Master API extract has been returning empty responses for 3 consecutive days. raw_merchant_master has received zero new or updated records since 2026-06-01. int_merchant_master and cur_merchant_master are stale. New merchant onboardings and merchant category code (MCC) updates from the last 3 days are not reflected. Transaction enrichment is using outdated merchant names and MCC codes. The merchant data API endpoint returns HTTP 200 but with an empty payload.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Vendor API failure",
+      "opened_at": "2026-06-04 08:00:00",
+      "sys_created_on": "2026-06-04 08:00:00",
+      "sys_updated_on": "2026-06-04 08:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3340340"
+    },
+    {
+      "_mock_note": "DC-DQ-20 | Fraud Alerts | Missing data - completeness",
+      "sys_id": "dc0020aa20bb20cc20dd20ee20ff2000",
+      "number": "INC3345350",
+      "short_description": "cur_fraud_alerts missing 1,200 high-risk alerts - fraud_alert_id sequence gap detected",
+      "description": "Missing data: a fraud_alert_id sequence gap analysis detected 1,200 missing high-risk fraud alert records in cur_fraud_alerts. The alerts were generated by the fraud detection engine but were not included in the daily extract because the extraction query used an incorrect date filter. The filter referenced created_date instead of alert_timestamp, missing alerts generated near midnight UTC. These 1,200 alerts span the 2026-05-14 to 2026-05-16 window. Fraud investigation workflows are missing these cases.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-05-17 09:00:00",
+      "sys_created_on": "2026-05-17 09:00:00",
+      "sys_updated_on": "2026-05-19 17:00:00",
+      "resolved_at": "2026-05-18 14:00:00",
+      "closed_at": "2026-05-19 17:00:00",
+      "resolution_notes": "Source extraction query used wrong date column. Source team corrected query to filter on alert_timestamp instead of created_date. 1,200 missing alerts re-extracted and backfilled. RAW, INT, CUR reconciled. Sequence gap monitoring confirmed no further gaps. Added daily sequence continuity check on fraud_alert_id.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3345350"
+    },
+    {
+      "_mock_note": "DC-DQ-21 | Fraud Alerts | Missing data - timeliness",
+      "sys_id": "dc0021aa21bb21cc21dd21ee21ff2100",
+      "number": "INC3350360",
+      "short_description": "int_fraud_alerts 10-hour lag - vendor fraud detection platform undergoing upgrade",
+      "description": "Missing data: the Debit Card Fraud Alerts feed has a 10-hour lag. The vendor fraud detection platform is undergoing a planned upgrade but the data extract was not paused gracefully. The last fraud_alert_id received is 10 hours behind real time. raw_fraud_alerts, int_fraud_alerts, and cur_fraud_alerts are stale. Real-time fraud case management and alert triage workflows are running on outdated data. The vendor confirmed the upgrade should complete within 4 hours.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "6",
+        "display_value": "Resolved"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "cause": "Vendor outage",
+      "opened_at": "2026-06-08 02:00:00",
+      "sys_created_on": "2026-06-08 02:00:00",
+      "sys_updated_on": "2026-06-09 10:00:00",
+      "resolved_at": "2026-06-08 16:00:00",
+      "closed_at": "",
+      "resolution_notes": "Vendor platform upgrade completed. Fraud alert feed resumed. 10-hour backlog of alerts streamed and processed. RAW, INT, CUR refreshed. Sequence gap check confirmed no missing alerts. Awaiting fraud operations team sign-off before closing.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3350360"
+    },
+    {
+      "_mock_note": "DC-DQ-22 | Chargeback Case | Missing data - completeness",
+      "sys_id": "dc0022aa22bb22cc22dd22ee22ff2200",
+      "number": "INC3355370",
+      "short_description": "cur_chargeback_case missing 340 records - chargeback_case_id null for international disputes",
+      "description": "Missing data: 340 chargeback case records are missing from cur_chargeback_case. The records were quarantined during Raw-to-INT DQ validation because chargeback_case_id was null. Investigation shows the null values correspond to international dispute cases where the acquiring processor uses a different case identifier format. The STTM defines chargeback_case_id as the primary business key. These 340 cases are not visible in the chargeback management dashboard. Dispute resolution timelines for international cases are not being tracked.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-06-14 06:00:00",
+      "sys_created_on": "2026-06-14 06:00:00",
+      "sys_updated_on": "2026-06-15 11:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3355370"
+    },
+    {
+      "_mock_note": "DC-DQ-23 | Chargeback Case | Missing data - timeliness",
+      "sys_id": "dc0023aa23bb23cc23dd23ee23ff2300",
+      "number": "INC3360380",
+      "short_description": "Chargeback Case daily feed 48 hours overdue - processor dispute system migration",
+      "description": "Missing data: the Debit Card Chargeback Case daily feed has not been delivered for 48 hours. The processor is migrating their dispute management system and the chargeback extract job was not included in the migration cutover plan. raw_chargeback_case, int_chargeback_case, and cur_chargeback_case have not been refreshed since 2026-05-22. Dispute aging reports are 2 days stale. Regulatory response deadlines for active chargebacks may be missed if data is not restored soon.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "cause": "Vendor outage",
+      "opened_at": "2026-05-24 07:00:00",
+      "sys_created_on": "2026-05-24 07:00:00",
+      "sys_updated_on": "2026-05-27 16:00:00",
+      "resolved_at": "2026-05-26 09:00:00",
+      "closed_at": "2026-05-27 16:00:00",
+      "resolution_notes": "Processor dispute system migration did not include chargeback extract in cutover. Processor restored extract job on new system. 48 hours of chargeback cases backfilled. RAW, INT, CUR reconciled. No regulatory deadlines were missed. Added chargeback feed to processor's migration checklist for future system changes.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3360380"
+    },
+    {
+      "_mock_note": "DC-DQ-24 | Chargeback Case | Missing data - completeness partial batch",
+      "sys_id": "dc0024aa24bb24cc24dd24ee24ff2400",
+      "number": "INC3365390",
+      "short_description": "int_chargeback_case short 180 records - file transfer interrupted at 92% completion",
+      "description": "Missing data: the Debit Card Chargeback Case file transfer was interrupted at approximately 92% completion. 180 of the expected 2,300 chargeback records did not land in raw_chargeback_case. The SFTP transfer log shows a network timeout at byte offset 4,812,000 of 5,230,000. int_chargeback_case and cur_chargeback_case are missing these 180 records. The missing records include chargebacks initiated in the last 4 hours of the business day.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "cause": "Incomplete file transfer",
+      "opened_at": "2026-04-05 05:00:00",
+      "sys_created_on": "2026-04-05 05:00:00",
+      "sys_updated_on": "2026-04-07 14:00:00",
+      "resolved_at": "2026-04-06 08:00:00",
+      "closed_at": "2026-04-07 14:00:00",
+      "resolution_notes": "Network timeout during SFTP transfer. Re-transferred complete file. 180 missing records loaded. RAW, INT, CUR reconciled against processor control totals. Added file checksum validation to detect incomplete transfers before pipeline trigger.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3365390"
+    },
+    {
+      "_mock_note": "DC-DQ-25 | ATM Activity | Missing data - completeness",
+      "sys_id": "dc0025aa25bb25cc25dd25ee25ff2500",
+      "number": "INC3370400",
+      "short_description": "cur_atm_activity missing 6,200 records - atm_txn_id count mismatch vs ATM switch totals",
+      "description": "Missing data: the Debit Card ATM Activity segment shows 6,200 records missing from cur_atm_activity compared to the ATM switch control totals. The daily feed delivered 78,000 records but only 71,800 reached the CUR layer. The Raw-to-INT transformation is dropping records where the terminal_id foreign key does not match any terminal_id in int_pos_terminal_master. These 6,200 ATM transactions occurred at newly installed terminals whose master records have not yet been loaded. ATM utilization and cash forecasting reports are incomplete.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Data quality",
+      "opened_at": "2026-06-16 04:00:00",
+      "sys_created_on": "2026-06-16 04:00:00",
+      "sys_updated_on": "2026-06-17 10:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3370400"
+    },
+    {
+      "_mock_note": "DC-DQ-26 | ATM Activity | Missing data - timeliness",
+      "sys_id": "dc0026aa26bb26cc26dd26ee26ff2600",
+      "number": "INC3375410",
+      "short_description": "raw_atm_activity not refreshed 3 days - ATM network switch undergoing firmware update",
+      "description": "Missing data: the Debit Card ATM Activity feed has not been delivered for 3 consecutive days. The ATM network switch is undergoing a firmware update that disabled the transaction log export. raw_atm_activity, int_atm_activity, and cur_atm_activity have not been refreshed since 2026-04-12. ATM cash management, utilization reporting, and suspicious activity monitoring are running on 3-day-old data. The ATM operations team confirmed the firmware update is expected to complete within 24 hours.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "cause": "Vendor outage",
+      "opened_at": "2026-04-15 08:00:00",
+      "sys_created_on": "2026-04-15 08:00:00",
+      "sys_updated_on": "2026-04-18 15:00:00",
+      "resolved_at": "2026-04-17 11:00:00",
+      "closed_at": "2026-04-18 15:00:00",
+      "resolution_notes": "ATM switch firmware update completed. Transaction log export re-enabled. 3 days of ATM activity data backfilled. RAW, INT, CUR reconciled. All atm_txn_id records accounted for. Added ATM switch maintenance window to feed monitoring calendar.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3375410"
+    },
+    {
+      "_mock_note": "DC-DQ-27 | ATM Activity | Missing data - completeness null terminal",
+      "sys_id": "dc0027aa27bb27cc27dd27ee27ff2700",
+      "number": "INC3380420",
+      "short_description": "int_atm_activity 3,800 records quarantined - atm_txn_id present but terminal_id null from source",
+      "description": "Missing data: 3,800 ATM Activity records were quarantined during Raw-to-INT DQ validation because terminal_id was null. The atm_txn_id values are present and valid but the source ATM switch sent null terminal_id for transactions processed through a backup routing path during a network failover event. The STTM DQ rules flag terminal_id as mandatory. These 3,800 ATM transactions are missing from int_atm_activity and cur_atm_activity. Cash withdrawal and deposit volumes at affected ATMs are underreported.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Source data defect",
+      "opened_at": "2026-06-20 05:30:00",
+      "sys_created_on": "2026-06-20 05:30:00",
+      "sys_updated_on": "2026-06-20 05:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3380420"
+    },
+    {
+      "_mock_note": "DC-DQ-28 | POS Terminal Master | Missing data - completeness",
+      "sys_id": "dc0028aa28bb28cc28dd28ee28ff2800",
+      "number": "INC3385430",
+      "short_description": "cur_pos_terminal_master missing 250 new terminals - terminal_id format validation failure",
+      "description": "Missing data: 250 newly deployed POS terminal records are missing from cur_pos_terminal_master. The terminal_id values for these new terminals use an updated 12-digit format while the STTM DQ rule validates for the legacy 10-digit format. Records were quarantined during Raw-to-INT validation. int_pos_terminal_master and cur_pos_terminal_master do not include these 250 terminals. Transaction authorization and clearing enrichment cannot resolve terminal details for transactions at these locations.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Source format change",
+      "opened_at": "2026-06-19 07:00:00",
+      "sys_created_on": "2026-06-19 07:00:00",
+      "sys_updated_on": "2026-06-20 09:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3385430"
+    },
+    {
+      "_mock_note": "DC-DQ-29 | POS Terminal Master | Missing data - timeliness",
+      "sys_id": "dc0029aa29bb29cc29dd29ee29ff2900",
+      "number": "INC3390440",
+      "short_description": "int_pos_terminal_master stale 5 days - vendor terminal registry API deprecated endpoint",
+      "description": "Missing data: the Debit Card POS Terminal Master feed has not been refreshed for 5 days. The vendor's terminal registry API endpoint used by the extraction pipeline was deprecated without advance notice. The API returns HTTP 410 Gone. raw_pos_terminal_master, int_pos_terminal_master, and cur_pos_terminal_master are stale. New terminal deployments and terminal decommissions from the last 5 days are not reflected. Transaction enrichment is using outdated terminal location and capability data.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "cause": "Vendor API failure",
+      "opened_at": "2026-03-20 06:00:00",
+      "sys_created_on": "2026-03-20 06:00:00",
+      "sys_updated_on": "2026-03-26 15:00:00",
+      "resolved_at": "2026-03-25 10:00:00",
+      "closed_at": "2026-03-26 15:00:00",
+      "resolution_notes": "Vendor deprecated terminal registry API endpoint. Migrated extraction pipeline to vendor's v2 API endpoint. 5 days of terminal updates backfilled. RAW, INT, CUR reconciled. 250 new terminals and 18 decommissions now reflected. Added API version monitoring to detect future deprecations.",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3390440"
+    },
+    {
+      "_mock_note": "DC-DQ-30 | Rewards Enrollment | Missing data - completeness",
+      "sys_id": "dc0030aa30bb30cc30dd30ee30ff3000",
+      "number": "INC3395450",
+      "short_description": "cur_rewards_enrollment missing 1,600 records - rewards_enrollment_id duplicates caused merge failure",
+      "description": "Missing data: 1,600 records are missing from cur_rewards_enrollment. The INT-to-CUR merge step failed for these records because duplicate rewards_enrollment_id values were detected. The source system's rewards platform re-issued enrollment IDs during a database migration, creating 1,600 duplicate enrollment_id values across old and new enrollments. The STTM defines rewards_enrollment_id as the primary business key with a uniqueness constraint. The merge rejected the new records to protect data integrity. Rewards points accrual and redemption reporting are incomplete for affected cardholders.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Duplicate load",
+      "opened_at": "2026-06-22 04:00:00",
+      "sys_created_on": "2026-06-22 04:00:00",
+      "sys_updated_on": "2026-06-23 12:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3395450"
+    },
+    {
+      "_mock_note": "BS-PL-01 | Trade Execution RAW ingest failure",
+      "sys_id": "bs0001aa0abb14cc1edd28ee32ff3c00",
+      "number": "INC3400001",
+      "short_description": "(AutoTkt) PL-BS-01-TRADE-EXECUTION-RAW-INGEST failure in ADF",
+      "description": "Automated alert: the ADF pipeline PL-BS-01-TRADE-EXECUTION-RAW-INGEST failed during its scheduled run. The copy activity for the Black Swan Trade Execution segment could not retrieve trade_execution_extract.dat from the source SFTP within the ingest window. No data landed for int_black_swan.trade_execution and cur_black_swan.trade_execution is stale. Downstream position reconciliation depends on this feed.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-15 02:05:00",
+      "sys_created_on": "2026-06-15 02:05:00",
+      "sys_updated_on": "2026-06-15 02:05:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs01tradeexecutionrawingest",
+        "display_value": "PL-BS-01-TRADE-EXECUTION-RAW-INGEST"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400001"
+    },
+    {
+      "_mock_note": "BS-PL-02 | Position Master daily load timeout",
+      "sys_id": "bs0002aa0bbb15cc1fdd29ee33ff3d00",
+      "number": "INC3400002",
+      "short_description": "(AutoTkt) PL-BS-02-POSITION-MASTER-DAILY-LOAD copy activity timeout",
+      "description": "Automated alert: the ADF copy activity in PL-BS-02-POSITION-MASTER-DAILY-LOAD timed out after 45 minutes. The Black Swan Position Master source system was unresponsive during the extraction window. The position_master_daily.dat file was not retrieved. int_black_swan.position_master and cur_black_swan.position_master remain stale. Risk reporting downstream is blocked.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-15 03:22:00",
+      "sys_created_on": "2026-06-15 03:22:00",
+      "sys_updated_on": "2026-06-15 03:22:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs02positionmasterdailyload",
+        "display_value": "PL-BS-02-POSITION-MASTER-DAILY-LOAD"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400002"
+    },
+    {
+      "_mock_note": "BS-PL-03 | Risk Metrics INT-to-CUR concurrent write conflict",
+      "sys_id": "bs0003aa0cbb16cc20dd2aee34ff3e00",
+      "number": "INC3400003",
+      "short_description": "PL-BS-03-RISK-METRICS-INT-CUR ConcurrentAppendException during delta merge",
+      "description": "The Black Swan Risk Metrics INT-to-CUR delta merge step for cur_black_swan.risk_metrics threw a ConcurrentAppendException. The merge was processing risk_metrics_daily.dat records when an overlapping Databricks job attempted to write to the same Delta table partition. VaR calculations and stress test results did not reach the Curated layer.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-16 06:45:00",
+      "sys_created_on": "2026-06-16 06:45:00",
+      "sys_updated_on": "2026-06-16 06:45:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs03riskmetricsintcur",
+        "display_value": "PL-BS-03-RISK-METRICS-INT-CUR"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400003"
+    },
+    {
+      "_mock_note": "BS-PL-04 | Market Data Feed schema validation failure",
+      "sys_id": "bs0004aa0dbb17cc21dd2bee35ff3f00",
+      "number": "INC3400004",
+      "short_description": "(AutoTkt) PL-BS-04-MARKET-DATA-FEED-INGEST schema validation failure - 4 new columns",
+      "description": "Automated alert: the ADF pipeline PL-BS-04-MARKET-DATA-FEED-INGEST failed on schema validation for Black Swan Market Data Feed. The source file market_data_feed.dat added 4 new columns not present in the STTM. The STTM for Black Swan defines 42 raw attributes for the MARKET_DATA_FEED segment but the source now sends 46. int_black_swan.market_data_feed was not refreshed.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-17 01:30:00",
+      "sys_created_on": "2026-06-17 01:30:00",
+      "sys_updated_on": "2026-06-17 01:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs04marketdatafeedingest",
+        "display_value": "PL-BS-04-MARKET-DATA-FEED-INGEST"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400004"
+    },
+    {
+      "_mock_note": "BS-PL-05 | Settlement Ledger RAW connection pool exhausted",
+      "sys_id": "bs0005aa0ebb18cc22dd2cee36ff4000",
+      "number": "INC3400005",
+      "short_description": "(AutoTkt) PL-BS-05-SETTLEMENT-LEDGER-RAW connection pool exhausted",
+      "description": "Automated alert: PL-BS-05-SETTLEMENT-LEDGER-RAW failed because the JDBC connection pool to the Black Swan Settlement Ledger source was exhausted. All 20 connections were consumed by long-running queries from another process. The settlement_ledger_extract.dat file could not be generated. RAW layer for int_black_swan.settlement_ledger has no fresh data.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-18 04:10:00",
+      "sys_created_on": "2026-06-18 04:10:00",
+      "sys_updated_on": "2026-06-18 04:10:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs05settlementledgerraw",
+        "display_value": "PL-BS-05-SETTLEMENT-LEDGER-RAW"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400005"
+    },
+    {
+      "_mock_note": "BS-PL-06 | Counterparty Profile auth token expired",
+      "sys_id": "bs0006aa0fbb19cc23dd2dee37ff4100",
+      "number": "INC3400006",
+      "short_description": "(AutoTkt) PL-BS-06-COUNTERPARTY-PROFILE-REFRESH authentication failure",
+      "description": "Automated alert: PL-BS-06-COUNTERPARTY-PROFILE-REFRESH could not authenticate to the Black Swan Counterparty Profile API. The OAuth2 service principal token expired and the key vault secret was not rotated. The counterparty_profile_api response returned HTTP 401. int_black_swan.counterparty_profile was not refreshed. Credit risk downstream models are using stale counterparty data.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-19 07:20:00",
+      "sys_created_on": "2026-06-19 07:20:00",
+      "sys_updated_on": "2026-06-19 07:20:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs06counterpartyprofilerefresh",
+        "display_value": "PL-BS-06-COUNTERPARTY-PROFILE-REFRESH"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400006"
+    },
+    {
+      "_mock_note": "BS-PL-07 | Margin Calc INT-CUR transformation error",
+      "sys_id": "bs0007aa10bb1acc24dd2eee38ff4200",
+      "number": "INC3400007",
+      "short_description": "PL-BS-07-MARGIN-CALC-INT-CUR transformation logic error in margin computation",
+      "description": "The Black Swan Margin Calculations INT-to-CUR pipeline PL-BS-07-MARGIN-CALC-INT-CUR failed during the transformation step. A Spark UDF computing initial margin threw ArithmeticException: division by zero when notional_amount was zero for 340 derivative contracts. The STTM expects notional_amount > 0 but the source sent zero values after a contract amendment batch.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-20 05:15:00",
+      "sys_created_on": "2026-06-20 05:15:00",
+      "sys_updated_on": "2026-06-20 05:15:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs07margincalcintcur",
+        "display_value": "PL-BS-07-MARGIN-CALC-INT-CUR"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400007"
+    },
+    {
+      "_mock_note": "BS-PL-08 | Portfolio Valuations source maintenance overlap",
+      "sys_id": "bs0008aa11bb1bcc25dd2fee39ff4300",
+      "number": "INC3400008",
+      "short_description": "(AutoTkt) PL-BS-08-PORTFOLIO-VAL-DAILY source unreachable during maintenance",
+      "description": "Automated alert: PL-BS-08-PORTFOLIO-VAL-DAILY failed because the Black Swan Portfolio Valuations source system was in a maintenance window that overlapped with the ADF extraction schedule. The source returned HTTP 503 for 90 minutes. portfolio_valuations_eod.dat was not delivered. cur_black_swan.portfolio_valuations NAV figures are stale by one business day.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "3",
+        "display_value": "On Hold"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-21 02:00:00",
+      "sys_created_on": "2026-06-21 02:00:00",
+      "sys_updated_on": "2026-06-21 02:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs08portfoliovaldaily",
+        "display_value": "PL-BS-08-PORTFOLIO-VAL-DAILY"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400008"
+    },
+    {
+      "_mock_note": "BS-PL-09 | Trade Execution INT-CUR Kafka consumer lag",
+      "sys_id": "bs0009aa12bb1ccc26dd30ee3aff4400",
+      "number": "INC3400009",
+      "short_description": "PL-BS-01-TRADE-EXECUTION-INT-CUR Kafka consumer lag on trade events topic",
+      "description": "The Black Swan Trade Execution INT-to-CUR streaming pipeline has accumulated 2.4M messages of consumer lag on the bs-trade-events Kafka topic. The consumer group fell behind after a broker rebalance caused by a node failure. Real-time trade positions in cur_black_swan.trade_execution are delayed by approximately 3 hours. Intraday risk limits dashboard is showing outdated positions.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-22 08:30:00",
+      "sys_created_on": "2026-06-22 08:30:00",
+      "sys_updated_on": "2026-06-22 08:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs01tradeexecutionintcur",
+        "display_value": "PL-BS-01-TRADE-EXECUTION-INT-CUR"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400009"
+    },
+    {
+      "_mock_note": "BS-PL-10 | Regulatory Reporting cluster resource exhaustion",
+      "sys_id": "bs0010aa13bb1dcc27dd31ee3bff4500",
+      "number": "INC3400010",
+      "short_description": "(AutoTkt) PL-BS-09-REG-REPORTING-EXTRACT Databricks cluster OOM failure",
+      "description": "Automated alert: PL-BS-09-REG-REPORTING-EXTRACT failed with OutOfMemoryError on the Black Swan Databricks cluster. The Regulatory Reporting extraction job exceeded the 256GB memory allocation when processing end-of-quarter CCAR stress test scenarios. The cluster auto-scaled to maximum 16 nodes but the data volume exceeded capacity. reg_reporting_extract.dat was not generated.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-23 03:45:00",
+      "sys_created_on": "2026-06-23 03:45:00",
+      "sys_updated_on": "2026-06-23 03:45:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs09regreportingextract",
+        "display_value": "PL-BS-09-REG-REPORTING-EXTRACT"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400010"
+    },
+    {
+      "_mock_note": "BS-PL-11 | Liquidity Monitor SSL cert expired",
+      "sys_id": "bs0011aa14bb1ecc28dd32ee3cff4600",
+      "number": "INC3400011",
+      "short_description": "(AutoTkt) PL-BS-10-LIQUIDITY-MONITOR-FEED SSL certificate expired",
+      "description": "Automated alert: PL-BS-10-LIQUIDITY-MONITOR-FEED failed with SSLHandshakeException. The TLS certificate for the Black Swan Liquidity Monitoring source endpoint expired at 2026-06-23T00:00:00Z. The pipeline cannot establish a secure connection to retrieve liquidity_monitor_feed.dat. Cash position and liquidity coverage ratio data is not flowing to int_black_swan.liquidity_monitoring.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-23 06:00:00",
+      "sys_created_on": "2026-06-23 06:00:00",
+      "sys_updated_on": "2026-06-23 06:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs10liquiditymonitorfeed",
+        "display_value": "PL-BS-10-LIQUIDITY-MONITOR-FEED"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400011"
+    },
+    {
+      "_mock_note": "BS-PL-12 | Position Master INT-CUR memory overflow",
+      "sys_id": "bs0012aa15bb1fcc29dd33ee3dff4700",
+      "number": "INC3400012",
+      "short_description": "PL-BS-02-POSITION-MASTER-INT-CUR Spark executor memory overflow during aggregation",
+      "description": "The Black Swan Position Master INT-to-CUR pipeline PL-BS-02-POSITION-MASTER-INT-CUR failed with ExecutorLostFailure. The Spark job ran out of memory during the position aggregation step that groups by (instrument_id, book_id, valuation_date). The INT table int_black_swan.position_master has grown 3x since last month due to new instrument onboarding. CUR layer positions are not refreshed.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "7d6c5b4a39281706f5e4d3c2b1a09f8e",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-24 04:30:00",
+      "sys_created_on": "2026-06-24 04:30:00",
+      "sys_updated_on": "2026-06-24 04:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs02positionmasterintcur",
+        "display_value": "PL-BS-02-POSITION-MASTER-INT-CUR"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400012"
+    },
+    {
+      "_mock_note": "BS-PL-13 | Market Data Feed API rate limit",
+      "sys_id": "bs0013aa16bb20cc2add34ee3eff4800",
+      "number": "INC3400013",
+      "short_description": "(AutoTkt) PL-BS-04-MARKET-DATA-FEED-INT-CUR rate limiter throttled",
+      "description": "Automated alert: PL-BS-04-MARKET-DATA-FEED-INT-CUR was throttled by the Black Swan Market Data Feed vendor API rate limiter. The pipeline received HTTP 429 responses after exceeding 10,000 requests/minute during the end-of-day price refresh. Only 60% of ticker symbols were processed before the timeout. cur_black_swan.market_data_feed has partial coverage for today's closing prices.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-25 18:15:00",
+      "sys_created_on": "2026-06-25 18:15:00",
+      "sys_updated_on": "2026-06-25 18:15:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs04marketdatafeedintcur",
+        "display_value": "PL-BS-04-MARKET-DATA-FEED-INT-CUR"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400013"
+    },
+    {
+      "_mock_note": "BS-PL-14 | Settlement Ledger FK constraint violation",
+      "sys_id": "bs0014aa17bb21cc2bdd35ee3fff4900",
+      "number": "INC3400014",
+      "short_description": "PL-BS-05-SETTLEMENT-LEDGER-INT-CUR foreign key constraint violation on counterparty_id",
+      "description": "The Black Swan Settlement Ledger INT-to-CUR pipeline PL-BS-05-SETTLEMENT-LEDGER-INT-CUR failed with a foreign key constraint violation. 1,200 settlement records reference counterparty_id values that do not exist in cur_black_swan.counterparty_profile. The counterparty onboarding system added new counterparties that have not yet been ingested through PL-BS-06. The dependency between settlement and counterparty pipelines is not sequenced.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-26 05:00:00",
+      "sys_created_on": "2026-06-26 05:00:00",
+      "sys_updated_on": "2026-06-26 05:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs05settlementledgerintcur",
+        "display_value": "PL-BS-05-SETTLEMENT-LEDGER-INT-CUR"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400014"
+    },
+    {
+      "_mock_note": "BS-PL-15 | Risk Metrics source format change",
+      "sys_id": "bs0015aa18bb22cc2cdd36ee40ff4a00",
+      "number": "INC3400015",
+      "short_description": "(AutoTkt) PL-BS-03-RISK-METRICS-RAW-INGEST source file format changed",
+      "description": "Automated alert: PL-BS-03-RISK-METRICS-RAW-INGEST failed because the Black Swan Risk Metrics source file changed format from pipe-delimited CSV to Parquet without prior notice. The ADF copy activity expected a delimited text source but received a binary Parquet file. The pipeline's source dataset definition needs to be updated. int_black_swan.risk_metrics RAW layer has no fresh data.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-27 01:15:00",
+      "sys_created_on": "2026-06-27 01:15:00",
+      "sys_updated_on": "2026-06-27 01:15:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "plbs03riskmetricsrawingest",
+        "display_value": "PL-BS-03-RISK-METRICS-RAW-INGEST"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400015"
+    },
+    {
+      "_mock_note": "BS-DQ-01 | Trade Execution - missing records, null trade_id",
+      "sys_id": "bs0016aa19bb23cc2ddd37ee41ff4b00",
+      "number": "INC3400016",
+      "short_description": "Black Swan Trade Execution - 12,000 records missing due to null trade_id",
+      "description": "Missing data: 12,000 records are missing from cur_black_swan.trade_execution. The INT-to-CUR merge step dropped records where trade_id was null. The STTM defines trade_id as the primary business key for the Black Swan Trade Execution segment. The source system's trade capture platform generated null trade_id values during a batch amendment run. P&L attribution downstream is incomplete for affected trades.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-15 09:00:00",
+      "sys_created_on": "2026-06-15 09:00:00",
+      "sys_updated_on": "2026-06-15 09:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400016"
+    },
+    {
+      "_mock_note": "BS-DQ-02 | Position Master - stale data, not refreshed",
+      "sys_id": "bs0017aa1abb24cc2edd38ee42ff4c00",
+      "number": "INC3400017",
+      "short_description": "Black Swan Position Master cur_black_swan.position_master not refreshed since 2 days",
+      "description": "Stale data: cur_black_swan.position_master has not been refreshed for 2 business days. The max(position_date) in the CUR table is 2026-06-13 while today is 2026-06-15. The Black Swan Position Master daily extract completed successfully but the INT-to-CUR job was not triggered due to an ADF trigger misconfiguration. Portfolio managers are making decisions on outdated position data.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-15 11:30:00",
+      "sys_created_on": "2026-06-15 11:30:00",
+      "sys_updated_on": "2026-06-15 11:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400017"
+    },
+    {
+      "_mock_note": "BS-DQ-03 | Risk Metrics - negative notional values in VaR",
+      "sys_id": "bs0018aa1bbb25cc2fdd39ee43ff4d00",
+      "number": "INC3400018",
+      "short_description": "Black Swan Risk Metrics - VaR calculations contain negative notional amounts",
+      "description": "Data quality issue: 340 records in cur_black_swan.risk_metrics have negative notional_amount values in the VaR calculation output. The STTM for Black Swan Risk Metrics defines notional_amount as unsigned decimal. The source system sent negative values after a contract amendment batch reversed positions. Risk limits monitoring is generating false positive breach alerts.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-16 10:20:00",
+      "sys_created_on": "2026-06-16 10:20:00",
+      "sys_updated_on": "2026-06-16 10:20:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400018"
+    },
+    {
+      "_mock_note": "BS-DQ-04 | Market Data Feed - incomplete ticker coverage",
+      "sys_id": "bs0019aa1cbb26cc30dd3aee44ff4e00",
+      "number": "INC3400019",
+      "short_description": "Black Swan Market Data Feed - 300 ticker symbols missing from daily feed",
+      "description": "Incomplete data: 300 ticker symbols are missing from today's Black Swan Market Data Feed in cur_black_swan.market_data_feed. The source vendor's end-of-day pricing file excluded tickers listed on 3 regional exchanges due to a vendor-side filter misconfiguration. The STTM expects 4,200 unique ticker_symbol values but only 3,900 were received. Valuation models for affected instruments are using T-1 prices.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-17 16:00:00",
+      "sys_created_on": "2026-06-17 16:00:00",
+      "sys_updated_on": "2026-06-17 16:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400019"
+    },
+    {
+      "_mock_note": "BS-DQ-05 | Settlement Ledger - duplicate settlement_id values",
+      "sys_id": "bs0020aa1dbb27cc31dd3bee45ff4f00",
+      "number": "INC3400020",
+      "short_description": "Black Swan Settlement Ledger - 8,500 duplicate settlement_id values in CUR",
+      "description": "Data quality issue: 8,500 duplicate settlement_id values detected in cur_black_swan.settlement_ledger. The source system's clearing platform re-issued settlement IDs during a netting cycle correction. The STTM defines settlement_id as the primary business key with a uniqueness constraint. The INT-to-CUR merge inserted both old and new records because the merge key matched on (settlement_id, settlement_date) which was unique. Settlement reconciliation reports show inflated volumes.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-18 08:45:00",
+      "sys_created_on": "2026-06-18 08:45:00",
+      "sys_updated_on": "2026-06-18 08:45:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400020"
+    },
+    {
+      "_mock_note": "BS-DQ-06 | Counterparty Profile - LEI code mismatch",
+      "sys_id": "bs0021aa1ebb28cc32dd3cee46ff5000",
+      "number": "INC3400021",
+      "short_description": "Black Swan Counterparty Profile - LEI codes mismatched between source and target",
+      "description": "Data quality issue: 45 counterparty records in cur_black_swan.counterparty_profile have LEI (Legal Entity Identifier) codes that do not match the GLEIF registry. The source system updated LEI codes after corporate restructuring events but the old LEI values persist in 45 records. Regulatory reporting requires accurate LEI mapping for counterparty identification under EMIR and Dodd-Frank.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "3",
+        "display_value": "On Hold"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-19 14:30:00",
+      "sys_created_on": "2026-06-19 14:30:00",
+      "sys_updated_on": "2026-06-19 14:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400021"
+    },
+    {
+      "_mock_note": "BS-DQ-07 | Margin Calculations - row count mismatch",
+      "sys_id": "bs0022aa1fbb29cc33dd3dee47ff5100",
+      "number": "INC3400022",
+      "short_description": "Black Swan Margin Calculations - cur_black_swan.margin_requirements row count mismatch",
+      "description": "Missing data: source-to-target reconciliation flagged a row count mismatch for Black Swan Margin Calculations. The daily extract had 28,000 margin requirement records but only 24,100 landed in cur_black_swan.margin_requirements. 3,900 records were dropped during INT-to-CUR transformation because the margin_account_id foreign key referenced accounts not yet onboarded in cur_black_swan.counterparty_profile. Margin call calculations are understated.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-20 07:00:00",
+      "sys_created_on": "2026-06-20 07:00:00",
+      "sys_updated_on": "2026-06-20 07:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400022"
+    },
+    {
+      "_mock_note": "BS-DQ-08 | Portfolio Valuations - NAV stale 3 days",
+      "sys_id": "bs0023aa20bb2acc34dd3eee48ff5200",
+      "number": "INC3400023",
+      "short_description": "Black Swan Portfolio Valuations - NAV values unchanged for 3 business days",
+      "description": "Stale data: NAV (Net Asset Value) figures in cur_black_swan.portfolio_valuations have not changed for 3 consecutive business days. The max(valuation_date) shows 2026-06-17 but current date is 2026-06-20. The Black Swan Portfolio Valuations EOD feed completed but the CUR layer merge is using an outdated watermark that filters out new records. Fund performance reporting is based on stale NAV data.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-20 15:00:00",
+      "sys_created_on": "2026-06-20 15:00:00",
+      "sys_updated_on": "2026-06-20 15:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400023"
+    },
+    {
+      "_mock_note": "BS-DQ-09 | Trade Execution - T+1 settlement records not landed",
+      "sys_id": "bs0024aa21bb2bcc35dd3fee49ff5300",
+      "number": "INC3400024",
+      "short_description": "Black Swan Trade Execution - T+1 settlement records not landed in CUR",
+      "description": "Missing data: T+1 settlement records for Black Swan Trade Execution have not landed in cur_black_swan.trade_execution. 6,200 trades executed on 2026-06-20 should have their settlement_status updated to 'Settled' by T+1 (2026-06-21) but the settlement confirmation feed was not processed. The settlement matching engine output was delivered to the wrong SFTP directory. Trade lifecycle tracking is incomplete.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "F0001",
+        "display_value": "Devin Marsh (F0001)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-21 10:00:00",
+      "sys_created_on": "2026-06-21 10:00:00",
+      "sys_updated_on": "2026-06-21 10:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400024"
+    },
+    {
+      "_mock_note": "BS-DQ-10 | Position Master - derivative positions zero delta",
+      "sys_id": "bs0025aa22bb2ccc36dd40ee4aff5400",
+      "number": "INC3400025",
+      "short_description": "Black Swan Position Master - 1,800 derivative positions showing zero delta",
+      "description": "Data quality issue: 1,800 derivative positions in cur_black_swan.position_master are showing delta = 0.0 which is mathematically incorrect for in-the-money options. The source system's Greek calculation engine failed to compute sensitivities for these positions after a model recalibration. The zero delta values were ingested as-is since the STTM does not enforce range validation on Greek fields. Hedging decisions are being made on incorrect delta values.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "1",
+        "display_value": "New"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-22 11:45:00",
+      "sys_created_on": "2026-06-22 11:45:00",
+      "sys_updated_on": "2026-06-22 11:45:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400025"
+    },
+    {
+      "_mock_note": "BS-DQ-11 | Regulatory Reporting - CCAR data incomplete",
+      "sys_id": "bs0026aa23bb2dcc37dd41ee4bff5500",
+      "number": "INC3400026",
+      "short_description": "Black Swan Regulatory Reporting - CCAR stress test data elements incomplete",
+      "description": "Incomplete data: the Black Swan Regulatory Reporting CCAR submission dataset in cur_black_swan.reg_reporting is missing 5 newly required data elements mandated by the latest Fed SR letter. The STTM was updated to include the new fields but the source system has not yet started populating them. The 5 fields (projected_loss_rate, capital_buffer_pct, leverage_ratio_stressed, tier1_capital_stressed, risk_weighted_assets_stressed) are all null. CCAR submission deadline is approaching.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-23 09:30:00",
+      "sys_created_on": "2026-06-23 09:30:00",
+      "sys_updated_on": "2026-06-23 09:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400026"
+    },
+    {
+      "_mock_note": "BS-DQ-12 | Liquidity Monitoring - cash flow projections stale",
+      "sys_id": "bs0027aa24bb2ecc38dd42ee4cff5600",
+      "number": "INC3400027",
+      "short_description": "Black Swan Liquidity Monitoring - cash flow projections stale by 48 hours",
+      "description": "Stale data: Black Swan Liquidity Monitoring cash flow projection data in cur_black_swan.liquidity_monitoring has not been refreshed for 48 hours. The liquidity_coverage_ratio and net_stable_funding_ratio calculations are based on projections from 2026-06-21 while current date is 2026-06-23. The intraday liquidity feed stopped publishing after the source system's batch scheduler was paused for capacity planning. Treasury is operating without current liquidity visibility.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-23 14:00:00",
+      "sys_created_on": "2026-06-23 14:00:00",
+      "sys_updated_on": "2026-06-23 14:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400027"
+    },
+    {
+      "_mock_note": "BS-DQ-13 | Settlement Ledger - cross-currency FX rates missing",
+      "sys_id": "bs0028aa25bb2fcc39dd43ee4dff5700",
+      "number": "INC3400028",
+      "short_description": "Black Swan Settlement Ledger - cross-currency settlements missing FX rates",
+      "description": "Missing data: 2,100 cross-currency settlement records in cur_black_swan.settlement_ledger have null fx_rate values. The Black Swan FX rate reference feed that populates the lookup table was not delivered for 2026-06-24. Settlements in EUR, GBP, and JPY cannot be converted to USD base currency. The downstream P&L aggregation pipeline skips records with null fx_rate, understating total settlement volumes by approximately 15%.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "T0002",
+        "display_value": "Alex Vega (T0002)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-24 16:30:00",
+      "sys_created_on": "2026-06-24 16:30:00",
+      "sys_updated_on": "2026-06-24 16:30:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400028"
+    },
+    {
+      "_mock_note": "BS-DQ-14 | Market Data Feed - EOD prices not refreshed",
+      "sys_id": "bs0029aa26bb30cc3add44ee4eff5800",
+      "number": "INC3400029",
+      "short_description": "Black Swan Market Data Feed - end-of-day prices not refreshed for 2026-06-25",
+      "description": "Stale data: end-of-day closing prices in cur_black_swan.market_data_feed have not been refreshed. The max(price_date) is 2026-06-24 but markets closed on 2026-06-25. The Black Swan Market Data Feed vendor's EOD file delivery was delayed beyond the ingest window cutoff. 4,200 ticker symbols are showing yesterday's closing prices. Mark-to-market valuations for the entire Black Swan portfolio are based on stale prices.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-25 19:00:00",
+      "sys_created_on": "2026-06-25 19:00:00",
+      "sys_updated_on": "2026-06-25 19:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400029"
+    },
+    {
+      "_mock_note": "BS-DQ-15 | Risk Metrics - stress test scenarios missing parameters",
+      "sys_id": "bs0030aa27bb31cc3bdd45ee4fff5900",
+      "number": "INC3400030",
+      "short_description": "Black Swan Risk Metrics - stress test scenarios missing 5 new shock parameters",
+      "description": "Incomplete data: the Black Swan Risk Metrics stress test output in cur_black_swan.risk_metrics is missing 5 newly defined shock parameters (credit_spread_shock_bp, equity_vol_shock_pct, ir_curve_shift_bp, fx_spot_shock_pct, commodity_price_shock_pct). The risk engine was updated to compute these parameters but the source extract file risk_metrics_daily.dat does not include them yet. The STTM was updated to expect 47 attributes but the source still sends 42. Stress test coverage is incomplete for the latest regulatory scenario set.",
+      "priority": {
+        "value": "3",
+        "display_value": "3 - Moderate"
+      },
+      "state": {
+        "value": "3",
+        "display_value": "On Hold"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "",
+      "opened_at": "2026-06-26 12:00:00",
+      "sys_created_on": "2026-06-26 12:00:00",
+      "sys_updated_on": "2026-06-26 12:00:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "dq00000000000000000000000000000001",
+        "display_value": "Data Quality"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400030"
+    }
+  ]
+}

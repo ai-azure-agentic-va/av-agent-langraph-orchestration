@@ -1,0 +1,919 @@
+[
+  {
+    "test_id": "TC-001",
+    "query_type": "Type A - Direct",
+    "user_query": "Show me all open incidents for Core Banking",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "ServiceNow",
+    "data_source": "Core Banking",
+    "expected_filter": "active=true AND (short_description LIKE \"%Core Banking%\" OR description LIKE \"%Core Banking%\")",
+    "expected_incidents_text": "INC3185010, INC3190020, INC3235130",
+    "expected_incidents": [
+      "INC3185010",
+      "INC3190020",
+      "INC3235130"
+    ],
+    "expected_summary": "Found 3 open incidents for Core Banking: 1. INC3185010 (In Progress, High) - Row count mismatch on snapshot_date in account_balance_snapshot. Assigned to Devin Marsh. 2. INC3190020 (Resolved, Critical) - KYC Profile PII fields unencrypted. Assigned to Dana Sample. Awaiting security sign-off. 3. INC3235130 (In Progress, Critical) - PL-CB-02-DEPOSIT-ACCT-MASTER-RAW-INGEST failed, auth token expired. Assigned to Morgan Blake.",
+    "notes": "Both open Core Banking incidents returned regardless of sub-state (In Progress, Resolved-not-Closed).",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-002",
+    "query_type": "Type A - Direct",
+    "user_query": "Are there any active tickets for the Debit Card data source?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "ServiceNow",
+    "data_source": "Debit Card",
+    "expected_filter": "active=true AND (short_description LIKE \"%Debit Card%\" OR description LIKE \"%Debit Card%\")",
+    "expected_incidents_text": "INC3195030, INC3198040, INC3240140",
+    "expected_incidents": [
+      "INC3195030",
+      "INC3198040",
+      "INC3240140"
+    ],
+    "expected_summary": "Found 3 active tickets for Debit Card: 1. INC3195030 (New, Critical) - Cardholder Master PII masking failure after deployment. Unassigned. 2. INC3198040 (On Hold, High) - Fraud Alerts feed stale for 2 days, vendor outage. Assigned to Morgan Blake. 3. INC3240140 (New, High) - Merchant Master pipeline failed, linked service connection refused. Unassigned.",
+    "notes": "Includes both New (unassigned) and On Hold tickets.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-003",
+    "query_type": "Type A - Direct",
+    "user_query": "What incidents are currently open for Real Estate Pricing?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "ServiceNow",
+    "data_source": "Real Estate Pricing",
+    "expected_filter": "active=true AND (short_description LIKE \"%Real Estate Pricing%\" OR description LIKE \"%Real Estate Pricing%\")",
+    "expected_incidents_text": "INC3205060, INC3208070",
+    "expected_incidents": [
+      "INC3205060",
+      "INC3208070"
+    ],
+    "expected_summary": "Found 2 open incidents for Real Estate Pricing: 1. INC3205060 (New, Critical) - Property Valuation Master AVM vendor API returning HTTP 503. Unassigned. 2. INC3208070 (In Progress, Moderate) - Neighborhood Trends monthly load incomplete, 15/42 census tracts. Assigned to Morgan Blake.",
+    "notes": "Covers both Databricks-hosted Real Estate Pricing pipelines.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-004",
+    "query_type": "Type A - Direct",
+    "user_query": "Pull up all unresolved incidents for Loan Application",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "ServiceNow",
+    "data_source": "Loan Application",
+    "expected_filter": "active=true AND (short_description LIKE \"%Loan Application%\" OR description LIKE \"%Loan Application%\")",
+    "expected_incidents_text": "INC3200050, INC3245150",
+    "expected_incidents": [
+      "INC3200050",
+      "INC3245150"
+    ],
+    "expected_summary": "Found 2 open incidents for Loan Application: 1. INC3200050 (In Progress, High) - cur_underwriting missing 2,400 records, null underwriting_decision_status. Assigned to Alex Vega. 2. INC3245150 (In Progress, High) - PL-LA-12-REPAY-SCHEDULE-RAW-INGEST aborted, source source timeout. Assigned to Devin Marsh.",
+    "notes": "Only 1 open ticket; the other Loan Application tickets are closed.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-005",
+    "query_type": "Type A - Direct",
+    "user_query": "Any open issues for Payments Enterprise right now?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "ServiceNow",
+    "data_source": "Payments Enterprise",
+    "expected_filter": "active=true AND (short_description LIKE \"%Payments%\" OR description LIKE \"%Payments%\")",
+    "expected_incidents_text": "INC3220100",
+    "expected_incidents": [
+      "INC3220100"
+    ],
+    "expected_summary": "Found 1 open incident for Payments Enterprise: 1. INC3220100 (In Progress, High) - 47 settlement batches missing from raw.payments_settlement. File truncated. Assigned to Devin Marsh.",
+    "notes": "INC3045600 (payment_txn_src missing) is closed and should NOT appear.",
+    "status_in_workbook": "Fail. Payments Enterprise was not present in the description."
+  },
+  {
+    "test_id": "TC-006",
+    "query_type": "Type A - Direct",
+    "user_query": "Get me the current incidents for Relationship Manager",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "ServiceNow",
+    "data_source": "Relationship Manager",
+    "expected_filter": "active=true AND (short_description LIKE \"%Relationship Manager%\" OR description LIKE \"%Relationship Manager%\")",
+    "expected_incidents_text": "INC3210080",
+    "expected_incidents": [
+      "INC3210080"
+    ],
+    "expected_summary": "Found 1 open incident for Relationship Manager: 1. INC3210080 (In Progress, High) - int_rm_customer_master truncated at 62K vs expected 100K+ records. SFTP dropped. Assigned to Dana Sample.",
+    "notes": "Only 1 open ticket for RM domain.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-007",
+    "query_type": "Type A - Direct",
+    "user_query": "What is the status of open tickets for Customer Enterprise?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "ServiceNow",
+    "data_source": "Customer Enterprise",
+    "expected_filter": "active=true AND (short_description LIKE \"%Customer Enterprise%\" OR description LIKE \"%Customer Enterprise%\")",
+    "expected_incidents_text": "INC3215090",
+    "expected_incidents": [
+      "INC3215090"
+    ],
+    "expected_summary": "Found 1 open incident for Customer Enterprise: 1. INC3215090 (New, High) - raw.customer_cust_interaction lagging 4 hours, interaction_id offset growing. Unassigned.",
+    "notes": "Only the Kafka lag ticket is open.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-008",
+    "query_type": "Type B - Key Fields",
+    "user_query": "We are seeing issues with cur_underwriting - are there any open incidents?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow",
+    "data_source": "Loan Application - Underwriting Decision",
+    "expected_filter": "active=true AND (description LIKE \"%cur_underwriting%\" OR short_description LIKE \"%underwriting%\")",
+    "expected_incidents_text": "INC3200050",
+    "expected_incidents": [
+      "INC3200050"
+    ],
+    "expected_summary": "Resolved cur_underwriting to Loan Application - Underwriting Decision segment via STTM. Found 1 open incident: 1. INC3200050 (In Progress, High) - 2,400 records missing, derivation logic not applied after pipeline update. Assigned to Alex Vega.",
+    "notes": "Agent must look up cur_underwriting in Loan Application STTM to identify the segment.",
+    "status_in_workbook": "Fail. Issue needs a fix as description contains 'cur_underwriting'"
+  },
+  {
+    "test_id": "TC-009",
+    "query_type": "Type B - Key Fields",
+    "user_query": "Any tickets open for the settlement_batch_id feed?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow",
+    "data_source": "Payments Enterprise - Settlement Batches",
+    "expected_filter": "active=true AND (description LIKE \"%settlement_batch_id%\" OR description LIKE \"%settlement_src%\")",
+    "expected_incidents_text": "INC3220100",
+    "expected_incidents": [
+      "INC3220100"
+    ],
+    "expected_summary": "Resolved settlement_batch_id to Payments Enterprise - Settlement Batches via STTM. Found 1 open incident: 1. INC3220100 (In Progress, High) - 47 batches missing, file truncated. Assigned to Devin Marsh.",
+    "notes": "Agent must look up settlement_batch_id as PK in Payments Enterprise STTM Source_Catalog.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-010",
+    "query_type": "Type B - Key Fields",
+    "user_query": "Is there an incident for int_fraud_alerts? It looks stale",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow",
+    "data_source": "Debit Card - Fraud Alerts",
+    "expected_filter": "active=true AND (description LIKE \"%int_fraud_alerts%\" OR description LIKE \"%fraud_alert%\")",
+    "expected_incidents_text": "INC3198040",
+    "expected_incidents": [
+      "INC3198040"
+    ],
+    "expected_summary": "Resolved int_fraud_alerts to Debit Card - Fraud Alerts via STTM. Found 1 open incident: 1. INC3198040 (On Hold, High) - Vendor outage, no file delivery for 2 days. Assigned to Morgan Blake.",
+    "notes": "Agent must map int_fraud_alerts to Debit Card domain via STTM Segment Register.",
+    "status_in_workbook": "Fail. Issue needs a fix as description contains 'int_fraud_alerts'"
+  },
+  {
+    "test_id": "TC-011",
+    "query_type": "Type B - Key Fields",
+    "user_query": "Check if there is a ticket for raw.customer_cust_interaction - it is lagging",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow",
+    "data_source": "Customer Enterprise - Customer Interaction",
+    "expected_filter": "active=true AND (description LIKE \"%raw.customer_cust_interaction%\" OR description LIKE \"%customer_interaction%\")",
+    "expected_incidents_text": "INC3215090",
+    "expected_incidents": [
+      "INC3215090"
+    ],
+    "expected_summary": "Resolved raw.customer_cust_interaction to Customer Enterprise - Customer Interaction via STTM. Found 1 open incident: 1. INC3215090 (New, High) - Kafka micro-batch lagging 4 hours. Unassigned.",
+    "notes": "Agent must map via Hop1_Landing_Raw tab in customer_enterprise_sttm_workbook.xlsx.",
+    "status_in_workbook": "Pass. My most recent ServiceNow query that reported “no incidents” for raw.customer_cust_interaction was incorrect; it failed to surface this known ticket, similar to what happened with int_fraud_alerts and cur_underwriting. In this case, we should trust the previously confirmed incident (INC3215090) over the later “0 results” response."
+  },
+  {
+    "test_id": "TC-012",
+    "query_type": "Type B - Key Fields",
+    "user_query": "Are there open incidents related to the account_balance_snapshot table?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow",
+    "data_source": "Core Banking - Account Balance Snapshot",
+    "expected_filter": "active=true AND (description LIKE \"%account_balance_snapshot%\" OR description LIKE \"%snapshot_date%\")",
+    "expected_incidents_text": "INC3185010",
+    "expected_incidents": [
+      "INC3185010"
+    ],
+    "expected_summary": "Resolved account_balance_snapshot to Core Banking - Account Balance Snapshot via STTM. Found 1 open incident: 1. INC3185010 (In Progress, High) - 4,588 records with null snapshot_date dropped in CUR. Assigned to Devin Marsh.",
+    "notes": "Agent maps via File Details or Segment Register in Core_Banking_Raw_INT_CUR_STTM.xlsx.",
+    "status_in_workbook": "Pass. The most recent ServiceNow query that reported “no incidents” for account_balance_snapshot failed to surface this known ticket, similar to the earlier misses with int_fraud_alerts, cur_underwriting, and raw.customer_cust_interaction. In this situation, we should rely on the previously confirmed incident data rather than the later “0 results” response."
+  },
+  {
+    "test_id": "TC-013",
+    "query_type": "Type B - Key Fields",
+    "user_query": "Anything open for the neighborhood_trends load?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow",
+    "data_source": "Real Estate Pricing - Neighborhood Market Trends",
+    "expected_filter": "active=true AND (description LIKE \"%neighborhood_trends%\" OR description LIKE \"%raw_rel.neighborhood%\")",
+    "expected_incidents_text": "INC3208070",
+    "expected_incidents": [
+      "INC3208070"
+    ],
+    "expected_summary": "Resolved neighborhood_trends to Real Estate Pricing - Neighborhood Market Trends via STTM. Found 1 open incident: 1. INC3208070 (In Progress, Moderate) - Monthly load incomplete, 15/42 census tracts. Assigned to Morgan Blake.",
+    "notes": "Agent maps neighborhood_trends.dat via File Details in Real_Estate_Pricing_STTM_Raw_INT_CUR.xlsx.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-014",
+    "query_type": "Type B - Key Fields",
+    "user_query": "Show me tickets related to int_rm_customer_master - counts look low",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow",
+    "data_source": "Relationship Manager - Customer Master",
+    "expected_filter": "active=true AND (description LIKE \"%int_rm_customer_master%\" OR description LIKE \"%customer_master%\")",
+    "expected_incidents_text": "INC3210080",
+    "expected_incidents": [
+      "INC3210080"
+    ],
+    "expected_summary": "Resolved int_rm_customer_master to Relationship Manager - Customer Master via STTM. Found 1 open incident: 1. INC3210080 (In Progress, High) - Truncated at 62K vs 100K+ customer_id. SFTP dropped. Assigned to Dana Sample.",
+    "notes": "Agent must disambiguate: 'customer_master' exists in RM and Core Banking. The int_rm_ prefix identifies RM.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-015",
+    "query_type": "Type C - Conversational",
+    "user_query": "The KYC data looks wrong, any incidents I should know about?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "NLU entity extraction -> ServiceNow",
+    "data_source": "Core Banking - KYC Profile",
+    "expected_filter": "active=true AND (description LIKE \"%KYC%\" OR description LIKE \"%kyc_profile%\")",
+    "expected_incidents_text": "INC3190020",
+    "expected_incidents": [
+      "INC3190020"
+    ],
+    "expected_summary": "Found 1 open incident possibly related to KYC data: 1. INC3190020 (Resolved, Critical) - KYC Profile 8 PII fields loaded unencrypted. Encryption restored. Awaiting security sign-off.",
+    "notes": "Vague query - agent extracts 'KYC' entity and matches to Core Banking KYC Profile.",
+    "status_in_workbook": "Fail. KYC is present in description."
+  },
+  {
+    "test_id": "TC-016",
+    "query_type": "Type C - Conversational",
+    "user_query": "Cardholder PII masking seems broken - has someone already raised a ticket?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "NLU entity extraction -> ServiceNow",
+    "data_source": "Debit Card - Cardholder Master",
+    "expected_filter": "active=true AND (description LIKE \"%cardholder%\" AND description LIKE \"%PII%\")",
+    "expected_incidents_text": "INC3195030",
+    "expected_incidents": [
+      "INC3195030"
+    ],
+    "expected_summary": "Yes, there is an existing ticket: 1. INC3195030 (New, Critical) - Cardholder Master PII masking failure. Linked service misconfigured after deployment. Unassigned.",
+    "notes": "Agent extracts 'cardholder' + 'PII masking' and matches to the Debit Card incident.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-017",
+    "query_type": "Type C - Conversational",
+    "user_query": "Valuation data has not refreshed today, is there a known issue?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "NLU entity extraction -> ServiceNow",
+    "data_source": "Real Estate Pricing - Property Valuation Master",
+    "expected_filter": "active=true AND (description LIKE \"%valuation%\" OR description LIKE \"%valuation_master%\")",
+    "expected_incidents_text": "INC3205060",
+    "expected_incidents": [
+      "INC3205060"
+    ],
+    "expected_summary": "Yes, there is a known issue: 1. INC3205060 (New, Critical) - AVM vendor API returning HTTP 503 for 6+ hours. No data landed. Unassigned.",
+    "notes": "'today' adds temporal context - agent should check incident date proximity.",
+    "status_in_workbook": "Fail. This issue needs fix as keyword is present."
+  },
+  {
+    "test_id": "TC-018",
+    "query_type": "Type C - Conversational",
+    "user_query": "Settlement numbers do not match the processor control totals - is this tracked?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "NLU entity extraction -> ServiceNow",
+    "data_source": "Payments Enterprise - Settlement Batches",
+    "expected_filter": "active=true AND (description LIKE \"%settlement%\" AND description LIKE \"%control total%\")",
+    "expected_incidents_text": "INC3220100",
+    "expected_incidents": [
+      "INC3220100"
+    ],
+    "expected_summary": "Yes, this is being tracked: 1. INC3220100 (In Progress, High) - 47 settlement batches missing, counts do not match processor control totals. Assigned to Devin Marsh.",
+    "notes": "Agent extracts 'settlement' + 'control totals' and matches to the Payments incident.",
+    "status_in_workbook": "Fail. This issue needs fix as keyword is present."
+  },
+  {
+    "test_id": "TC-019",
+    "query_type": "Type C - Conversational",
+    "user_query": "Who is working on the fraud alerts delay?",
+    "expected_intent": "Fetch Open Incidents (assignee focus)",
+    "route_to": "NLU entity extraction -> ServiceNow",
+    "data_source": "Debit Card - Fraud Alerts",
+    "expected_filter": "active=true AND (description LIKE \"%fraud alert%\")",
+    "expected_incidents_text": "INC3198040",
+    "expected_incidents": [
+      "INC3198040"
+    ],
+    "expected_summary": "The fraud alerts delay is being tracked under: 1. INC3198040 (On Hold, High) - Assigned to Morgan Blake (K0005). Vendor outage, on hold pending vendor fix.",
+    "notes": "User asks specifically about assignee. Agent should highlight assigned_to in response.",
+    "status_in_workbook": "Fail"
+  },
+  {
+    "test_id": "TC-020",
+    "query_type": "Type C - Conversational",
+    "user_query": "The underwriting decision field is coming back null - is that a known problem?",
+    "expected_intent": "Fetch Open Incidents",
+    "route_to": "NLU entity extraction -> ServiceNow (optionally KB)",
+    "data_source": "Loan Application - Underwriting Decision",
+    "expected_filter": "active=true AND (description LIKE \"%underwriting%\" AND description LIKE \"%null%\")",
+    "expected_incidents_text": "INC3200050",
+    "expected_incidents": [
+      "INC3200050"
+    ],
+    "expected_summary": "Yes, this is a known problem: 1. INC3200050 (In Progress, High) - underwriting_decision_status returning null for 2,400 records. Derivation logic not applied after pipeline update. Assigned to Alex Vega.",
+    "notes": "Agent matches 'underwriting decision field' + 'null' to the specific incident.",
+    "status_in_workbook": "Fail"
+  },
+  {
+    "test_id": "TC-021",
+    "query_type": "Type D - Multi-intent",
+    "user_query": "What is the STTM mapping for cur_underwriting and are there any open incidents for it?",
+    "expected_intent": "KB Lookup + Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) AND ServiceNow (parallel)",
+    "data_source": "Loan Application - Underwriting Decision",
+    "expected_filter": "KB: Loan_Application_Raw_INT_CUR_STTM.xlsx INT_to_CUR for UNDERWRITING | SN: active=true AND description LIKE \"%cur_underwriting%\"",
+    "expected_incidents_text": "INC3200050 + STTM mapping details",
+    "expected_incidents": [
+      "INC3200050"
+    ],
+    "expected_summary": "STTM: cur_underwriting = Loan Application - Underwriting Decision. Source: underwriting.dat, INT: int_underwriting, Key: application_id, 36 CUR attributes. Open Incidents: 1. INC3200050 (In Progress, High) - 2,400 records missing, derivation logic issue. Assigned to Alex Vega.",
+    "notes": "Dual-intent: returns BOTH STTM mapping AND incident info.",
+    "status_in_workbook": "Fail"
+  },
+  {
+    "test_id": "TC-022",
+    "query_type": "Type D - Multi-intent",
+    "user_query": "Show me the primary key for the Cardholder Master segment and any related open tickets",
+    "expected_intent": "KB Lookup + Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) AND ServiceNow (parallel)",
+    "data_source": "Debit Card - Cardholder Master",
+    "expected_filter": "KB: Debit_Card_Raw_INT_CUR_STTM_Merged.xlsx Segment Register | SN: active=true AND description LIKE \"%cardholder%\"",
+    "expected_incidents_text": "INC3195030 + STTM key info",
+    "expected_incidents": [
+      "INC3195030"
+    ],
+    "expected_summary": "STTM: Cardholder Master PK = cardholder_id. 100 fields, 9 PII-sensitive. INT: int_cardholder_master, CUR: cur_cardholder_master. Open Tickets: 1. INC3195030 (New, Critical) - PII masking failure in INT layer. Unassigned.",
+    "notes": "Dual-intent: returns PK from STTM AND the related incident.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-023",
+    "query_type": "Type D - Multi-intent",
+    "user_query": "What fields are PII-sensitive in the KYC Profile segment? Also, are there any incidents about PII exposure?",
+    "expected_intent": "KB Lookup + Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) AND ServiceNow (parallel)",
+    "data_source": "Core Banking - KYC Profile",
+    "expected_filter": "KB: Core_Banking_Raw_INT_CUR_STTM.xlsx Segment Register + Raw_to_INT PII=Y | SN: active=true AND description LIKE \"%KYC%\" AND description LIKE \"%PII%\"",
+    "expected_incidents_text": "INC3190020 + STTM PII field list",
+    "expected_incidents": [
+      "INC3190020"
+    ],
+    "expected_summary": "STTM: KYC Profile has 8 PII fields (national_id, passport_number, tax_id, etc.) marked PII Sensitive=Y. Open Incidents: 1. INC3190020 (Resolved, Critical) - All 8 PII fields loaded unencrypted. Encryption restored, awaiting security sign-off.",
+    "notes": "Dual-intent with strong correlation between STTM PII info and PII exposure incident.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-024",
+    "query_type": "Type D - Multi-intent",
+    "user_query": "How many raw attributes does the Applicant Master have, and has there been a schema drift incident recently?",
+    "expected_intent": "KB Lookup + Fetch Incidents (open + closed)",
+    "route_to": "Knowledge Base (STTM) AND ServiceNow (open + closed)",
+    "data_source": "Loan Application - Applicant Master",
+    "expected_filter": "KB: Loan_Application_Raw_INT_CUR_STTM.xlsx Segment Register | SN: description LIKE \"%app_master%\" AND cause LIKE \"%schema%\"",
+    "expected_incidents_text": "INC2965100 (closed) + STTM attribute count",
+    "expected_incidents": [
+      "INC2965100"
+    ],
+    "expected_summary": "STTM: Applicant Master (APP_MASTER) had 31 raw attributes originally. Schema Drift Incident: 1. INC2965100 (Closed, Moderate) - Source added 3 columns (31->34). STTM and pipeline updated. Resolved by Pat Rivers on 2026-04-17. No open schema drift incidents currently.",
+    "notes": "'recently' means agent should search closed tickets too. STTM count may have been updated post-incident.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-025",
+    "query_type": "Type D - Multi-intent",
+    "user_query": "What is the source file for the settlement feed and are there open issues with it?",
+    "expected_intent": "KB Lookup + Fetch Open Incidents",
+    "route_to": "Knowledge Base (STTM) AND ServiceNow (parallel)",
+    "data_source": "Payments Enterprise - Settlement Batches",
+    "expected_filter": "KB: payments_enterprise_sttm_workbook.xlsx Source_Catalog | SN: active=true AND description LIKE \"%settlement%\"",
+    "expected_incidents_text": "INC3220100 + STTM source info",
+    "expected_incidents": [
+      "INC3220100"
+    ],
+    "expected_summary": "STTM: Settlement source = settlement_src, API extract, JSON format. Landing: abfss://landing@prod/payments/settlement/. PK: settlement_batch_id. Daily. Open Issues: 1. INC3220100 (In Progress, High) - 47 batches missing, file truncated. Assigned to Devin Marsh.",
+    "notes": "Dual-intent: returns source file details from STTM Source_Catalog AND the open incident.",
+    "status_in_workbook": "Fail. Incident was not fetched"
+  },
+  {
+    "test_id": "TC-026",
+    "query_type": "Type E - Summarize INC",
+    "user_query": "Summarize INC3190020",
+    "expected_intent": "Summarize Incident + KB Links",
+    "route_to": "ServiceNow (fetch incident) + Knowledge Base (STTM for context)",
+    "data_source": "Core Banking - KYC Profile",
+    "expected_filter": "SN: number=INC3190020 | KB: Core_Banking_Raw_INT_CUR_STTM.xlsx Segment Register + Raw_to_INT tab filtered on Segment='KYC Profile' AND PII Sensitive='Y'",
+    "expected_incidents_text": "INC3190020 + KB links to Core Banking STTM",
+    "expected_incidents": [
+      "INC3190020"
+    ],
+    "expected_summary": "Incident Summary: INC3190020 (Resolved, Critical) - Core Banking KYC Profile segment had 8 PII-sensitive fields (national_id, passport_number, tax_id, etc.) loaded unencrypted into int_core_banking.kyc_profile. A pipeline config change on PL-CB-11-KYC-PROFILE-RAW-INT disabled the encryption data flow. Encryption restored, cleartext data purged. Awaiting security sign-off. Assigned to: Dana Sample (D0004) Opened: 2026-05-28 | Resolved: 2026-05-29 Supporting KB Links: 1. Core_Banking_Raw_INT_CUR_STTM.xlsx > Segment Register - confirms KYC Profile has 8 PII-sensitive fields 2. Core_Banking_Raw_INT_CUR_STTM.xlsx > Raw_to_INT tab (rows RI-00xxx for KYC Profile) - lists each field with PII Sensitive=Y flag 3. Core_Banking_Raw_INT_CUR_STTM.xlsx > File Details - source file: kyc_profile_extract.dat, copybook: CBK_KYC_PROF",
+    "notes": "Strong KB tie: the STTM PII field inventory directly corroborates the incident (8 sensitive fields). Agent should surface which specific fields were exposed by cross-referencing the STTM.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-027",
+    "query_type": "Type E - Summarize INC",
+    "user_query": "Give me details on incident INC2965100",
+    "expected_intent": "Summarize Incident + KB Links",
+    "route_to": "ServiceNow (fetch incident) + Knowledge Base (STTM for context)",
+    "data_source": "Loan Application - Applicant Master",
+    "expected_filter": "SN: number=INC2965100 | KB: Loan_Application_Raw_INT_CUR_STTM.xlsx Segment Register for APP_MASTER + File Details",
+    "expected_incidents_text": "INC2965100 + KB links to Loan Application STTM",
+    "expected_incidents": [
+      "INC2965100"
+    ],
+    "expected_summary": "Incident Summary: INC2965100 (Closed, Moderate) - Loan Application Applicant Master file app_master.dat added 3 new columns after a source release. ADF pipeline PL-LA-01-APP-MASTER-RAW-INGEST failed on schema validation. STTM originally defined 31 raw attributes for APP_MASTER but source now sends 34. STTM and pipeline updated to accommodate new columns. Assigned to: Pat Rivers (R0003) | Closed: 2026-04-18 Supporting KB Links: 1. Loan_Application_Raw_INT_CUR_STTM.xlsx > Segment Register - APP_MASTER segment originally had 31 Raw Attributes (now 34 post-fix) 2. Loan_Application_Raw_INT_CUR_STTM.xlsx > File Details - source: app_master.dat, path: /mnt/raw/loan_application/app_master/, PK: application_id 3. Loan_Application_Raw_INT_CUR_STTM.xlsx > Raw_to_INT tab - full field-level mapping for Applicant Master segment",
+    "notes": "Closed incident. KB provides the baseline attribute count (31) that validates the schema drift from 31->34. Agent should note the STTM may have been updated post-resolution.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-028",
+    "query_type": "Type E - Summarize INC",
+    "user_query": "What happened with INC3205060? Any related documentation?",
+    "expected_intent": "Summarize Incident + KB Links",
+    "route_to": "ServiceNow (fetch incident) + Knowledge Base (STTM for context)",
+    "data_source": "Real Estate Pricing - Property Valuation Master",
+    "expected_filter": "SN: number=INC3205060 | KB: Real_Estate_Pricing_STTM_Raw_INT_CUR.xlsx File Details + Segment Register for Property Valuation Master",
+    "expected_incidents_text": "INC3205060 + KB links to Real Estate Pricing STTM",
+    "expected_incidents": [
+      "INC3205060"
+    ],
+    "expected_summary": "Incident Summary: INC3205060 (New, Critical) - Real Estate Pricing Property Valuation Master AVM vendor API returning HTTP 503 for 6+ hours. No data landed at /mnt/landing/rel/vendor/valuation/. Tables raw_rel.valuation, int_rel.property_valuation_master, and cur_rel.property_valuation_master are stale. Impacting downstream pricing benchmarks and Comparable Sales Master pipeline. Currently unassigned. Opened: 2026-06-03 Supporting KB Links: 1. Real_Estate_Pricing_STTM_Raw_INT_CUR.xlsx > File Details - Source: valuation_master.dat, Type: Vendor API extract, Format: Parquet, Frequency: Daily, Sensitive: Yes 2. Real_Estate_Pricing_STTM_Raw_INT_CUR.xlsx > Segment Register - raw_rel.valuation -> int_rel.property_valuation_master -> cur_rel.property_valuation_master, 25 fields, PK: valuation_id 3. Real_Estate_Pricing_Requirements.xlsx - business justification: supports baseline market value and price benchmarking",
+    "notes": "Open unassigned incident. KB provides source contract details (vendor API, Parquet format, daily SLA) useful for vendor escalation.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-029",
+    "query_type": "Type E - Summarize INC",
+    "user_query": "Tell me about INC3025540 and any supporting docs",
+    "expected_intent": "Summarize Incident + KB Links",
+    "route_to": "ServiceNow (fetch incident) + Knowledge Base (STTM for context)",
+    "data_source": "Debit Card - Transaction Clearing",
+    "expected_filter": "SN: number=INC3025540 | KB: Debit_Card_Raw_INT_CUR_STTM_Merged.xlsx Segment Register + Raw_to_INT/INT_to_CUR for Transaction Clearing",
+    "expected_incidents_text": "INC3025540 + KB links to Debit Card STTM",
+    "expected_incidents": [
+      "INC3025540"
+    ],
+    "expected_summary": "Incident Summary: INC3025540 (Closed, High) - 14,200 duplicate clearing_txn_id values in cur_txn_clearing after a partial pipeline retry. INT-to-CUR pipeline lacked idempotency guard. Fixed by adding MERGE INTO logic keyed on clearing_txn_id. Deduplicated and pipeline updated. Assigned to: Alex Vega (T0002) | Closed: 2026-05-06 Supporting KB Links: 1. Debit_Card_Raw_INT_CUR_STTM_Merged.xlsx > Segment Register - Transaction Clearing PK = clearing_txn_id, 100 fields, INT: int_txn_clearing, CUR: cur_txn_clearing 2. Debit_Card_Raw_INT_CUR_STTM_Merged.xlsx > INT_to_CUR tab - transformation rules for Transaction Clearing showing how clearing_txn_id should be used as merge key 3. Debit_Card_CUR_to_ASL_STTM.xlsx - downstream ASL mapping from cur_txn_clearing (for assessing blast radius of duplicates)",
+    "notes": "Closed incident. KB confirms clearing_txn_id as the PK and provides the MERGE logic that was missing. Also links to CUR-to-ASL STTM for downstream impact assessment.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-030",
+    "query_type": "Type E - Summarize INC",
+    "user_query": "Summarize incident INC3225110 for me",
+    "expected_intent": "Summarize Incident + KB Links",
+    "route_to": "ServiceNow (fetch incident) + Knowledge Base (STTM for context)",
+    "data_source": "Logistics Enterprise - Shipment Line",
+    "expected_filter": "SN: number=INC3225110 | KB: logistics_enterprise_sttm_workbook.xlsx Source_Catalog + Hop1_Landing_Raw for shipment_line_src",
+    "expected_incidents_text": "INC3225110 + KB links to Logistics STTM",
+    "expected_incidents": [
+      "INC3225110"
+    ],
+    "expected_summary": "Incident Summary: INC3225110 (In Progress, High) - Logistics shipment_line_src records not parsing into raw.logistics_shipment_line. Source switched from comma to pipe delimiter without notice. All 13 mapped columns returning null in RAW. INT and Curated layers have zero new shipment line records. Shipment headers (shipment_src) unaffected. Assigned to: Alex Vega (T0002) Opened: 2026-06-02 Supporting KB Links: 1. logistics_enterprise_sttm_workbook.xlsx > Source_Catalog - shipment_line_src: API extract, JSON format, Daily, PK: shipment_line_id 2. logistics_enterprise_sttm_workbook.xlsx > Hop1_Landing_Raw - 13 field mappings for shipment_line_src (LOG-H1-0038 onwards): trim() and cast() transformations that depend on correct delimiter parsing 3. logistics_enterprise_sttm_workbook.xlsx > DQ_Rules - Not Null checks on shipment_line_id and shipment_id that should have flagged the null records earlier",
+    "notes": "Open incident. KB provides the expected source format (JSON) and all 13 field mappings. Agent should highlight that the STTM Hop1 transformations assume correct delimiter, which is the root cause.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-031",
+    "query_type": "Type F - Engineer Lookup",
+    "user_query": "Who has worked on Core Banking incidents?",
+    "expected_intent": "Find Engineers by Datasource",
+    "route_to": "ServiceNow",
+    "data_source": "Core Banking",
+    "expected_filter": "(short_description LIKE \"%Core Banking%\" OR description LIKE \"%Core Banking%\") -> aggregate assigned_to and resolved_by",
+    "expected_incidents_text": "INC3011201, INC3185010, INC3190020, INC3235130",
+    "expected_incidents": [
+      "INC3011201",
+      "INC3185010",
+      "INC3190020",
+      "INC3235130"
+    ],
+    "expected_summary": "Engineers who have worked on Core Banking incidents: 1. Devin Marsh (F0001) - 2 incidents: INC3011201 (Closed, Transaction Ledger pipeline failure - resolved), INC3185010 (In Progress, Account Balance Snapshot row count mismatch - currently assigned) 2. Dana Sample (D0004) - 1 incident: INC3190020 (Resolved, KYC Profile PII exposure - resolved, awaiting security sign-off) 3. Morgan Blake (K0005) - 1 incident: INC3235130 (In Progress, Deposit Account Master pipeline auth token expired - currently assigned) Total: 3 engineers across 4 incidents.",
+    "notes": "Multiple engineers for one datasource. Agent should aggregate across both assigned_to and resolved_by fields. Denver appears in 2 incidents (both open and closed).",
+    "status_in_workbook": "Worked in a new thread. Didn’t work in older thread with chat history."
+  },
+  {
+    "test_id": "TC-032",
+    "query_type": "Type F - Engineer Lookup",
+    "user_query": "Who has handled issues with cur_txn_clearing?",
+    "expected_intent": "Find Engineers by Datasource",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow",
+    "data_source": "Debit Card - Transaction Clearing",
+    "expected_filter": "STTM lookup: cur_txn_clearing -> Debit Card Transaction Clearing | SN: description LIKE \"%cur_txn_clearing%\" OR description LIKE \"%clearing_txn_id%\" -> aggregate assigned_to",
+    "expected_incidents_text": "INC3025540",
+    "expected_incidents": [
+      "INC3025540"
+    ],
+    "expected_summary": "Resolved cur_txn_clearing to Debit Card - Transaction Clearing segment via STTM lookup. Engineer who worked on this: 1. Alex Vega (T0002) - INC3025540 (Closed, High) - Duplicate clearing_txn_id values after partial retry. Resolved by adding MERGE INTO idempotency logic. Total: 1 engineer, 1 incident.",
+    "notes": "Requires STTM lookup to resolve cur_txn_clearing to Debit Card domain. Only 1 matching incident for this specific segment.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-033",
+    "query_type": "Type F - Engineer Lookup",
+    "user_query": "Who's handling the settlement issues?",
+    "expected_intent": "Find Engineers by Datasource",
+    "route_to": "NLU entity extraction -> ServiceNow",
+    "data_source": "Payments Enterprise - Settlement Batches",
+    "expected_filter": "NLU extracts \"settlement\" -> SN: description LIKE \"%settlement%\" -> aggregate assigned_to",
+    "expected_incidents_text": "INC3220100",
+    "expected_incidents": [
+      "INC3220100"
+    ],
+    "expected_summary": "Engineer currently handling settlement issues: 1. Devin Marsh (F0001) - INC3220100 (In Progress, High) - 47 settlement batches missing from raw.payments_settlement. File truncated during delivery. Currently being investigated. Total: 1 engineer actively working on settlement issues.",
+    "notes": "Conversational query. Agent extracts 'settlement' entity. Only 1 open settlement incident exists.",
+    "status_in_workbook": "Review"
+  },
+  {
+    "test_id": "TC-034",
+    "query_type": "Type F - Engineer Lookup",
+    "user_query": "Which engineers have worked on Debit Card?",
+    "expected_intent": "Find Engineers by Datasource",
+    "route_to": "ServiceNow",
+    "data_source": "Debit Card",
+    "expected_filter": "(short_description LIKE \"%Debit Card%\" OR description LIKE \"%Debit Card%\") -> aggregate assigned_to and resolved_by",
+    "expected_incidents_text": "INC3025540, INC3032200, INC3195030, INC3198040, INC3240140",
+    "expected_incidents": [
+      "INC3025540",
+      "INC3032200",
+      "INC3195030",
+      "INC3198040",
+      "INC3240140"
+    ],
+    "expected_summary": "Engineers who have worked on Debit Card incidents: 1. Alex Vega (T0002) - 2 incidents: INC3025540 (Closed, High) - Transaction Clearing duplicate rows. Resolved. INC3032200 (Closed, Moderate) - POS Terminal Master vendor maintenance delay. Resolved. 2. Morgan Blake (K0005) - 1 incident: INC3198040 (On Hold, High) - Fraud Alerts feed stale, vendor outage. Currently assigned. 3. Unassigned - 2 incidents: INC3195030 (New, Critical) - Cardholder Master PII masking failure. INC3240140 (New, High) - Merchant Master pipeline connection refused. Total: 2 engineers + 2 unassigned across 5 incidents.",
+    "notes": "Multi-engineer datasource. 3 different incidents with 2 assigned engineers and 1 unassigned. Agent should flag the unassigned Critical ticket.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-035",
+    "query_type": "Type F - Engineer Lookup (Reverse)",
+    "user_query": "What datasources has Pat Rivers worked on?",
+    "expected_intent": "Find Datasources by Engineer (reverse lookup)",
+    "route_to": "ServiceNow",
+    "data_source": "Multiple - Loan Application, HOP Enterprise",
+    "expected_filter": "assigned_to LIKE \"%Pat Rivers%\" OR resolved_by LIKE \"%Pat Rivers%\" -> aggregate by configuration_item / data source",
+    "expected_incidents_text": "INC2965100, INC3230120",
+    "expected_incidents": [
+      "INC2965100",
+      "INC3230120"
+    ],
+    "expected_summary": "Datasources Pat Rivers (R0003) has worked on: 1. Loan Application - INC2965100 (Closed, Moderate) - Applicant Master schema drift, app_master.dat added 3 new columns. Resolved by updating STTM and pipeline. 2. HOP Enterprise - INC3230120 (Closed, High) - SRC_ORDERS order_amt DQ failures, 2,800 records with empty strings. Resolved by patching source extraction. Total: 2 datasources across 2 closed incidents. Both resolved by Pat Rivers.",
+    "notes": "Reverse lookup: engineer name given, find datasources. Agent searches by assigned_to/resolved_by instead of datasource. Both incidents are closed - Pat is available for new work.",
+    "status_in_workbook": "Partial. It is using configuration item/category filed which has pipeline name or data quality issue. Can it fetch datasource from AI Search"
+  },
+  {
+    "test_id": "TC-036",
+    "query_type": "Type F - Engineer Lookup",
+    "user_query": "Who is working on Customer Enterprise incidents?",
+    "expected_intent": "Find Engineers by Datasource",
+    "route_to": "ServiceNow",
+    "data_source": "Customer Enterprise",
+    "expected_filter": "(short_description LIKE \"%Customer Enterprise%\" OR description LIKE \"%Customer Enterprise%\") -> check assigned_to",
+    "expected_incidents_text": "INC3215090",
+    "expected_incidents": [
+      "INC3215090"
+    ],
+    "expected_summary": "Customer Enterprise incident status: 1. INC3215090 (New, High) - raw.customer_cust_interaction Kafka micro-batch lagging 4 hours. Currently UNASSIGNED. No engineer is currently assigned to Customer Enterprise incidents. This ticket needs to be picked up.",
+    "notes": "Edge case: no engineer assigned. Agent should clearly communicate that the incident is unassigned and needs attention rather than returning an empty result.",
+    "status_in_workbook": "Worked in a new thread. Didn’t work in older thread with chat history."
+  },
+  {
+    "test_id": "TC-037",
+    "query_type": "Type G - Pipeline Incidents",
+    "user_query": "List all pipeline incidents for Core Banking",
+    "expected_intent": "Fetch Open Pipeline Incidents by Datasource",
+    "route_to": "ServiceNow (filter: pipeline failure + open + datasource)",
+    "data_source": "Core Banking",
+    "expected_filter": "active=true AND configuration_item LIKE \"PL-%\" AND (short_description LIKE \"%Core Banking%\" OR description LIKE \"%Core Banking%\")",
+    "expected_incidents_text": "INC3235130",
+    "expected_incidents": [
+      "INC3235130"
+    ],
+    "expected_summary": "Open pipeline incidents for Core Banking: 1. INC3235130 (In Progress, Critical) - PL-CB-02-DEPOSIT-ACCT-MASTER-RAW-INGEST failed. Authentication issue, pipeline cannot authenticate to source. int_core_banking.deposit_account_master and cur_core_banking.deposit_account_master stale. Assigned to Morgan Blake. Note: 2 other open Core Banking incidents exist (INC3185010 - row count mismatch, INC3190020 - PII config error) but these are data quality issues, not pipeline failures. 1 closed pipeline incident: INC3011201 - Transaction Ledger pipeline timeout (resolved).",
+    "notes": "Key test: agent must FILTER pipeline failures from non-pipeline issues. Core Banking has 3 open incidents but only 1 is a pipeline failure (configuration_item LIKE \"PL-%\" AND description indicates pipeline broke). INC3190020 also has a PL-* config_item but is a PII config error, not a pipeline failure - agent must distinguish using description/cause context. Agent should only return INC3235130, not INC3185010 or INC3190020.",
+    "status_in_workbook": "Fail. Fetching closed and resolved as well."
+  },
+  {
+    "test_id": "TC-038",
+    "query_type": "Type G - Pipeline Incidents",
+    "user_query": "Show me pipeline failures for int_merchant_master",
+    "expected_intent": "Fetch Open Pipeline Incidents by Datasource",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow (filter: pipeline failure + open)",
+    "data_source": "Debit Card - Merchant Master",
+    "expected_filter": "STTM lookup: int_merchant_master -> Debit Card Merchant Master | SN: active=true AND (description LIKE \"%int_merchant_master%\" OR description LIKE \"%merchant_master%\") AND configuration_item LIKE \"PL-%\"",
+    "expected_incidents_text": "INC3240140",
+    "expected_incidents": [
+      "INC3240140"
+    ],
+    "expected_summary": "Resolved int_merchant_master to Debit Card - Merchant Master segment via STTM lookup. Open pipeline incidents: 1. INC3240140 (New, High) - PL-DC-07-MERCHANT-MASTER-RAW-INT pipeline failed. Linked service to INT database returning connection refused. raw_merchant_master cannot transform to int_merchant_master. cur_merchant_master stale. Unassigned. Warning: Other Debit Card pipelines sharing the same INT database linked service may also be at risk.",
+    "notes": "Requires STTM lookup to resolve int_merchant_master to Debit Card domain. Agent should also surface the blast radius warning from the incident description.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-039",
+    "query_type": "Type G - Pipeline Incidents",
+    "user_query": "Any pipeline issues for Debit Card?",
+    "expected_intent": "Fetch Open Pipeline Incidents by Datasource",
+    "route_to": "ServiceNow (filter: pipeline failure + open + datasource)",
+    "data_source": "Debit Card",
+    "expected_filter": "active=true AND configuration_item LIKE \"PL-%\" AND (short_description LIKE \"%Debit Card%\" OR description LIKE \"%Debit Card%\")",
+    "expected_incidents_text": "INC3240140",
+    "expected_incidents": [
+      "INC3240140"
+    ],
+    "expected_summary": "Open pipeline incidents for Debit Card: 1. INC3240140 (New, High) - PL-DC-07-MERCHANT-MASTER-RAW-INT pipeline failed. Linked service connection refused to INT database. Unassigned. Note: 2 other open Debit Card incidents exist but are NOT pipeline failures: - INC3195030 (New, Critical) - Cardholder Master PII masking config error - INC3198040 (On Hold, High) - Fraud Alerts vendor outage These are excluded because they are not pipeline infrastructure failures. 1 closed pipeline incident: INC3025540 - Transaction Clearing duplicate rows from pipeline retry (resolved).",
+    "notes": "Critical test for filtering. Debit Card has 3 open incidents but only 1 is a pipeline failure. INC3195030 also has a PL-* config_item but is a PII masking config error, not a pipeline failure. Agent must distinguish pipeline failures from config errors using description/cause context.",
+    "status_in_workbook": "Partial."
+  },
+  {
+    "test_id": "TC-040",
+    "query_type": "Type G - Pipeline Incidents",
+    "user_query": "Are there pipeline failures for Real Estate Pricing?",
+    "expected_intent": "Fetch Open Pipeline Incidents by Datasource",
+    "route_to": "ServiceNow (filter: pipeline failure + open + datasource)",
+    "data_source": "Real Estate Pricing",
+    "expected_filter": "active=true AND configuration_item LIKE \"PL-%\" AND (short_description LIKE \"%Real Estate Pricing%\" OR description LIKE \"%Real Estate Pricing%\")",
+    "expected_incidents_text": "(none)",
+    "expected_incidents": [],
+    "expected_summary": "No open pipeline incidents for Real Estate Pricing. 2 open incidents exist but are not pipeline failures: - INC3205060 (New, Critical) - Property Valuation Master AVM vendor API returning HTTP 503 (vendor issue) - INC3208070 (In Progress, Moderate) - Neighborhood Trends incomplete blob transfer (file transfer issue) For reference, 1 closed pipeline incident exists: - INC2880300 (Closed, High) - Comparable Sales Delta merge conflict (resolved by serializing merge and adjusting job scheduling).",
+    "notes": "Edge case: no open pipeline incidents exist. Real Estate Pricing has 2 open incidents but both are vendor/transfer issues, not pipeline failures. Agent should clearly state no open pipeline incidents and optionally reference the closed one for context.",
+    "status_in_workbook": "Fail. Two incidents fetched are not pipeline failures"
+  },
+  {
+    "test_id": "TC-041",
+    "query_type": "Type G - Pipeline Incidents",
+    "user_query": "What pipeline incidents are open for the repayment schedule feed?",
+    "expected_intent": "Fetch Open Pipeline Incidents by Datasource",
+    "route_to": "NLU entity extraction (+ optional STTM) -> ServiceNow (filter: pipeline failure + open)",
+    "data_source": "Loan Application - Repayment Schedule",
+    "expected_filter": "NLU extracts \"repayment schedule\" -> SN: active=true AND (description LIKE \"%repay_schedule%\" OR description LIKE \"%REPAY-SCHEDULE%\") AND configuration_item LIKE \"PL-%\"",
+    "expected_incidents_text": "INC3245150",
+    "expected_incidents": [
+      "INC3245150"
+    ],
+    "expected_summary": "Open pipeline incidents for the repayment schedule feed: 1. INC3245150 (In Progress, High) - PL-LA-12-REPAY-SCHEDULE-RAW-INGEST aborted after 3 retry failures. Source connection timeout during month-end batch load. repay_schedule.dat not pulled from /mnt/raw/loan_application/repay_schedule/. int_repay_schedule and cur_repay_schedule stale. Assigned to Devin Marsh. Note: 1 other open Loan Application incident exists (INC3200050 - Underwriting Decision missing records) but it is a data quality issue, not a pipeline failure.",
+    "notes": "Conversational query. Agent extracts 'repayment schedule' and may optionally consult STTM to confirm it maps to Loan Application REPAY_SCHEDULE segment. Must filter out the non-pipeline Loan App incident.",
+    "status_in_workbook": "Fail"
+  },
+  {
+    "test_id": "TC-042",
+    "query_type": "Type H - Historical Resolution",
+    "user_query": "What were the resolution notes for incidents similar to INC3235130?",
+    "expected_intent": "Find Historical Resolution for Similar Incidents",
+    "route_to": "ServiceNow (fetch INC) -> ServiceNow (search closed incidents: same datasource + same cause)",
+    "data_source": "Core Banking - Deposit Account Master (open) -> Core Banking - Transaction Ledger (historical match)",
+    "expected_filter": "Step 1: Fetch INC3235130 -> Core Banking, cause='Authentication issue' Step 2: Search closed incidents WHERE (short_description LIKE '%Core Banking%' OR description LIKE '%Core Banking%') AND (cause LIKE '%authentication%' OR cause LIKE '%timeout%') AND state=Closed",
+    "expected_incidents_text": "INC3235130 (source) -> INC3011201 (historical match)",
+    "expected_incidents": [
+      "INC3235130",
+      "INC3011201"
+    ],
+    "expected_summary": "Current incident: INC3235130 (In Progress, Critical) - PL-CB-02-DEPOSIT-ACCT-MASTER-RAW-INGEST failed, auth token expired. Similar historical incident found: INC3011201 (Closed, Critical) - PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST failed, copy activity timeout. Similarity: Same datasource (Core Banking) + Same cause type (pipeline failure / source connectivity) Resolution notes from INC3011201: \"ADF copy activity timed out because the Core Banking source system was slow. Re-triggered PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST after source recovered. Data landed in int_core_banking.transaction_ledger, CUR layer refreshed, and row counts reconciled across RAW, INT, and CUR.\" Suggested action: Similar ADF pipeline recovery pattern - rotate/renew auth token, re-trigger PL-CB-02 pipeline, validate row counts across layers.",
+    "notes": "Strong match: same datasource (Core Banking) + same cause type (pipeline failure). Agent must search by datasource in short_description/description (not config_item). Agent should extract the resolution pattern and suggest analogous steps for the current incident.",
+    "status_in_workbook": "Fail"
+  },
+  {
+    "test_id": "TC-043",
+    "query_type": "Type H - Historical Resolution",
+    "user_query": "Find historical resolutions for incidents like INC3245150",
+    "expected_intent": "Find Historical Resolution for Similar Incidents",
+    "route_to": "ServiceNow (fetch INC) -> ServiceNow (search closed incidents: same cause across all datasources)",
+    "data_source": "Loan Application - Repayment Schedule (open) -> Core Banking - Transaction Ledger (cross-datasource match)",
+    "expected_filter": "Step 1: Fetch INC3245150 -> Loan Application, cause='Source timeout' Step 2: Search closed incidents WHERE cause LIKE '%timeout%' AND state=Closed",
+    "expected_incidents_text": "INC3245150 (source) -> INC3011201 (cross-datasource match)",
+    "expected_incidents": [
+      "INC3245150",
+      "INC3011201"
+    ],
+    "expected_summary": "Current incident: INC3245150 (In Progress, High) - PL-LA-12-REPAY-SCHEDULE-RAW-INGEST aborted, source timeout. Similar historical incident found (cross-datasource): INC3011201 (Closed, Critical) - Core Banking PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST failed, copy activity timeout. Similarity: Same cause (pipeline failure / source timeout) but different datasource Resolution notes from INC3011201: \"ADF copy activity timed out because the Core Banking source system was slow. Re-triggered PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST after source recovered. Data landed in int_core_banking.transaction_ledger, CUR layer refreshed, and row counts reconciled across RAW, INT, and CUR.\" Suggested action: Wait for Loan Application source system month-end load to subside, then re-trigger PL-LA-12 pipeline. Consider increasing retry interval beyond current 10 minutes during known month-end windows.",
+    "notes": "Cross-datasource match: different datasource but same root cause (pipeline timeout). Agent should search beyond the current datasource when no same-datasource match exists. Resolution pattern is transferable.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-044",
+    "query_type": "Type H - Historical Resolution",
+    "user_query": "INC3220100 - any similar past incidents with resolution notes?",
+    "expected_intent": "Find Historical Resolution for Similar Incidents",
+    "route_to": "ServiceNow (fetch INC) -> ServiceNow (search closed incidents: same datasource + similar cause)",
+    "data_source": "Payments Enterprise - Settlement (open) -> Payments Enterprise - Payment Transactions (historical match)",
+    "expected_filter": "Step 1: Fetch INC3220100 -> Payments Enterprise, cause='Incomplete file transfer' Step 2: Search closed incidents WHERE (short_description LIKE '%Payments%' OR description LIKE '%Payments%') AND (cause LIKE '%incomplete%' OR cause LIKE '%authentication%' OR description LIKE '%file%') AND state=Closed",
+    "expected_incidents_text": "INC3220100 (source) -> INC3045600 (historical match)",
+    "expected_incidents": [
+      "INC3220100",
+      "INC3045600"
+    ],
+    "expected_summary": "Current incident: INC3220100 (In Progress, High) - 47 settlement batches missing from raw.payments_settlement, file truncated. Similar historical incident found: INC3045600 (Closed, Critical) - Payments payment_txn_src daily file missing from landing zone. Similarity: Same datasource (Payments Enterprise) + Similar cause (file delivery failure) Resolution notes from INC3045600: \"Payment gateway SFTP job failed due to credential expiry. Credentials renewed, file re-delivered, and pipeline backfilled. All layers refreshed. No data loss. Added file-arrival SLA monitor for payment_txn_src.\" Suggested action: Contact processor team to re-deliver complete settlement file. Verify file size and batch count before re-ingesting. The SLA monitor added in INC3045600 should also be extended to settlement_src.",
+    "notes": "Same datasource, similar but not identical cause (file missing vs file truncated). Both are file delivery failures on Payments. Agent should surface resolution_notes for maximum context.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-045",
+    "query_type": "Type H - Historical Resolution",
+    "user_query": "What was done to resolve incidents like INC3198040?",
+    "expected_intent": "Find Historical Resolution for Similar Incidents",
+    "route_to": "ServiceNow (fetch INC) -> ServiceNow (search closed incidents: same cause type)",
+    "data_source": "Debit Card - Fraud Alerts (open) -> Debit Card - POS Terminal Master (historical match)",
+    "expected_filter": "Step 1: Fetch INC3198040 -> Debit Card, cause='Vendor outage' Step 2: Search closed incidents WHERE cause LIKE '%vendor%outage%' OR cause LIKE '%vendor%maintenance%' AND state=Closed",
+    "expected_incidents_text": "INC3198040 (source) -> INC3032200 (historical match)",
+    "expected_incidents": [
+      "INC3198040",
+      "INC3032200"
+    ],
+    "expected_summary": "Current incident: INC3198040 (On Hold, High) - Fraud Alerts feed stale for 2 days, vendor outage. Similar historical incident found: INC3032200 (Closed, Moderate) - Debit Card POS Terminal Master feed delayed 2 days due to vendor maintenance. Similarity: Same datasource (Debit Card) + Same cause (vendor outage / feed delayed 2 days) Resolution notes from INC3032200: \"Vendor outage caused 2-day feed gap. Resolution steps: (1) Confirmed with vendor that maintenance was complete. (2) Vendor re-delivered pos_terminal_master.dat for both missed days. (3) Re-triggered PL-DC-11-POS-TERMINAL-RAW-INGEST for backfill. (4) Validated row counts across RAW, INT, CUR. Terminal_id lookups reconciled. (5) Added vendor maintenance schedule to DEPS monitoring calendar. (6) Configured file-arrival SLA alert at 24-hour threshold so delayed feeds are flagged before downstream pipelines run on stale data.\" Suggested action: Follow same playbook - confirm vendor recovery, request backfill of missed fraud_alerts.dat files, re-trigger pipeline, validate, and add SLA alert for this feed.",
+    "notes": "Strong match: same datasource (Debit Card) + identical cause (vendor outage, 2-day gap). Historical resolution provides a step-by-step playbook directly applicable to the current incident.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-046",
+    "query_type": "Type H - Historical Resolution",
+    "user_query": "Can you find past resolution notes for something similar to INC3215090?",
+    "expected_intent": "Find Historical Resolution for Similar Incidents",
+    "route_to": "ServiceNow (fetch INC) -> ServiceNow (search closed incidents: same cause + same datasource)",
+    "data_source": "Customer Enterprise - Interaction (open) -> Customer Enterprise - Interaction (historical match)",
+    "expected_filter": "Step 1: Fetch INC3215090 -> Customer Enterprise, cause='Kafka consumer lag' Step 2: Search closed incidents WHERE cause LIKE '%Kafka%' OR cause LIKE '%consumer%lag%' AND state=Closed",
+    "expected_incidents_text": "INC3215090 (source) -> INC2920400 (historical match)",
+    "expected_incidents": [
+      "INC3215090",
+      "INC2920400"
+    ],
+    "expected_summary": "Current incident: INC3215090 (New, High) - raw.customer_cust_interaction lagging 4 hours, interaction_id consumer offset growing. Unassigned. Similar historical incident found: INC2920400 (Closed, High) - Same feed (customer_interaction_src) experienced 6-hour Kafka consumer lag after broker restart. Similarity: Same datasource (Customer Enterprise) + Same cause (Kafka consumer lag) + Same feed (customer_interaction_src) Resolution notes from INC2920400: \"Kafka consumer group rebalancing storm after broker restart. Resolution steps: (1) Increased session.timeout.ms from 10s to 45s to prevent premature partition revocation. (2) Increased max.poll.interval.ms from 300s to 600s to allow longer processing windows. (3) Set group.instance.id for static membership to avoid unnecessary rebalances on transient disconnects. (4) Consumer backlog cleared within 2 hours of config push. All interaction events caught up and INT/Curated layers refreshed. (5) Added consumer lag alerting at 2-hour threshold on the interaction_id topic. (6) Documented Kafka tuning parameters in the platform runbook.\" Suggested action: Check if Kafka tuning from INC2920400 is still in place. If lag persists despite those settings, investigate broker health or upstream volume spike. The 2-hour lag alert added previously should have fired - verify alerting config.",
+    "notes": "Strongest possible match: same datasource + same cause + same feed (customer_interaction_src). Historical resolution provides exact Kafka tuning parameters. Agent should note that prior fixes should already be in place and suggest investigating why they did not prevent recurrence.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-047",
+    "query_type": "Type I - Missing Data",
+    "user_query": "Show me all missing data incidents for Real Estate Pricing",
+    "expected_intent": "Fetch Open Missing Data Incidents by Datasource",
+    "route_to": "ServiceNow (filter: missing data + open + datasource)",
+    "data_source": "Real Estate Pricing",
+    "expected_filter": "active=true AND (short_description LIKE \"%Real Estate Pricing%\" OR description LIKE \"%Real Estate Pricing%\") AND (description LIKE \"%missing data%\" OR description LIKE \"%not landed%\" OR description LIKE \"%stale%\" OR description LIKE \"%incomplete%\" OR description LIKE \"%partial%\")",
+    "expected_incidents_text": "INC3205060, INC3208070",
+    "expected_incidents": [
+      "INC3205060",
+      "INC3208070"
+    ],
+    "expected_summary": "Open missing data incidents for Real Estate Pricing: 1. INC3205060 (New, Critical) - Property Valuation Master: No data landed at /mnt/landing/rel/vendor/valuation/. AVM vendor API returning HTTP 503. raw_rel.valuation, int_rel.property_valuation_master, and cur_rel.property_valuation_master are all stale. Impacting pricing benchmarks. Unassigned. 2. INC3208070 (In Progress, Moderate) - Neighborhood Market Trends: Partial monthly load - only 15 of 42 census tracts landed. raw_rel.neighborhood has incomplete data. Blob transfer of neighborhood_trends.dat was truncated. Assigned to Morgan Blake. Total: 2 open missing data incidents across 2 segments. Note: INC2880300 (Comparable Sales Delta merge conflict) is a closed infrastructure issue, not an open missing data incident.",
+    "notes": "Returns 2 incidents for the same datasource with different missing data patterns: complete absence (API failure) vs partial load (truncated file). Agent should exclude closed INC2880300.",
+    "status_in_workbook": "Fail"
+  },
+  {
+    "test_id": "TC-048",
+    "query_type": "Type I - Missing Data",
+    "user_query": "Any missing data issues for cur_underwriting?",
+    "expected_intent": "Fetch Open Missing Data Incidents by Datasource",
+    "route_to": "Knowledge Base (STTM) -> ServiceNow (filter: missing data + open)",
+    "data_source": "Loan Application - Underwriting Decision",
+    "expected_filter": "STTM lookup: cur_underwriting -> Loan App Underwriting | SN: active=true AND (description LIKE \"%cur_underwriting%\" OR description LIKE \"%underwriting%\") AND (description LIKE \"%missing%\" OR description LIKE \"%dropped%\" OR description LIKE \"%null%\")",
+    "expected_incidents_text": "INC3200050",
+    "expected_incidents": [
+      "INC3200050"
+    ],
+    "expected_summary": "Resolved cur_underwriting to Loan Application - Underwriting Decision segment via STTM lookup. Open missing data incident: 1. INC3200050 (In Progress, High) - 2,400 application records missing from cur_underwriting. The INT-to-CUR transformation dropped records where derived field underwriting_decision_status was null. Source file underwriting.dat loaded correctly into int_underwriting but the derivation logic was not applied after a recent pipeline update. Assigned to Alex Vega. Missing data impact: 2,400 applications not visible in the Curated layer for downstream underwriting analytics.",
+    "notes": "STTM lookup required. The missing data is caused by a transformation logic gap (null derived field), not a file delivery issue. Agent should classify this as missing data because records are absent from the CUR table.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-049",
+    "query_type": "Type I - Missing Data",
+    "user_query": "List all open missing data incidents",
+    "expected_intent": "Fetch All Open Missing Data Incidents",
+    "route_to": "ServiceNow (filter: missing data indicators + active=true, no datasource filter)",
+    "data_source": "All datasources",
+    "expected_filter": "active=true AND (description LIKE \"%missing%\" OR description LIKE \"%not delivered%\" OR description LIKE \"%stale%\" OR description LIKE \"%truncated%\" OR description LIKE \"%incomplete%\" OR description LIKE \"%dropped%\" OR description LIKE \"%partial%\" OR cause LIKE \"%file%not%deliver%\" OR cause LIKE \"%truncat%\" OR cause LIKE \"%incomplete%\")",
+    "expected_incidents_text": "INC3185010, INC3198040, INC3200050, INC3205060, INC3208070, INC3210080, INC3220100",
+    "expected_incidents": [
+      "INC3185010",
+      "INC3198040",
+      "INC3200050",
+      "INC3205060",
+      "INC3208070",
+      "INC3210080",
+      "INC3220100"
+    ],
+    "expected_summary": "All open missing data incidents across all datasources: 1. INC3185010 (In Progress, High) - Core Banking Account Balance Snapshot: 4,588 records with null snapshot_date dropped in CUR layer. Assigned to Devin Marsh. 2. INC3198040 (On Hold, High) - Debit Card Fraud Alerts: Feed not delivered for 2 days due to vendor outage. cur_fraud_alerts stale. Assigned to Morgan Blake. 3. INC3200050 (In Progress, High) - Loan Application Underwriting Decision: 2,400 records missing from cur_underwriting. Derivation logic not applied. Assigned to Alex Vega. 4. INC3205060 (New, Critical) - Real Estate Pricing Valuation Master: No data landed - AVM vendor API down. Unassigned. 5. INC3208070 (In Progress, Moderate) - Real Estate Pricing Neighborhood Trends: Partial monthly load (15/42 census tracts). Assigned to Morgan Blake. 6. INC3210080 (In Progress, High) - Relationship Manager Customer Master: Truncated at 62K vs expected 100K+ records. SFTP dropped mid-transfer. Assigned to Dana Sample. 7. INC3220100 (In Progress, High) - Payments Settlement: 47 settlement batches missing. File truncated. Assigned to Devin Marsh. Total: 7 open missing data incidents across 6 datasources. 1 Critical, 5 High, 1 Moderate. Excluded (not missing data): INC3190020 (PII config), INC3195030 (PII masking), INC3215090 (Kafka lag/delay), INC3235130 (pipeline auth), INC3240140 (pipeline connection), INC3245150 (pipeline timeout), INC3225110 (parser failure).",
+    "notes": "Broad query with no datasource filter. Agent must scan all open incidents and classify which are 'missing data' vs other types (PII, pipeline infra, Kafka delay). The excluded list is as important as the included list for validating the agent's filtering logic.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-050",
+    "query_type": "Type I - Missing Data",
+    "user_query": "Show missing data incidents for Debit Card",
+    "expected_intent": "Fetch Open Missing Data Incidents by Datasource",
+    "route_to": "ServiceNow (filter: missing data + open + datasource)",
+    "data_source": "Debit Card",
+    "expected_filter": "active=true AND (short_description LIKE \"%Debit Card%\" OR description LIKE \"%Debit Card%\") AND (description LIKE \"%missing%\" OR description LIKE \"%not delivered%\" OR description LIKE \"%stale%\" OR cause LIKE \"%outage%\" OR cause LIKE \"%not%deliver%\")",
+    "expected_incidents_text": "INC3198040",
+    "expected_incidents": [
+      "INC3198040"
+    ],
+    "expected_summary": "Open missing data incidents for Debit Card: 1. INC3198040 (On Hold, High) - Fraud Alerts: Feed not delivered for 2 days due to vendor outage. int_fraud_alerts and cur_fraud_alerts stale since 2026-05-30. Downstream fraud analytics running on outdated data. Assigned to Morgan Blake. On hold pending vendor recovery. Total: 1 open missing data incident. Excluded Debit Card incidents (not missing data): - INC3195030 (New, Critical) - Cardholder Master PII masking failure -> config/security issue, not missing data - INC3240140 (New, High) - Merchant Master pipeline connection refused -> pipeline infrastructure failure, not missing data",
+    "notes": "Key filtering test: Debit Card has 3 open incidents but only 1 is a missing data issue. Agent must exclude INC3195030 (PII masking = config error) and INC3240140 (pipeline connection = infra failure). The vendor outage causing stale data IS a missing data issue.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-051",
+    "query_type": "Type I - Missing Data",
+    "user_query": "Any missing data incidents for HOP Enterprise?",
+    "expected_intent": "Fetch Open Missing Data Incidents by Datasource",
+    "route_to": "ServiceNow (filter: missing data + open + datasource)",
+    "data_source": "HOP Enterprise",
+    "expected_filter": "active=true AND (short_description LIKE \"%HOP Enterprise%\" OR description LIKE \"%HOP Enterprise%\") AND (description LIKE \"%missing%\" OR description LIKE \"%not delivered%\" OR description LIKE \"%stale%\" OR description LIKE \"%incomplete%\")",
+    "expected_incidents_text": "(none)",
+    "expected_incidents": [],
+    "expected_summary": "No open missing data incidents for HOP Enterprise. For reference, 1 closed incident exists: - INC3230120 (Closed, High) - SRC_ORDERS 2,800 records failed DQ on order_amt (empty strings). Resolved by patching source extraction and adding coalesce default. HOP Enterprise data pipelines are currently healthy with no open missing data issues.",
+    "notes": "Edge case: no open incidents at all for this datasource. INC3230120 is closed (DQ failure, not strictly missing data). Agent should clearly state no open issues and optionally reference closed history.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-052",
+    "query_type": "Type J - Cause-based Search",
+    "user_query": "Show all incidents from last month related to pipeline issues",
+    "expected_intent": "Search Incidents by Cause in Time Window",
+    "route_to": "ServiceNow (search: 'pipeline' in configuration_item/cause/resolution_notes, date filter: last month)",
+    "data_source": "Multiple datasources",
+    "expected_filter": "opened_at >= '2026-05-01' AND opened_at < '2026-06-01' AND (configuration_item LIKE 'PL-%' OR resolution_notes LIKE '%pipeline%')",
+    "expected_incidents_text": "INC3011201, INC3190020",
+    "expected_incidents": [
+      "INC3011201",
+      "INC3190020"
+    ],
+    "expected_summary": "Incidents from last month (May 2026) related to pipeline issues: 1. INC3011201 (Closed, Critical) - Core Banking: PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST failed. Cause: Source timeout Resolution: Re-triggered pipeline after source recovered. Row counts reconciled across RAW, INT, and CUR. Opened: 2026-05-10 | Closed: 2026-05-11 2. INC3190020 (Resolved, Critical) - Core Banking: KYC Profile PII fields loaded unencrypted. Cause: Configuration error Resolution: Re-enabled encryption, purged cleartext, reprocessed. Awaiting security sign-off. Opened: 2026-05-28 Total: 2 incidents.",
+    "notes": "Tests multi-field matching: INC3011201 matches on configuration_item (PL-CB-04...). INC3190020 matches on configuration_item (PL-CB-11...) and resolution_notes containing 'Pipeline'. With short-keyword cause fields ('Source timeout', 'Configuration error'), the cause field no longer contains 'pipeline' - agent must rely on configuration_item LIKE 'PL-%' pattern.",
+    "status_in_workbook": "Partial"
+  },
+  {
+    "test_id": "TC-053",
+    "query_type": "Type J - Cause-based Search",
+    "user_query": "Any incidents from last month related to credential or authentication problems?",
+    "expected_intent": "Search Incidents by Cause in Time Window",
+    "route_to": "ServiceNow (search: 'credential' in cause/resolution_notes, date filter: last month)",
+    "data_source": "Payments Enterprise",
+    "expected_filter": "opened_at >= '2026-05-01' AND opened_at < '2026-06-01' AND (cause LIKE '%authentication%' OR cause LIKE '%credential%' OR resolution_notes LIKE '%credential%')",
+    "expected_incidents_text": "INC3045600",
+    "expected_incidents": [
+      "INC3045600"
+    ],
+    "expected_summary": "Incidents from last month (May 2026) related to credential/authentication problems: 1. INC3045600 (Closed, Critical) - Payments Enterprise: payment_txn_src daily file missing from landing zone. Cause: Authentication issue Resolution: Payment gateway SFTP job failed due to credential expiry. Credentials renewed, file re-delivered, and pipeline backfilled. All layers refreshed. No data loss. Added file-arrival SLA monitor for payment_txn_src. Opened: 2026-05-15 | Closed: 2026-05-16 Total: 1 incident.",
+    "notes": "The term 'credential' appears in resolution_notes but NOT in the cause field (cause is now 'Authentication issue'). The user query mentions both 'credential' and 'authentication' - agent should search cause LIKE '%authentication%' and resolution_notes LIKE '%credential%' to find this match.",
+    "status_in_workbook": ""
+  },
+  {
+    "test_id": "TC-054",
+    "query_type": "Type J - Cause-based Search",
+    "user_query": "",
+    "expected_intent": "Search Incidents by Cause in Time Window",
+    "route_to": "ServiceNow (search: 'source data defect' in cause/resolution_notes, date filter: last month)",
+    "data_source": "HOP Enterprise",
+    "expected_filter": "opened_at >= '2026-05-01' AND opened_at < '2026-06-01' AND (cause LIKE '%source%defect%' OR cause LIKE '%source%data%')",
+    "expected_incidents_text": "INC3230120",
+    "expected_incidents": [
+      "INC3230120"
+    ],
+    "expected_summary": "Incidents from last month (May 2026) caused by source data defects: 1. INC3230120 (Closed, High) - HOP Enterprise: SRC_ORDERS 2,800 records failed DQ on order_amt. Cause: Source data defect Resolution: Source extraction bug sent empty strings for zero-value order_amt. Source team patched extraction to send 0.00. Re-extracted and reloaded 2,800 records. DQ validation passed. INT and Curated layers reconciled. Added coalesce(order_amt, 0.00) as defensive default in the Raw-to-INT transformation per STTM Mapping Rules Default logic type. Opened: 2026-05-18 | Closed: 2026-05-20 Total: 1 incident.",
+    "notes": "Direct match on cause field. User's search term 'source data defects' matches cause='Source data defect'. The cause field now uses short keywords, making LIKE pattern matching straightforward.",
+    "status_in_workbook": "Fail"
+  },
+  {
+    "test_id": "TC-055",
+    "query_type": "Type J - Cause-based Search",
+    "user_query": "What incidents from last month had timeout as the root cause?",
+    "expected_intent": "Search Incidents by Cause in Time Window",
+    "route_to": "ServiceNow (search: 'timeout' in cause/resolution_notes, date filter: last month)",
+    "data_source": "Core Banking",
+    "expected_filter": "opened_at >= '2026-05-01' AND opened_at < '2026-06-01' AND (cause LIKE '%timeout%' OR resolution_notes LIKE '%timeout%')",
+    "expected_incidents_text": "INC3011201",
+    "expected_incidents": [
+      "INC3011201"
+    ],
+    "expected_summary": "Incidents from last month (May 2026) with timeout as root cause: 1. INC3011201 (Closed, Critical) - Core Banking: PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST failed. Cause: Source timeout Resolution: ADF copy activity timed out because the Core Banking source system was slow. Re-triggered PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST after source recovered. Data landed in int_core_banking.transaction_ledger, CUR layer refreshed, and row counts reconciled across RAW, INT, and CUR. Opened: 2026-05-10 | Closed: 2026-05-11 Total: 1 incident.",
+    "notes": "The term 'timeout' now appears directly in the cause field. Agent searches cause and resolution_notes to find this match.",
+    "status_in_workbook": "Pass"
+  },
+  {
+    "test_id": "TC-056",
+    "query_type": "Type J - Cause-based Search",
+    "user_query": "Were there any vendor outage incidents last month?",
+    "expected_intent": "Search Incidents by Cause in Time Window",
+    "route_to": "ServiceNow (search: 'vendor outage' in cause/resolution_notes, date filter: last month)",
+    "data_source": "N/A",
+    "expected_filter": "opened_at >= '2026-05-01' AND opened_at < '2026-06-01' AND (cause LIKE '%vendor%outage%' OR cause LIKE '%vendor%maintenance%' OR resolution_notes LIKE '%vendor%')",
+    "expected_incidents_text": "(none in May 2026)",
+    "expected_incidents": [],
+    "expected_summary": "No vendor outage incidents found in last month (May 2026). For reference, vendor outage incidents exist outside the time window: - INC3198040 (Open, High) - Debit Card Fraud Alerts vendor outage. Opened: 2026-06-01 (this month, not last month) - INC3032200 (Closed, Moderate) - Debit Card POS Terminal Master vendor maintenance. Opened: 2026-03-10 (March, too old) No vendor outage incidents were raised during May 2026.",
+    "notes": "Edge case: the search term has matches in the dataset but NONE within the 'last month' time window. INC3198040 is June (too recent) and INC3032200 is March (too old). Agent must respect the date filter.",
+    "status_in_workbook": "Pass"
+  }
+]

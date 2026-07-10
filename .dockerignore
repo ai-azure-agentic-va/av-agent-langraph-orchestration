@@ -1,0 +1,54 @@
+# Keep secrets and local cruft OUT of the ACR build context / image layers.
+# `az acr build` uploads the whole context and does NOT honor .gitignore, so the
+# local .env (real API keys) would otherwise be ADDed into the image. Secrets
+# come from Key Vault at runtime — they must never be baked into the image.
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+!.env.sample
+infra/.env.deploy.example
+
+# Python / build
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# LangGraph local runtime state (pickled checkpoints, etc.)
+.langgraph_api/
+.langgraph_*
+
+# VCS / IaC / docs (not needed in the runtime image)
+.git/
+.gitignore
+infra/
+docs/
+README.md
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node (if any frontend tooling is colocated)
+node_modules/
+
+# stable PG password
+infra/.pg_password
