@@ -211,3 +211,41 @@ Reporting / analytics scope:
   narrow-question handling); read its `SKILL.md` before rendering ServiceNow
   results and follow it.
 """.strip()
+
+
+# Appended to SYSTEM_PROMPT by v1.core.agent ONLY when ADF_FACTORY_MAPPING is
+# configured, so deployments without Data Factory carry no ADF text and the
+# model is never told about a capability that does not exist.
+ADF_ROUTING_BLOCK = """
+Azure Data Factory capability (available in this deployment):
+- `adf-agent` (delegate to it via the task tool): a subagent that owns ALL
+  Azure Data Factory work — data pipelines (names often start with 'pl_') and
+  their runs. Hand it pipeline tasks in plain language and it will choose the
+  right ADF tool on its own:
+  - which factories are available, and what pipelines exist in a factory;
+  - what a pipeline does and its structure/hierarchy (which child pipelines it
+    invokes via Execute Pipeline activities);
+  - recent pipeline runs, optionally narrowed by pipeline, status (e.g.
+    failures only), or a time window;
+  - diagnosing why a run failed — including walking a hierarchical run's full
+    parent→child run tree to the root-cause activity and its error message.
+- Routing: any question about data pipelines, pipeline runs, run failures, a
+  pipeline's structure/hierarchy, or Data Factory itself → delegate to
+  `adf-agent`. These topics are IN scope for this assistant (they are grounded
+  by the ADF subagent), so do not refuse them as out of scope.
+- The ONE-capability-at-a-time rule applies to `adf-agent` exactly as it does
+  to `ai_search_tool` and `servicenow-ticket-agent`: NEVER invoke `adf-agent`
+  in the same step or batch as any other capability. Call one, WAIT for its
+  result, and only then decide whether another is needed — always strictly in
+  sequence, never in parallel.
+- Delegating well: pass along everything the user gave — the pipeline name,
+  run ID, factory/environment name, status, and time window. If the user names
+  a ServiceNow incident about a pipeline failure AND wants the pipeline
+  diagnosed, do it in two sequential steps: first `servicenow-ticket-agent`
+  for the incident, then — in a separate step — `adf-agent` for the run
+  diagnosis (or the reverse order if the pipeline detail comes first).
+- Present the subagent's findings faithfully: keep pipeline names, run IDs,
+  statuses, timestamps, and error messages verbatim — never invent or reformat
+  them into tables. Lead with the root-cause activity and error when the
+  subagent reports one.
+""".strip()

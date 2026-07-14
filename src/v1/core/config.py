@@ -67,6 +67,40 @@ class Settings(BaseSettings):
             "mapped group get no starter prompts (there is no built-in fallback)."
         ),
     )
+    #Azure Data Factory Config
+    adf_factory_mapping: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        alias="ADF_FACTORY_MAPPING",
+        description=(
+            "JSON object mapping a friendly factory alias to the coordinates of an "
+            "Azure Data Factory the adf-agent may query, e.g. "
+            '{"finance-dev": {"subscription_id": "...", "resource_group": "...", '
+            '"factory_name": "..."}}. Empty (default) disables the ADF subagent '
+            "entirely: it is not registered on the orchestrator and the system "
+            "prompt carries no ADF routing text."
+        ),
+    )
+    adf_default_factory: str | None = Field(
+        default=None,
+        alias="ADF_DEFAULT_FACTORY",
+        description=(
+            "Alias (a key of ADF_FACTORY_MAPPING) of the factory the ADF tools use "
+            "when the caller does not name one. When exactly one factory is mapped "
+            "it is the implicit default and this can stay unset; with several "
+            "factories and no default the tools ask the model to pass factory=<alias>."
+        ),
+    )
+    adf_disabled_groups: StringList = Field(
+        default_factory=list,
+        alias="ADF_DISABLED_GROUPS",
+        description=(
+            "Comma-separated Entra group object-ids or display names for which the "
+            "Azure Data Factory subagent is DISABLED, matched the same way as "
+            "SERVICENOW_DISABLED_GROUPS. A caller whose groups intersect this set "
+            "cannot delegate to the adf-agent; everyone else keeps it. Empty "
+            "(default) leaves the ADF subagent enabled for everyone."
+        ),
+    )
     servicenow_disabled_groups: StringList = Field(
         default_factory=list,
         alias="SERVICENOW_DISABLED_GROUPS",

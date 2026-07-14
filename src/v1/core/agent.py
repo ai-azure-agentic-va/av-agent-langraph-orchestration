@@ -17,11 +17,16 @@ from v1.core.tools import (
     close_search_clients,
 )
 from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
-from v1.core.subagents import SERVICENOW_SUBAGENT, close_servicenow_resources
+from v1.core.subagents import (
+    ADF_SUBAGENT,
+    SERVICENOW_SUBAGENT,
+    close_adf_resources,
+    close_servicenow_resources,
+)
 from v1.core.middlewares.citations import CitationFilterMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
-from v1.core.middlewares.servicenow_access import ServiceNowAccessMiddleware
-from v1.core.prompts import SYSTEM_PROMPT
+from v1.core.middlewares.subagent_access import SubagentAccessMiddleware
+from v1.core.prompts import ADF_ROUTING_BLOCK, SYSTEM_PROMPT
 from v1.utils.checkpointer import close_checkpointer, get_checkpointer
 
 logger = logging.getLogger(__name__)
@@ -134,27 +139,35 @@ async def build_agent(config=None) -> Any:
 def _build_agent_sync(checkpointer: Any) -> Any:
     model = get_azure_chat_model()
     _ensure_harness_profiles_registered()
+    # The ADF subagent is wired only when factories are configured; the system
+    # prompt gains its routing block in lockstep, so an ADF-less deployment
+    # never hears about a capability it does not have.
+    adf_enabled = bool(settings.adf_factory_mapping)
+    subagents = [SERVICENOW_SUBAGENT] + ([ADF_SUBAGENT] if adf_enabled else [])
+    system_prompt = (
+        f"{SYSTEM_PROMPT}\n\n{ADF_ROUTING_BLOCK}" if adf_enabled else SYSTEM_PROMPT
+    )
     agent = create_deep_agent(
         model=model,
         tools=[
             ai_search_tool,
         ],
-        subagents=[
-            SERVICENOW_SUBAGENT,
-        ],
+        subagents=subagents,
         middleware=[
             SafetyGateMiddleware(),
-            # Per-request gate: for callers in SERVICENOW_DISABLED_GROUPS (e.g.
-            # external users) strips the `task` delegation tool, appends a
-            # restriction note, and hard-blocks ServiceNow delegation. Sits inner
-            # of deepagents' SubAgentMiddleware so it sees the assembled request.
-            ServiceNowAccessMiddleware(),
+            # Per-request gate: for callers in SERVICENOW_DISABLED_GROUPS /
+            # ADF_DISABLED_GROUPS (e.g. external users) appends restriction
+            # notes, hard-blocks delegation to the disabled subagents, and drops
+            # the `task` tool entirely when every subagent is disabled. Sits
+            # inner of deepagents' SubAgentMiddleware so it sees the assembled
+            # request.
+            SubagentAccessMiddleware(),
             # Runs after the answer to emit a `sources_final` event holding only
             # the sources the model cited inline (the streamed `search_complete`
             # chips include every retrieved doc, cited or not).
             CitationFilterMiddleware(),
         ],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         backend=build_backend(),
         skills=SKILLS_SOURCES,
         checkpointer=checkpointer,
@@ -214,11 +227,16 @@ def _ensure_harness_profiles_registered() -> None:
         _harness_profiles_registered = True
 
 async def close_agent_resources() -> None:
+    from v1.utils.azure_credentials import aclose_async_azure_credential
     from v1.utils.azure_key_vault import aclose_default_kv
 
     await close_servicenow_resources()
+    await close_adf_resources()
     close_search_clients()
     await close_checkpointer()
     # Shared async Key Vault client/credential (used by ServiceNow secret
     # resolution and any other aresolve_env_secret callers).
     await aclose_default_kv()
+    # Shared async DefaultAzureCredential (used by the ADF management clients);
+    # closed after the clients that hold it.
+    await aclose_async_azure_credential()

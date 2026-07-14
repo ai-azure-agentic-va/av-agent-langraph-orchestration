@@ -27,7 +27,8 @@ TEST_ENV = PYTHONPATH=src SERVICENOW_MODE=mock PERSISTENCE_BACKEND=memory \
 PY = .venv/bin/python
 TESTS = src/v1/test/v1/utils/test_servicenow_intents.py \
 	src/v1/test/v1/utils/test_servicenow.py \
-	src/v1/test/v1/utils/test_servicenow_access.py \
+	src/v1/test/v1/utils/test_subagent_access.py \
+	src/v1/test/v1/utils/test_adf_tools.py \
 	src/v1/test/v1/utils/test_agent_recursion.py \
 	src/v1/test/v1/utils/test_graph_groups.py
 

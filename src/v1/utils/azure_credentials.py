@@ -22,9 +22,13 @@ from typing import Awaitable, Callable
 
 from azure.core.credentials import TokenCredential
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from azure.identity.aio import DefaultAzureCredential as AsyncDefaultAzureCredential
 
 _credential_lock = threading.Lock()
 _credential: DefaultAzureCredential | None = None
+
+_async_credential_lock = threading.Lock()
+_async_credential: AsyncDefaultAzureCredential | None = None
 
 
 def get_azure_credential() -> TokenCredential:
@@ -37,6 +41,33 @@ def get_azure_credential() -> TokenCredential:
         if _credential is None:
             _credential = DefaultAzureCredential()
     return _credential
+
+
+def get_async_azure_credential() -> AsyncDefaultAzureCredential:
+    """Return the process-wide *async* ``DefaultAzureCredential`` singleton.
+
+    Async Azure SDK clients (e.g. ``azure.mgmt.datafactory.aio``) require an
+    async ``TokenCredential``; handing them the sync singleton raises at call
+    time. Like its sync sibling it caches tokens, so it is built once and
+    shared. Close it at shutdown via :func:`aclose_async_azure_credential`.
+    """
+
+    global _async_credential
+    if _async_credential is not None:
+        return _async_credential
+    with _async_credential_lock:
+        if _async_credential is None:
+            _async_credential = AsyncDefaultAzureCredential()
+    return _async_credential
+
+
+async def aclose_async_azure_credential() -> None:
+    """Close the shared async credential (idempotent; safe if never built)."""
+
+    global _async_credential
+    credential, _async_credential = _async_credential, None
+    if credential is not None:
+        await credential.close()
 
 
 def get_token_provider(scope: str) -> Callable[[], str]:
@@ -68,6 +99,8 @@ def get_async_token_provider(scope: str) -> Callable[[], Awaitable[str]]:
 
 
 __all__ = [
+    "aclose_async_azure_credential",
+    "get_async_azure_credential",
     "get_azure_credential",
     "get_token_provider",
     "get_async_token_provider",
