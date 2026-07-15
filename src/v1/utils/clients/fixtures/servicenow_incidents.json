@@ -23,12 +23,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
+        "value": "F1594",
         "display_value": ""
       },
       "resolved_by": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "cause": "Source timeout",
       "opened_at": "2026-05-10 02:05:11",
@@ -41,7 +41,7 @@
         "value": "plcb04transactionledgerdailyingest",
         "display_value": "PL-CB-04-TRANSACTION-LEDGER-DAILY-INGEST"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3011201"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3011201"
     },
     {
       "_mock_note": "CLOSED-2 | Type B (key fields only - needs STTM lookup) | Debit Card - Transaction Clearing",
@@ -66,12 +66,12 @@
         "display_value": ""
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "cause": "Duplicate load",
       "opened_at": "2026-05-04 03:11:58",
@@ -84,7 +84,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3025540"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3025540"
     },
     {
       "_mock_note": "CLOSED-3 | Type A (explicit data source) | Loan Application - Applicant Master",
@@ -109,11 +109,11 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
-        "value": "R0003",
+        "value": "R4471",
         "display_value": ""
       },
       "cause": "Schema drift",
@@ -127,7 +127,7 @@
         "value": "plla01appmasterrawingest",
         "display_value": "PL-LA-01-APP-MASTER-RAW-INGEST"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2965100"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2965100"
     },
     {
       "_mock_note": "CLOSED-4 | Type B (key fields only - needs STTM lookup) | Real Estate Pricing - Comparable Sales Master",
@@ -152,12 +152,12 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "cause": "Cluster issue",
       "opened_at": "2026-03-12 16:22:07",
@@ -170,7 +170,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2880300"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2880300"
     },
     {
       "_mock_note": "CLOSED-5 | Type A (explicit data source) | Payments Enterprise - Payment Transactions",
@@ -195,12 +195,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "cause": "Authentication issue",
       "opened_at": "2026-05-15 06:00:00",
@@ -213,7 +213,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3045600"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3045600"
     },
     {
       "_mock_note": "OPEN-1 | Type B (key fields only - needs STTM lookup) | Core Banking - Account Balance Snapshot",
@@ -238,8 +238,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -256,7 +256,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3185010"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3185010"
     },
     {
       "_mock_note": "OPEN-2 | Type A (explicit data source) | Core Banking - KYC Profile",
@@ -281,12 +281,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "cause": "Configuration error",
       "opened_at": "2026-05-28 15:00:00",
@@ -299,7 +299,7 @@
         "value": "plcb11kycprofilerawint",
         "display_value": "PL-CB-11-KYC-PROFILE-RAW-INT"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3190020"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3190020"
     },
     {
       "_mock_note": "OPEN-3 | Type A (explicit data source) | Debit Card - Cardholder Master",
@@ -342,7 +342,7 @@
         "value": "pldc01cardholdermasterrawint",
         "display_value": "PL-DC-01-CARDHOLDER-MASTER-RAW-INT"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3195030"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3195030"
     },
     {
       "_mock_note": "OPEN-4 | Type B (key fields only - needs STTM lookup) | Debit Card - Fraud Alerts",
@@ -367,8 +367,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -385,7 +385,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3198040"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3198040"
     },
     {
       "_mock_note": "OPEN-5 | Type B (key fields only - needs STTM lookup) | Loan Application - Underwriting Decision",
@@ -410,8 +410,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -428,7 +428,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3200050"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3200050"
     },
     {
       "_mock_note": "OPEN-6 | Type A (explicit data source) | Real Estate Pricing - Property Valuation Master",
@@ -471,7 +471,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3205060"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3205060"
     },
     {
       "_mock_note": "OPEN-7 | Type B (key fields only - needs STTM lookup) | Real Estate Pricing - Neighborhood Market Trends",
@@ -496,8 +496,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -514,7 +514,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3208070"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3208070"
     },
     {
       "_mock_note": "OPEN-8 | Type B (key fields only - needs STTM lookup) | Relationship Manager - Customer Master",
@@ -539,8 +539,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -557,7 +557,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3210080"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3210080"
     },
     {
       "_mock_note": "OPEN-9 | Type B (key fields only - needs STTM lookup) | Customer Enterprise - Customer Interaction",
@@ -600,7 +600,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3215090"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3215090"
     },
     {
       "_mock_note": "OPEN-10 | Type B (key fields only - needs STTM lookup) | Payments Enterprise - Settlement Batches",
@@ -625,8 +625,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -643,7 +643,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3220100"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3220100"
     },
     {
       "_mock_note": "OPEN-11 | Logistics Enterprise - Shipment Line | Added for Summarize intent",
@@ -668,8 +668,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -686,7 +686,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3225110"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3225110"
     },
     {
       "_mock_note": "CLOSED-6 | HOP Enterprise - SRC_ORDERS DQ failures | Added for Summarize intent",
@@ -711,12 +711,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "cause": "Source data defect",
       "opened_at": "2026-05-18 03:00:00",
@@ -729,7 +729,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3230120"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3230120"
     },
     {
       "_mock_note": "OPEN-12 | Pipeline Failure | Core Banking - Deposit Account Master | Added for Pipeline Incidents intent",
@@ -754,8 +754,8 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -772,7 +772,7 @@
         "value": "plcb02depositacctmasterrawingest",
         "display_value": "PL-CB-02-DEPOSIT-ACCT-MASTER-RAW-INGEST"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3235130"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3235130"
     },
     {
       "_mock_note": "OPEN-13 | Pipeline Failure | Debit Card - Merchant Master | Added for Pipeline Incidents intent",
@@ -815,7 +815,7 @@
         "value": "pldc07merchantmasterrawint",
         "display_value": "PL-DC-07-MERCHANT-MASTER-RAW-INT"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3240140"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3240140"
     },
     {
       "_mock_note": "OPEN-14 | Pipeline Failure | Loan Application - Repayment Schedule | Added for Pipeline Incidents intent",
@@ -840,8 +840,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -858,7 +858,7 @@
         "value": "plla12repayschedulerawingest",
         "display_value": "PL-LA-12-REPAY-SCHEDULE-RAW-INGEST"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3245150"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3245150"
     },
     {
       "_mock_note": "CLOSED-7 | Vendor outage historical | Debit Card - POS Terminal Master | Added for Historical Resolution intent",
@@ -883,12 +883,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "cause": "Vendor outage",
       "opened_at": "2026-03-10 06:00:00",
@@ -901,7 +901,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3032200"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3032200"
     },
     {
       "_mock_note": "CLOSED-8 | Kafka lag historical | Customer Enterprise - Customer Interaction | Added for Historical Resolution intent",
@@ -926,12 +926,12 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "cause": "Kafka consumer lag",
       "opened_at": "2026-02-08 09:00:00",
@@ -944,7 +944,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2920400"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2920400"
     },
     {
       "_mock_note": "DC-DQ-1 | Cardholder Master | Missing data - completeness",
@@ -969,12 +969,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "cause": "Data quality",
       "opened_at": "2026-04-10 03:20:00",
@@ -987,7 +987,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3250160"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3250160"
     },
     {
       "_mock_note": "DC-DQ-2 | Cardholder Master | Missing data - timeliness",
@@ -1012,8 +1012,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -1030,7 +1030,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3255170"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3255170"
     },
     {
       "_mock_note": "DC-DQ-3 | Cardholder Master | Missing data - completeness partial file",
@@ -1055,12 +1055,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "cause": "Incomplete file transfer",
       "opened_at": "2026-03-15 04:00:00",
@@ -1073,7 +1073,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3260180"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3260180"
     },
     {
       "_mock_note": "DC-DQ-4 | Debit Card Account | Missing data - completeness",
@@ -1098,12 +1098,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "cause": "Source data defect",
       "opened_at": "2026-04-22 05:30:00",
@@ -1116,7 +1116,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3265190"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3265190"
     },
     {
       "_mock_note": "DC-DQ-5 | Debit Card Account | Missing data - timeliness",
@@ -1141,12 +1141,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "cause": "Source timeout",
       "opened_at": "2026-05-05 06:00:00",
@@ -1159,7 +1159,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3270200"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3270200"
     },
     {
       "_mock_note": "DC-DQ-6 | Debit Card Account | Missing data - completeness zero records",
@@ -1184,12 +1184,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "cause": "Source data defect",
       "opened_at": "2026-06-10 03:00:00",
@@ -1202,7 +1202,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3275210"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3275210"
     },
     {
       "_mock_note": "DC-DQ-7 | Card Profile | Missing data - completeness",
@@ -1227,12 +1227,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "cause": "Transformation logic error",
       "opened_at": "2026-04-18 07:00:00",
@@ -1245,7 +1245,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3280220"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3280220"
     },
     {
       "_mock_note": "DC-DQ-8 | Card Profile | Missing data - timeliness",
@@ -1270,12 +1270,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "cause": "Authentication issue",
       "opened_at": "2026-05-27 06:00:00",
@@ -1288,7 +1288,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3285230"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3285230"
     },
     {
       "_mock_note": "DC-DQ-9 | Card Profile | Missing data - completeness null key fields",
@@ -1313,8 +1313,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -1331,7 +1331,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3290240"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3290240"
     },
     {
       "_mock_note": "DC-DQ-10 | Card Status History | Missing data - completeness",
@@ -1356,12 +1356,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "cause": "Source data defect",
       "opened_at": "2026-05-18 09:00:00",
@@ -1374,7 +1374,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3295250"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3295250"
     },
     {
       "_mock_note": "DC-DQ-11 | Card Status History | Missing data - timeliness",
@@ -1399,8 +1399,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -1417,7 +1417,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3300260"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3300260"
     },
     {
       "_mock_note": "DC-DQ-12 | Transaction Authorization | Missing data - completeness",
@@ -1442,8 +1442,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -1460,7 +1460,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3305270"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3305270"
     },
     {
       "_mock_note": "DC-DQ-13 | Transaction Authorization | Missing data - timeliness",
@@ -1485,12 +1485,12 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "cause": "Kafka consumer lag",
       "opened_at": "2026-05-31 06:00:00",
@@ -1503,7 +1503,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3310280"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3310280"
     },
     {
       "_mock_note": "DC-DQ-14 | Transaction Authorization | Missing data - completeness null auth codes",
@@ -1528,12 +1528,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "cause": "Source data defect",
       "opened_at": "2026-04-28 04:00:00",
@@ -1546,7 +1546,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3315290"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3315290"
     },
     {
       "_mock_note": "DC-DQ-15 | Transaction Clearing | Missing data - completeness",
@@ -1571,12 +1571,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "cause": "Source format change",
       "opened_at": "2026-05-08 04:30:00",
@@ -1589,7 +1589,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3320300"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3320300"
     },
     {
       "_mock_note": "DC-DQ-16 | Transaction Clearing | Missing data - timeliness",
@@ -1614,12 +1614,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "cause": "Vendor outage",
       "opened_at": "2026-06-06 06:00:00",
@@ -1632,7 +1632,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3325310"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3325310"
     },
     {
       "_mock_note": "DC-DQ-17 | Transaction Clearing | Missing data - completeness duplicate drop",
@@ -1657,8 +1657,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -1675,7 +1675,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3330320"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3330320"
     },
     {
       "_mock_note": "DC-DQ-18 | Merchant Master | Missing data - completeness",
@@ -1700,12 +1700,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "cause": "Source data defect",
       "opened_at": "2026-05-12 07:00:00",
@@ -1718,7 +1718,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3335330"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3335330"
     },
     {
       "_mock_note": "DC-DQ-19 | Merchant Master | Missing data - timeliness",
@@ -1761,7 +1761,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3340340"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3340340"
     },
     {
       "_mock_note": "DC-DQ-20 | Fraud Alerts | Missing data - completeness",
@@ -1786,12 +1786,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "cause": "Source data defect",
       "opened_at": "2026-05-17 09:00:00",
@@ -1804,7 +1804,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3345350"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3345350"
     },
     {
       "_mock_note": "DC-DQ-21 | Fraud Alerts | Missing data - timeliness",
@@ -1829,12 +1829,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "cause": "Vendor outage",
       "opened_at": "2026-06-08 02:00:00",
@@ -1847,7 +1847,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3350360"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3350360"
     },
     {
       "_mock_note": "DC-DQ-22 | Chargeback Case | Missing data - completeness",
@@ -1872,8 +1872,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -1890,7 +1890,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3355370"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3355370"
     },
     {
       "_mock_note": "DC-DQ-23 | Chargeback Case | Missing data - timeliness",
@@ -1915,12 +1915,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "cause": "Vendor outage",
       "opened_at": "2026-05-24 07:00:00",
@@ -1933,7 +1933,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3360380"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3360380"
     },
     {
       "_mock_note": "DC-DQ-24 | Chargeback Case | Missing data - completeness partial batch",
@@ -1958,12 +1958,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "cause": "Incomplete file transfer",
       "opened_at": "2026-04-05 05:00:00",
@@ -1976,7 +1976,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3365390"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3365390"
     },
     {
       "_mock_note": "DC-DQ-25 | ATM Activity | Missing data - completeness",
@@ -2001,8 +2001,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -2019,7 +2019,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3370400"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3370400"
     },
     {
       "_mock_note": "DC-DQ-26 | ATM Activity | Missing data - timeliness",
@@ -2044,12 +2044,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "cause": "Vendor outage",
       "opened_at": "2026-04-15 08:00:00",
@@ -2062,7 +2062,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3375410"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3375410"
     },
     {
       "_mock_note": "DC-DQ-27 | ATM Activity | Missing data - completeness null terminal",
@@ -2105,7 +2105,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3380420"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3380420"
     },
     {
       "_mock_note": "DC-DQ-28 | POS Terminal Master | Missing data - completeness",
@@ -2130,8 +2130,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -2148,7 +2148,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3385430"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3385430"
     },
     {
       "_mock_note": "DC-DQ-29 | POS Terminal Master | Missing data - timeliness",
@@ -2173,12 +2173,12 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "cause": "Vendor API failure",
       "opened_at": "2026-03-20 06:00:00",
@@ -2191,7 +2191,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3390440"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3390440"
     },
     {
       "_mock_note": "DC-DQ-30 | Rewards Enrollment | Missing data - completeness",
@@ -2216,8 +2216,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -2234,7 +2234,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3395450"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3395450"
     },
     {
       "_mock_note": "BS-PL-01 | Trade Execution RAW ingest failure",
@@ -2259,8 +2259,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -2277,7 +2277,7 @@
         "value": "plbs01tradeexecutionrawingest",
         "display_value": "PL-BS-01-TRADE-EXECUTION-RAW-INGEST"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400001"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400001"
     },
     {
       "_mock_note": "BS-PL-02 | Position Master daily load timeout",
@@ -2302,8 +2302,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -2320,7 +2320,7 @@
         "value": "plbs02positionmasterdailyload",
         "display_value": "PL-BS-02-POSITION-MASTER-DAILY-LOAD"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400002"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400002"
     },
     {
       "_mock_note": "BS-PL-03 | Risk Metrics INT-to-CUR concurrent write conflict",
@@ -2345,8 +2345,8 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -2363,7 +2363,7 @@
         "value": "plbs03riskmetricsintcur",
         "display_value": "PL-BS-03-RISK-METRICS-INT-CUR"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400003"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400003"
     },
     {
       "_mock_note": "BS-PL-04 | Market Data Feed schema validation failure",
@@ -2388,8 +2388,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -2406,7 +2406,7 @@
         "value": "plbs04marketdatafeedingest",
         "display_value": "PL-BS-04-MARKET-DATA-FEED-INGEST"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400004"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400004"
     },
     {
       "_mock_note": "BS-PL-05 | Settlement Ledger RAW connection pool exhausted",
@@ -2431,8 +2431,8 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -2449,7 +2449,7 @@
         "value": "plbs05settlementledgerraw",
         "display_value": "PL-BS-05-SETTLEMENT-LEDGER-RAW"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400005"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400005"
     },
     {
       "_mock_note": "BS-PL-06 | Counterparty Profile auth token expired",
@@ -2474,8 +2474,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -2492,7 +2492,7 @@
         "value": "plbs06counterpartyprofilerefresh",
         "display_value": "PL-BS-06-COUNTERPARTY-PROFILE-REFRESH"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400006"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400006"
     },
     {
       "_mock_note": "BS-PL-07 | Margin Calc INT-CUR transformation error",
@@ -2517,8 +2517,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -2535,7 +2535,7 @@
         "value": "plbs07margincalcintcur",
         "display_value": "PL-BS-07-MARGIN-CALC-INT-CUR"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400007"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400007"
     },
     {
       "_mock_note": "BS-PL-08 | Portfolio Valuations source maintenance overlap",
@@ -2560,8 +2560,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -2578,7 +2578,7 @@
         "value": "plbs08portfoliovaldaily",
         "display_value": "PL-BS-08-PORTFOLIO-VAL-DAILY"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400008"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400008"
     },
     {
       "_mock_note": "BS-PL-09 | Trade Execution INT-CUR Kafka consumer lag",
@@ -2603,8 +2603,8 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -2621,7 +2621,7 @@
         "value": "plbs01tradeexecutionintcur",
         "display_value": "PL-BS-01-TRADE-EXECUTION-INT-CUR"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400009"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400009"
     },
     {
       "_mock_note": "BS-PL-10 | Regulatory Reporting cluster resource exhaustion",
@@ -2646,8 +2646,8 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -2664,7 +2664,7 @@
         "value": "plbs09regreportingextract",
         "display_value": "PL-BS-09-REG-REPORTING-EXTRACT"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400010"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400010"
     },
     {
       "_mock_note": "BS-PL-11 | Liquidity Monitor SSL cert expired",
@@ -2689,8 +2689,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -2707,7 +2707,7 @@
         "value": "plbs10liquiditymonitorfeed",
         "display_value": "PL-BS-10-LIQUIDITY-MONITOR-FEED"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400011"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400011"
     },
     {
       "_mock_note": "BS-PL-12 | Position Master INT-CUR memory overflow",
@@ -2732,8 +2732,8 @@
         "display_value": "DEPS - PLATFORM ENGINEERING"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -2750,7 +2750,7 @@
         "value": "plbs02positionmasterintcur",
         "display_value": "PL-BS-02-POSITION-MASTER-INT-CUR"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400012"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400012"
     },
     {
       "_mock_note": "BS-PL-13 | Market Data Feed API rate limit",
@@ -2775,8 +2775,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -2793,7 +2793,7 @@
         "value": "plbs04marketdatafeedintcur",
         "display_value": "PL-BS-04-MARKET-DATA-FEED-INT-CUR"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400013"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400013"
     },
     {
       "_mock_note": "BS-PL-14 | Settlement Ledger FK constraint violation",
@@ -2818,8 +2818,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -2836,7 +2836,7 @@
         "value": "plbs05settlementledgerintcur",
         "display_value": "PL-BS-05-SETTLEMENT-LEDGER-INT-CUR"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400014"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400014"
     },
     {
       "_mock_note": "BS-PL-15 | Risk Metrics source format change",
@@ -2861,8 +2861,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -2879,7 +2879,7 @@
         "value": "plbs03riskmetricsrawingest",
         "display_value": "PL-BS-03-RISK-METRICS-RAW-INGEST"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400015"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400015"
     },
     {
       "_mock_note": "BS-DQ-01 | Trade Execution - missing records, null trade_id",
@@ -2904,8 +2904,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -2922,7 +2922,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400016"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400016"
     },
     {
       "_mock_note": "BS-DQ-02 | Position Master - stale data, not refreshed",
@@ -2947,8 +2947,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -2965,7 +2965,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400017"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400017"
     },
     {
       "_mock_note": "BS-DQ-03 | Risk Metrics - negative notional values in VaR",
@@ -2990,8 +2990,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -3008,7 +3008,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400018"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400018"
     },
     {
       "_mock_note": "BS-DQ-04 | Market Data Feed - incomplete ticker coverage",
@@ -3033,8 +3033,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -3051,7 +3051,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400019"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400019"
     },
     {
       "_mock_note": "BS-DQ-05 | Settlement Ledger - duplicate settlement_id values",
@@ -3076,8 +3076,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -3094,7 +3094,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400020"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400020"
     },
     {
       "_mock_note": "BS-DQ-06 | Counterparty Profile - LEI code mismatch",
@@ -3119,8 +3119,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -3137,7 +3137,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400021"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400021"
     },
     {
       "_mock_note": "BS-DQ-07 | Margin Calculations - row count mismatch",
@@ -3162,8 +3162,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -3180,7 +3180,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400022"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400022"
     },
     {
       "_mock_note": "BS-DQ-08 | Portfolio Valuations - NAV stale 3 days",
@@ -3205,8 +3205,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -3223,7 +3223,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400023"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400023"
     },
     {
       "_mock_note": "BS-DQ-09 | Trade Execution - T+1 settlement records not landed",
@@ -3248,8 +3248,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "F0001",
-        "display_value": "Devin Marsh (F0001)"
+        "value": "F1594",
+        "display_value": "Denver McCollum (F1594)"
       },
       "resolved_by": {
         "value": "",
@@ -3266,7 +3266,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400024"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400024"
     },
     {
       "_mock_note": "BS-DQ-10 | Position Master - derivative positions zero delta",
@@ -3291,8 +3291,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -3309,7 +3309,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400025"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400025"
     },
     {
       "_mock_note": "BS-DQ-11 | Regulatory Reporting - CCAR data incomplete",
@@ -3334,8 +3334,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -3352,7 +3352,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400026"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400026"
     },
     {
       "_mock_note": "BS-DQ-12 | Liquidity Monitoring - cash flow projections stale",
@@ -3377,8 +3377,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "K0005",
-        "display_value": "Morgan Blake (K0005)"
+        "value": "K2210",
+        "display_value": "Marcus Bell (K2210)"
       },
       "resolved_by": {
         "value": "",
@@ -3395,7 +3395,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400027"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400027"
     },
     {
       "_mock_note": "BS-DQ-13 | Settlement Ledger - cross-currency FX rates missing",
@@ -3420,8 +3420,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "T0002",
-        "display_value": "Alex Vega (T0002)"
+        "value": "T5520",
+        "display_value": "Aaron Velasquez (T5520)"
       },
       "resolved_by": {
         "value": "",
@@ -3438,7 +3438,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400028"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400028"
     },
     {
       "_mock_note": "BS-DQ-14 | Market Data Feed - EOD prices not refreshed",
@@ -3463,8 +3463,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "D0004",
-        "display_value": "Dana Sample (D0004)"
+        "value": "D7834",
+        "display_value": "Dhanalakshmi Sundharam (D7834)"
       },
       "resolved_by": {
         "value": "",
@@ -3481,7 +3481,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400029"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400029"
     },
     {
       "_mock_note": "BS-DQ-15 | Risk Metrics - stress test scenarios missing parameters",
@@ -3506,8 +3506,8 @@
         "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
       },
       "assigned_to": {
-        "value": "R0003",
-        "display_value": "Pat Rivers (R0003)"
+        "value": "R4471",
+        "display_value": "Priya Nair (R4471)"
       },
       "resolved_by": {
         "value": "",
@@ -3524,7 +3524,7 @@
         "value": "dq00000000000000000000000000000001",
         "display_value": "Data Quality"
       },
-      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400030"
+      "ticket_url": "https://example.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400030"
     }
   ]
 }

@@ -145,7 +145,7 @@ def _build_agent_sync(checkpointer: Any) -> Any:
         middleware=[
             SafetyGateMiddleware(),
             # Per-request gate: for callers in SERVICENOW_DISABLED_GROUPS (e.g.
-            # external users) strips the `task` delegation tool, appends a
+            # IORM / external users) strips the `task` delegation tool, appends a
             # restriction note, and hard-blocks ServiceNow delegation. Sits inner
             # of deepagents' SubAgentMiddleware so it sees the assembled request.
             ServiceNowAccessMiddleware(),

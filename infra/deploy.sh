@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Build + deploy fin-deepagents-dev to Azure Container Apps.
+# Build + deploy example-deepagents-dev to Azure Container Apps.
 #
 # Config model (the robust part):
 #   * NON-SECRET app config lives in ONE file: infra/.env.deploy (committed —
@@ -28,8 +28,8 @@ set -euo pipefail
 # Configuration (override via env vars)
 # ---------------------------------------------------------------------------
 SUBSCRIPTION="${SUBSCRIPTION:-22222222-2222-2222-2222-222222222222}"
-RESOURCE_GROUP="${RESOURCE_GROUP:-fin-chat-agent-dev-rg}"
-ACR_NAME="${ACR_NAME:-findev0000000000acr}"
+RESOURCE_GROUP="${RESOURCE_GROUP:-example-chat-agent-dev-rg}"
+ACR_NAME="${ACR_NAME:-exampledevacr}"
 IMAGE_REPO="${IMAGE_REPO:-langraph-agent-orchestration}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 
@@ -168,7 +168,7 @@ echo "▶ Deploying Bicep…"
 # source for it. It mixes fine with the .bicepparam file + the inline overrides.
 az deployment group create \
   --resource-group "${RESOURCE_GROUP}" \
-  --name "fin-deepagents-dev-${STAMP}" \
+  --name "example-deepagents-dev-${STAMP}" \
   --template-file "${SCRIPT_DIR}/main.bicep" \
   --parameters "${SCRIPT_DIR}/main.bicepparam" \
   --parameters imageTag="${IMAGE_TAG}" \
@@ -182,6 +182,6 @@ echo ""
 echo "✅ Done. App URL:"
 az containerapp show \
   --resource-group "${RESOURCE_GROUP}" \
-  --name "fin-deepagents-dev" \
+  --name "example-deepagents-dev" \
   --query "properties.configuration.ingress.fqdn" -o tsv \
   | sed 's#^#   https://#'

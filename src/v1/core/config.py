@@ -77,7 +77,7 @@ class Settings(BaseSettings):
             "reference ServiceNow incidents; everyone else keeps it. Matched the same "
             "way as TENANT_GROUP_INDEX_MAPPING keys (object-id or display name). Empty "
             "(default) leaves ServiceNow enabled for everyone. Example for "
-            "external callers: SERVICENOW_DISABLED_GROUPS=FIN-APP-EXT"
+            "external callers: SERVICENOW_DISABLED_GROUPS=<your-external-group-name>"
         ),
     )
     #Openai Config

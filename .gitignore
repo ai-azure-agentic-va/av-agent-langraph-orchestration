@@ -68,7 +68,7 @@ infra/.pg_password
 docker-compose.override.yml
 SERVICENOW_GAP_ANALYSIS.md
 SERVICENOW_TESTCASE_GAP_ANALYSIS.md
-README_FIN_ServiceNow_Agent.md
+README_EXAMPLE_ServiceNow_Agent_PS.md
 docker-compose.yml
 
 # ServiceNow test-case source spec + local scratch dumps (not project code)

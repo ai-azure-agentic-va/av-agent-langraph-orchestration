@@ -17,7 +17,7 @@ What it tests — and what it deliberately does NOT:
   that needs ``cause`` returns nothing while ``cause`` is absent from the list
   output — that is the intended signal that the one ``tools.py`` change (surface
   ``cause`` in list rows) is still pending, NOT a bug in the case.
-* It does NOT run the LLM. Cases whose crux is upstream NLU entity
+* It does NOT run the LLM. Cases whose crux is upstream STTM / NLU entity
   resolution (Type B/C/D/E and the ``... -> ServiceNow`` variants) are tagged
   ``requires_resolution`` and reported separately — their resolution step needs
   the live agent and is out of scope for a deterministic fixture test.
@@ -140,11 +140,11 @@ async def run_plan(plan: Plan) -> set[str]:
 # -- retrieval plans -----------------------------------------------------------
 # Authored from each case's "Expected ServiceNow Filter" column, expressed with
 # CURRENT tool capabilities + post-filtering (no clients/servicenow.py change).
-# `requires_resolution=True` marks cases whose crux is NLU resolution; they
+# `requires_resolution=True` marks cases whose crux is STTM/NLU resolution; they
 # are reported separately and never fail the build.
 
 # 'open' is the bucket macro New+In Progress+On Hold (still being worked). Per the
-# FIN business rule Resolved is now in the CLOSED bucket, so 'open' no longer
+# business rule, Resolved is now in the CLOSED bucket, so 'open' no longer
 # returns Resolved tickets (it used to, via active=true). Use 'open,closed' when a
 # query should span every status regardless of whether work is finished.
 _OPEN = "open"
@@ -153,7 +153,7 @@ _ALL = "all"  # every status, both buckets (opt into closed/resolved explicitly)
 
 PLANS: dict[str, Plan] = {
     # -- Type A: direct open-incidents-by-datasource --------------------------
-    # The workbook lists INC3190020 (RESOLVED) under "open incidents", but the FIN
+    # The workbook lists INC3190020 (RESOLVED) under "open incidents", but the
     # business rule puts Resolved in the CLOSED bucket, so a strict 'open' query
     # excludes it. Override the workbook's expected set to the two genuinely-open
     # (In Progress) Core Banking tickets. (Confirmed: Resolved = closed, not open.)
@@ -172,7 +172,7 @@ PLANS: dict[str, Plan] = {
 
     # -- Type C: conversational / NLU (retrieval given the extracted entity) ---
     # TC-015: 'KYC' IS in INC3190020's description, but that ticket is RESOLVED, which
-    # the FIN rule now places in the CLOSED bucket — so 'open' alone no longer
+    # the business rule now places in the CLOSED bucket — so 'open' alone no longer
     # returns it. A KYC overview must span both buckets, hence 'open,closed'.
     "TC-015": Plan([Step({"statuses": _ALL, "description_contains": "KYC"})]),
 
@@ -186,8 +186,8 @@ PLANS: dict[str, Plan] = {
     # historical, so all statuses.
     "TC-035": Plan(
         [
-            Step({"statuses": _ALL, "assigned_to_name": "Pat Rivers"}),
-            Step({"statuses": _ALL, "resolved_by_name": "Pat Rivers"}),
+            Step({"statuses": _ALL, "assigned_to_name": "Priya Nair"}),
+            Step({"statuses": _ALL, "resolved_by_name": "Priya Nair"}),
         ]
     ),
     # "who is WORKING on" => open only (excludes the closed Customer Ent. ticket).
@@ -350,7 +350,7 @@ PLANS: dict[str, Plan] = {
     ),
 }
 
-# Cases whose crux is NLU resolution (needs the live agent). Listed so the
+# Cases whose crux is STTM/NLU resolution (needs the live agent). Listed so the
 # scoreboard accounts for every workbook case; not scored deterministically.
 _RESOLUTION_DEPENDENT = {
     "TC-008", "TC-009", "TC-010", "TC-011", "TC-012", "TC-013", "TC-014",

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Smoke-test the deployed fin-deepagents-dev: auth enforcement + Postgres.
+# Smoke-test the deployed example-deepagents-dev: auth enforcement + Postgres.
 #
 # Suites:
 #   health    - public endpoints (/ok, /info, /metrics) respond
@@ -20,7 +20,7 @@
 # =============================================================================
 set -uo pipefail
 
-BASE_URL="${BASE_URL:-https://fin-deepagents-dev.example-0000000.eastus2.azurecontainerapps.io}"
+BASE_URL="${BASE_URL:-https://example-deepagents-dev.example-env-id.eastus2.azurecontainerapps.io}"
 # Default the API audience client-id from the committed source of truth
 # (infra/.env.deploy → ENTRA_CLIENT_ID) so the value lives in exactly one place;
 # fall back to the known dev client-id if the file is unreadable.

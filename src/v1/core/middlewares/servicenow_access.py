@@ -2,7 +2,7 @@
 
 The parent orchestration agent is a process-wide singleton (see
 :mod:`v1.core.agent`), so the set of wired subagents cannot vary per request at
-build time. Some callers (e.g. external users) must NOT have access to
+build time. Some callers (e.g. IORM / external users) must NOT have access to
 the ServiceNow ticket subagent, while internal callers keep it. The caller's
 Entra groups are only reliably available *during* a run (the same
 ``groups_from_config()`` path :func:`ai_search_tool` uses to resolve the index),

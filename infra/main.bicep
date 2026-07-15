@@ -1,8 +1,8 @@
 // =============================================================================
-// fin-deepagents-dev — Azure Container App (IaC)
+// example-deepagents-dev — Azure Container App (IaC)
 // =============================================================================
 // Deploys the langraph-agent-orchestration backend as a NEW container app
-// named `fin-deepagents-dev` INTO the existing dev platform.
+// named `example-deepagents-dev` INTO the existing dev platform.
 //
 // SERVER: the repo Dockerfile is `FROM langchain/langgraph-api:3.11` — the
 // LangGraph Platform server. It listens on port 8000, serves health at /ok, and
@@ -16,17 +16,17 @@
 //     to instead point REDIS_URI at an existing Redis URL stored in Key Vault.
 //
 // Reuses (does NOT recreate) the shared dev infrastructure:
-//   - ACA managed environment : fin-chat-env-dev
-//   - Container registry       : findev0000000000acr   (pull via user identity)
-//   - User-assigned identity   : fin-chat-agent-mi-dev  (AcrPull, KV Secrets User,
+//   - ACA managed environment : example-chat-env-dev
+//   - Container registry       : exampledevacr   (pull via user identity)
+//   - User-assigned identity   : example-chat-agent-mi-dev  (AcrPull, KV Secrets User,
 //                                Search Index Data Reader, Cognitive Services OpenAI User)
-//   - Key Vault                : fin-chat-kv-dev-xxxxxx
+//   - Key Vault                : example-chat-kv-dev
 //
 // Sensitive secrets are read from Key Vault via Key Vault references on the
 // container-app secrets (resolved at runtime by the user-assigned identity);
 // they are never set as plaintext.
 //
-// Scope: resource group (deploy into fin-chat-agent-dev-rg).
+// Scope: resource group (deploy into example-chat-agent-dev-rg).
 // =============================================================================
 
 targetScope = 'resourceGroup'
@@ -38,7 +38,7 @@ targetScope = 'resourceGroup'
 param location string = 'eastus2'
 
 @description('Name of the new container app.')
-param containerAppName string = 'fin-deepagents-dev'
+param containerAppName string = 'example-deepagents-dev'
 
 @description('Name of the container inside the app.')
 param containerName string = 'deepagents'
@@ -47,16 +47,16 @@ param containerName string = 'deepagents'
 // Existing shared infrastructure (referenced, never created)
 // ----------------------------------------------------------------------------
 @description('Existing ACA managed environment to deploy into.')
-param managedEnvironmentName string = 'fin-chat-env-dev'
+param managedEnvironmentName string = 'example-chat-env-dev'
 
 @description('Existing user-assigned managed identity used for ACR pull + Key Vault access.')
-param userAssignedIdentityName string = 'fin-chat-agent-mi-dev'
+param userAssignedIdentityName string = 'example-chat-agent-mi-dev'
 
 @description('Existing Azure Container Registry name (without .azurecr.io).')
-param acrName string = 'findev0000000000acr'
+param acrName string = 'exampledevacr'
 
 @description('Existing Key Vault name that holds the secrets.')
-param keyVaultName string = 'fin-chat-kv-dev-xxxxxx'
+param keyVaultName string = 'example-chat-kv-dev'
 
 // ----------------------------------------------------------------------------
 // Image

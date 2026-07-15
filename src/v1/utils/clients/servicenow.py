@@ -2,7 +2,7 @@
 
 Two modes share one return envelope so callers never branch on transport:
 
-* ``mock`` — serves the FIN incident contract from an in-process fixture list.
+* ``mock`` — serves the ServiceNow incident contract from an in-process fixture list.
 * ``real`` — OAuth client-credentials token + GET against a ServiceNow instance,
   with optional fallback to the mock dataset when the live call fails.
 
@@ -33,14 +33,16 @@ from v1.utils.retry import http_retry_async
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_INCIDENT_PREFIX = "/api/fini/v1/va_support/incidents"
+# Placeholder path — every real environment must set the client-specific prefix
+# via SERVICENOW_INCIDENT_LIST_API_PREFIX (mock mode never hits it).
+_DEFAULT_INCIDENT_PREFIX = "/api/v1/example_support/incidents"
 _BUNDLED_FIXTURE = Path(__file__).parent / "fixtures" / "servicenow_incidents.json"
 
 # Origin used to build incident deep links when running in mock mode with no
 # SERVICENOW_INSTANCE_URL configured. Lets local/mock testing render links in the
 # correct ``?sys_id=`` format without forcing the user to set an instance URL.
 # Real mode never uses this — it requires the per-environment SERVICENOW_INSTANCE_URL.
-_DEFAULT_MOCK_ORIGIN = "https://findev5.service-now.com"
+_DEFAULT_MOCK_ORIGIN = "https://mock.service-now.com"
 
 # Renew a cached OAuth token this many seconds before its stated expiry so an
 # in-flight request never races the token going stale on the server side.
@@ -62,14 +64,17 @@ _REFERENCE_FILTER_FIELDS = {
 
 # ``<filter key>`` -> ``<incident field>`` for case-insensitive substring filters.
 # ``description_contains`` has its own match branch (long description);
+# ``short_description_contains`` searches the ticket title (live-verified 2026-07-13:
+# the live wrapper accepts it and it narrows results server-side);
 # ``close_notes_contains`` searches the close notes (resolution / cluster evidence).
-# Cause is matched ONLY via the exact ``cause`` filter — the FIN instance does not
+# Cause is matched ONLY via the exact ``cause`` filter — the ServiceNow instance does not
 # expose a cause substring filter, so ``cause_contains`` is removed. The other
-# substring filters FIN does not support (short_description_contains,
-# resolution_notes_contains, configuration_item_contains) remain removed; pipeline /
+# substring filters the instance does not support (resolution_notes_contains,
+# configuration_item_contains) remain removed; pipeline /
 # missing-data narrowing is done agent-side from the ``category`` and
 # ``configuration_item`` fields already present in each result.
 _CONTAINS_FILTER_FIELDS = {
+    "short_description_contains": "short_description",
     "close_notes_contains": "close_notes",
 }
 
@@ -274,7 +279,7 @@ def _sanitize_contains(value: str) -> str:
     """Plain-substring value for a ``*_contains`` filter.
 
     The API does plain substring matching automatically, so SQL-LIKE ``%``
-    wildcards and stray surrounding quotes must be dropped (a literal ``%ALPHA%``
+    wildcards and stray surrounding quotes must be dropped (a literal ``%TSYS%``
     would otherwise search for percent signs). Inner spaces are kept — the wire
     encoder turns them into ``%20``. Shared by the real wire path and the mock
     matcher so both strip identically.
@@ -397,14 +402,16 @@ class _FilterSpec:
 
 # Single source of truth for which filter keys may reach the real ``/incidents``
 # endpoint and how each value is encoded on the wire. A key absent from this table
-# is dropped (and logged) rather than forwarded, so a filter the FIN instance does
+# is dropped (and logged) rather than forwarded, so a filter the ServiceNow instance does
 # not expose can never silently hit the live API. This mirrors the authoritative
-# supported-filter list in README_FIN_ServiceNow_Agent.md §3.2 exactly. The keys
-# §3.3 marks NOT supported (short_description_contains, cause_contains,
+# supported-filter list in the ServiceNow agent contract README §3.2 exactly, plus
+# short_description_contains (README §3.3 marked it unsupported, but it was
+# live-verified working against the live wrapper on 2026-07-13). The keys that stay
+# NOT supported (cause_contains,
 # probable_cause_contains, resolution_notes_contains, solved_by_name) — and the
 # record fields that are OUTPUTS rather than filters (``category``, ``opened_at``) —
 # are deliberately absent. ``cause`` is exact-match against the closed "Probable cause"
-# value set on the FIN instance: Action Request, Code Error, Data Availability, Data
+# value set on the ServiceNow instance: Action Request, Code Error, Data Availability, Data
 # Quality, Deployment Issue, Documentation Issues, Education/Training, False Positive,
 # Holiday, Maintenance, Network Cluster Issue, Network or Connectivity Issue,
 # Requirements Issues, Software Upgrade, Subnet Issue, Timing/Scheduling Issue — a
@@ -420,6 +427,7 @@ SUPPORTED_FILTERS: dict[str, _FilterSpec] = {
     "state": _FilterSpec("state", "passthrough"),
     "active": _FilterSpec("active", "passthrough"),
     "description_contains": _FilterSpec("description_contains", "contains"),
+    "short_description_contains": _FilterSpec("short_description_contains", "contains"),
     "close_notes_contains": _FilterSpec("close_notes_contains", "contains"),
     "cause": _FilterSpec("cause", "exact"),
     "assigned_to": _FilterSpec("assigned_to", "passthrough"),
@@ -937,9 +945,8 @@ class ServiceNowClient:
             needle = _sanitize_contains(str(value)).lower()
             if not needle:
                 return True
-            # ponytail: description only — the live FIN API does NOT search
-            # short_description, so the mock must not either. Add short_description
-            # back here AND to SUPPORTED_FILTERS when the instance exposes it.
+            # description only — short_description has its own live-verified filter
+            # (short_description_contains, handled by _CONTAINS_FILTER_FIELDS below).
             haystack = _reference_value(incident.get("description")).lower()
             return _contains_all_tokens(needle, haystack)
 

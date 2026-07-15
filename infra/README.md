@@ -1,10 +1,10 @@
-# fin-deepagents-dev — Infrastructure as Code
+# deepagents-dev — Infrastructure as Code
 
 Bicep IaC that deploys this backend as a **new** Azure Container App,
-`fin-deepagents-dev`, into the **existing** shared dev platform.
+`deepagents-dev`, into the **existing** shared dev platform.
 
 **Status: deployed and healthy.**
-`https://fin-deepagents-dev.example-0000000.eastus2.azurecontainerapps.io`
+`https://deepagents-dev.example-env-id.eastus2.azurecontainerapps.io`
 (`/ok` → 200; SDK endpoints enforce JWT → 401 without a token.)
 
 ## Server model
@@ -39,21 +39,21 @@ Three new container apps; everything else is **reused** (referenced, never creat
 
 | New resource | Purpose |
 | --- | --- |
-| `fin-deepagents-dev` | the agent (port 8000) |
-| `fin-deepagents-dev-redis` | internal Redis (`redis:7-alpine`, TCP 6379) → `REDIS_URI`. Toggle `deployRedis=false`. |
-| `fin-deepagents-dev-postgres` | internal Postgres (`postgres:16-alpine`, TCP 5432) → `DATABASE_URI`. Toggle `deployPostgres=false`. |
+| `deepagents-dev` | the agent (port 8000) |
+| `deepagents-dev-redis` | internal Redis (`redis:7-alpine`, TCP 6379) → `REDIS_URI`. Toggle `deployRedis=false`. |
+| `deepagents-dev-postgres` | internal Postgres (`postgres:16-alpine`, TCP 5432) → `DATABASE_URI`. Toggle `deployPostgres=false`. |
 
 | Shared resource (existing, referenced) | Name |
 | --- | --- |
-| Resource group | `fin-chat-agent-dev-rg` |
-| ACA managed environment | `fin-chat-env-dev` (East US 2) |
-| Container registry | `findev0000000000acr` |
-| User-assigned identity | `fin-chat-agent-mi-dev` |
-| Key Vault | `fin-chat-kv-dev-xxxxxx` |
+| Resource group | `<resource-group>` |
+| ACA managed environment | `<managed-environment>` (East US 2) |
+| Container registry | `<container-registry>` |
+| User-assigned identity | `<managed-identity>` |
+| Key Vault | `<key-vault>` |
 
 The identity already holds **AcrPull**, **Key Vault Secrets User**, **Search
-Index Data Reader** (`aisearchfin`), **Cognitive Services OpenAI User**
-(`fin-openai-dev`) — no new role assignments needed.
+Index Data Reader** (`<ai-search-service>`), **Cognitive Services OpenAI User**
+(`example-openai-resource`) — no new role assignments needed.
 
 ## Configuration model
 
@@ -112,7 +112,7 @@ Sensitive values are **not** plaintext env vars:
 | `LANGSMITH_API_KEY` | Key Vault ref → `langsmith-api-key` |
 | `ENTRA_CLIENT_SECRET` | Key Vault ref → `entra-client-secret` (activates OBO group resolution) |
 | `DATABASE_URI` | container-app secret `database-uri` (in-env Postgres DSN; encrypted at rest). `deployPostgres=false` → Key Vault ref `agent-server-postgres-dsn` |
-| `REDIS_URI` | in-env `redis://fin-deepagents-dev-redis:6379` (or KV ref `agent-server-redis-url` when `deployRedis=false`) |
+| `REDIS_URI` | in-env `redis://deepagents-dev-redis:6379` (or KV ref `agent-server-redis-url` when `deployRedis=false`) |
 
 Key Vault refs resolve at runtime via the user-assigned identity. The app also
 gets `AZURE_KEY_VAULT_URI` + `AZURE_CLIENT_ID` so its own `resolve_env_secret()`
@@ -171,10 +171,10 @@ persistence. Exit code is non-zero if anything fails.
 Manual spot-checks / logs:
 
 ```bash
-BASE=https://fin-deepagents-dev.example-0000000.eastus2.azurecontainerapps.io
+BASE=https://deepagents-dev.example-env-id.eastus2.azurecontainerapps.io
 curl -s -o /dev/null -w "%{http_code}\n" "$BASE/ok"                 # 200
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/threads"    # 401 (auth enforced)
-az containerapp logs show -g fin-chat-agent-dev-rg -n fin-deepagents-dev --type console --follow
+az containerapp logs show -g <resource-group> -n deepagents-dev --type console --follow
 ```
 
 Also confirm `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` (`text-embedding-3-large` by

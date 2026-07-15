@@ -14,6 +14,7 @@ fixture data by default (mock mode), or the real ServiceNow REST API when
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime
@@ -32,17 +33,26 @@ from v1.utils.clients.servicenow import (
 
 SOURCE = "servicenow"
 
-DEFAULT_TICKET_LIMIT = 10
 MAX_TICKET_LIMIT = 25
+
+# Page size when the caller omits limit. Env-tunable via SERVICENOW_DEFAULT_LIMIT
+# (teammates found 25-row pages too big); clamped to [1, MAX_TICKET_LIMIT] and
+# falling back to 10 on an unset or non-numeric value.
+try:
+    DEFAULT_TICKET_LIMIT = min(
+        max(int(os.getenv("SERVICENOW_DEFAULT_LIMIT", "10")), 1), MAX_TICKET_LIMIT
+    )
+except ValueError:
+    DEFAULT_TICKET_LIMIT = 10
 
 # Friendly status -> ServiceNow incident state NUMERIC value. The incident
 # contract serves ``state`` as a {value, display_value} reference pair, and the
-# real FINI wrapper API filters on the NUMERIC ``state`` value, not the display
+# real wrapper API filters on the NUMERIC ``state`` value, not the display
 # string — the display strings ('In Progress', 'On Hold', ...) do NOT match on the
 # live instance, the integer codes do. So we send the integer code on the wire; the
 # client's ``state`` filter (passthrough) forwards it verbatim, and the mock matcher
 # matches it against the ``value`` side of the {value, display_value} pair.
-# The FIN State choice list (verified against the instance / State cheat-sheet) is:
+# The ServiceNow State choice list (verified against the instance / State cheat-sheet) is:
 # 1 New, 2 In Progress, 3 On Hold, 6 Resolved, 7 Closed, 8 Canceled (one L —
 # 'Canceled' is the instance spelling).
 _STATUS_TO_STATE = {
@@ -68,7 +78,7 @@ _STATUS_TO_STATE_DISPLAY = {
 }
 
 # "open" and "closed" are not ServiceNow incident states; they are convenience
-# MACROS that expand to an explicit SET of real states. This is the FIN business
+# MACROS that expand to an explicit SET of real states. This is the business
 # definition of the two buckets (confirmed by the team):
 #   open   -> New (1) + In Progress (2) + On Hold (3)        [still being worked]
 #   closed -> Resolved (6) + Closed (7) + Cancelled (8)      [no longer being worked]
@@ -76,7 +86,7 @@ _STATUS_TO_STATE_DISPLAY = {
 # ``normalize_status_filters``), so the existing per-state fan-out OR's them and
 # ``_status_filters`` only ever receives a real numeric state.
 #
-# Why NOT use active=true/false: on the FIN instance Resolved (state=6) is
+# Why NOT use active=true/false: on the ServiceNow instance Resolved (state=6) is
 # active=TRUE — active only flips false at Closed/Canceled. So active=true would
 # pull Resolved into the OPEN bucket, but the business rule puts Resolved in the
 # CLOSED bucket. Expanding to explicit states is the only way to honor the rule.
@@ -138,7 +148,7 @@ _STATE_DISPLAY_TO_STATUS.update(
     {code: canonical for canonical, code in _STATUS_TO_STATE.items() if canonical != "closed_state"}
 )
 
-# Closed set of "Probable cause" choices on the FIN instance. ``cause`` is an
+# Closed set of "Probable cause" choices on the ServiceNow instance. ``cause`` is an
 # EXACT (case-insensitive) match against the FULL stored label — a paraphrase,
 # partial word, or off-list value returns ZERO records (see the cause filter rule
 # in SERVICENOW_SUBAGENT_PROMPT and SUPPORTED_FILTERS["cause"] in the client). This
@@ -311,7 +321,7 @@ def caller_opted_into_closed(statuses: str | Iterable[str] | None) -> bool:
 def normalize_cause(cause: str) -> str:
     """Resolve a (possibly partial) cause term to its canonical ``VALID_CAUSES`` label.
 
-    The FIN instance matches ``cause`` EXACTLY against the FULL stored label — it
+    The ServiceNow instance matches ``cause`` EXACTLY against the FULL stored label — it
     has no substring/``LIKE`` operator for this field, so a partial term sent to the
     wire matches nothing (a false "none found"). End users, however, rarely type the
     full label; they say "subnet" or "network cluster". So we resolve the loose term
@@ -521,7 +531,12 @@ def _ticket_base(incident: Mapping[str, Any]) -> dict[str, Any]:
         # UTC-labeled: ServiceNow serves these in UTC; mark them so the user sees the
         # zone. opened_at rides the compact row too (it is on every record anyway) so
         # "when was it opened" never renders 'Not available' off a detail=False row.
-        "opened_at": _utc_timestamp(incident.get("opened_at")),
+        # Live QA records can OMIT opened_at while carrying sys_created_on (same
+        # instant — record creation IS the open time), so fall back to it.
+        "opened_at": (
+            _utc_timestamp(incident.get("opened_at"))
+            or _utc_timestamp(incident.get("sys_created_on"))
+        ),
         "updated_at": _utc_timestamp(incident.get("sys_updated_on")),
         # Deep link to the incident, constructed sys_id-based by the client from the
         # instance origin (the API returns no usable link). The sys_id lives ONLY
@@ -625,6 +640,8 @@ def normalize_ticket_list(
     # shared offset can't honestly index those independent result sets (and is rejected
     # upstream), so there is NO usable next-page cursor. Emit next_offset only for a
     # SINGLE state — null tells the agent "not pageable; narrow to one state to page".
+    # (A bare call defaults to the OPEN bucket = 3 states, so it is multi-status too;
+    # statuses=None here is only the direct ticket_numbers fetch, where paging is moot.)
     pageable = statuses is not None and len(statuses) == 1
     return {
         "ok": True,
@@ -673,6 +690,7 @@ def _validate_date_bound(name: str, value: str) -> str:
 def _build_field_filters(
     *,
     description_contains: str | None,
+    short_description_contains: str | None,
     close_notes_contains: str | None,
     cause: str | None,
     assigned_to: str | None,
@@ -716,6 +734,7 @@ def _build_field_filters(
 
     substring_filters = {
         "description_contains": description_contains,
+        "short_description_contains": short_description_contains,
         "close_notes_contains": close_notes_contains,
         "assigned_to": assigned_to,
         "resolved_by": resolved_by,
@@ -763,7 +782,7 @@ async def servicenow_get_ticket_detail(
         Field(
             description=(
                 "ServiceNow incident number in the form INC followed by seven "
-                "digits, e.g. INC0001234."
+                "digits, e.g. INC3011201."
             )
         ),
     ],
@@ -804,8 +823,11 @@ async def servicenow_list_tickets(
                 "worked). 'closed' expands to Resolved + Closed + Cancelled (tickets "
                 "no longer being worked). Note Resolved is in the CLOSED bucket, not "
                 "open. "
-                "'all' expands to EVERY state (open + closed) — use it when the caller "
-                "wants all/every incident regardless of status. "
+                "'all' expands to EVERY state (open + closed). GATE: pass 'all' (or any "
+                "closed word) ONLY when the user's own words ask for it — 'all'/'every' "
+                "incident, closed/resolved/cancelled, history, or a past time window. A "
+                "topical ask ('incidents related to / for <X>') is NOT such a signal: "
+                "OMIT this argument. "
                 "SAFE DEFAULT: if you OMIT this argument the tool returns OPEN tickets "
                 "only — closed/resolved/cancelled tickets are NEVER returned unless you "
                 "ask for them with an explicit closed word: 'all', 'closed', "
@@ -815,7 +837,10 @@ async def servicenow_list_tickets(
                 "broken now' / related-incident questions you can omit it (or pass "
                 "'open'). Pass individual states (e.g. 'new,in_progress') for finer "
                 "control; use 'closed only' for just the single Closed state without "
-                "Resolved/Cancelled."
+                "Resolved/Cancelled. A user who names ONE specific state ('resolved "
+                "incidents', 'cancelled tickets') gets EXACTLY that state — pass "
+                "statuses='resolved' alone, NOT the 'closed' bucket; single-state "
+                "queries are also the only ones that paginate."
             )
         ),
     ] = None,
@@ -825,10 +850,25 @@ async def servicenow_list_tickets(
             description=(
                 "Case-insensitive substring matched against the ticket description "
                 "(the long description names the data source / business segment, "
-                "e.g. 'transaction ledger' or 'Segment ALPHA'). Use this for general "
+                "e.g. 'transaction ledger' or 'Core Banking'). Use this for general "
                 "free-text and data-source searches. Pass a plain keyword or key "
                 "nouns — NO % wildcards or quotes (matching is automatic; multi-word "
                 "values match as AND-of-words, not an exact phrase)."
+            )
+        ),
+    ] = None,
+    short_description_contains: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Case-insensitive substring matched against the ticket TITLE only "
+                "(short_description). Titles are TERSE — data source names and detail "
+                "live in the long description, so prefer description_contains as the "
+                "primary content filter. Use this only as a SECONDARY narrower for a "
+                "short system/pipeline/tool keyword that appears in titles (e.g. "
+                "'adf', 'pipeline'), optionally ANDed with description_contains to "
+                "cross-filter title vs body. Plain keyword, no % wildcards; "
+                "multi-word matches AND-of-words."
             )
         ),
     ] = None,
@@ -868,7 +908,7 @@ async def servicenow_list_tickets(
         str | None,
         Field(
             description=(
-                "ServiceNow user CODE of the assignee, e.g. 'D1234' — NOT a sys_id "
+                "ServiceNow user CODE of the assignee, e.g. 'D7834' — NOT a sys_id "
                 "and NOT the display name (a sys_id returns 0 records). PREFERRED over "
                 "assigned_to_name whenever you have the code (extract it from a "
                 "'Name (CODE)' string). Do NOT also set resolved_by in the same call — "
@@ -881,7 +921,7 @@ async def servicenow_list_tickets(
         str | None,
         Field(
             description=(
-                "ServiceNow user CODE of the resolver, e.g. 'D1234' (same rules as "
+                "ServiceNow user CODE of the resolver, e.g. 'D7834' (same rules as "
                 "assigned_to: code only, never a sys_id; preferred over "
                 "resolved_by_name). Do NOT also set assigned_to in the same call — the "
                 "API ANDs them and returns ~0; query the two in SEPARATE calls and union."
@@ -893,7 +933,7 @@ async def servicenow_list_tickets(
         Field(
             description=(
                 "EXACT full name of the assignee INCLUDING the user-ID code in "
-                "parentheses, e.g. 'Jane Doe (D1234)'. The code is "
+                "parentheses, e.g. 'Dhanalakshmi Sundharam (D7834)'. The code is "
                 "REQUIRED: a bare name without the parenthesized code returns ZERO on "
                 "the live instance, and partial names never match. If you do not have "
                 "the user's code, do NOT guess it or pass a bare name — ask the user "
@@ -910,7 +950,7 @@ async def servicenow_list_tickets(
         Field(
             description=(
                 "EXACT full name of the resolver INCLUDING the user-ID code in "
-                "parentheses, e.g. 'Jane Doe (D1234)'. The code is "
+                "parentheses, e.g. 'Dhanalakshmi Sundharam (D7834)'. The code is "
                 "REQUIRED and partial/bare names return ZERO (same rule as "
                 "assigned_to_name) — if you lack the code, ask the user for their user "
                 "ID or read it from a ticket they worked, do not guess."
@@ -956,7 +996,7 @@ async def servicenow_list_tickets(
         Field(
             description=(
                 "Comma-separated list of specific ticket numbers to fetch in ONE "
-                "call, e.g. 'INC0001234,INC0005678'. ALWAYS use this for two or more "
+                "call, e.g. 'INC3011201,INC3185010'. ALWAYS use this for two or more "
                 "numbers instead of calling servicenow_get_ticket_detail per ticket. It "
                 "returns every named incident regardless of status (no status filter is "
                 "applied), so closed/resolved ones come back too; the limit is sized to "
@@ -968,14 +1008,16 @@ async def servicenow_list_tickets(
         int | None,
         Field(
             description=(
-                "Maximum tickets to return. Defaults to the backend default and "
-                "must not exceed the backend max which is 25"
+                "Maximum tickets to return. OMIT it for a normal list (the backend "
+                "default applies); must not exceed the backend max which is 25. Pass "
+                "a higher value only when the user asks for more or completeness "
+                "matters (has_more=true on a prior page, a full-sweep classify)."
             )
         ),
     ] = None,
     count: Annotated[
         int | None,
-        Field(description="Alias for limit. Do not pass both unless they match. Limit is 25"),
+        Field(description="Alias for limit. Do not pass both unless they match. Max is 25"),
     ] = None,
     offset: Annotated[
         int | None,
@@ -1063,6 +1105,7 @@ async def servicenow_list_tickets(
             )
         field_filters = _build_field_filters(
             description_contains=description_contains,
+            short_description_contains=short_description_contains,
             close_notes_contains=close_notes_contains,
             cause=cause,
             assigned_to=assigned_to,
@@ -1142,6 +1185,21 @@ async def servicenow_list_tickets(
                     continue
                 seen.add(number)
                 merged.append(incident)
+
+        # STATE BACKSTOP: drop any row whose state was not requested. The per-status
+        # fan-out already sends a state filter per call, but if the live wrapper ever
+        # ignores/mishandles it, closed rows would silently ride an open-only query.
+        # Enforce the contract locally so that can never reach the user. (None =
+        # direct ticket_numbers fetch — status is deliberately irrelevant there.)
+        if normalized_statuses is not None:
+            allowed = {
+                "closed" if s == "closed_state" else s for s in normalized_statuses
+            }
+            merged = [
+                i
+                for i in merged
+                if _canonical_status(_reference_value(i.get("state"))) in allowed
+            ]
 
         return normalize_ticket_list(
             merged[:normalized_limit],

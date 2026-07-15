@@ -313,21 +313,6 @@ var SLIDES = [
     ] },
 
 
-  { type:"matrix", act:"The options", nav:"Decision matrix",
-    title:"Decision matrix",
-    cols:["Speed / cost","Recall","Hard-limit control","User impact","Complexity"],
-    rows:[
-      { m:"Summarization",        c:[["Good","favorable"],["Med–High","favorable"],["Medium","moderate"],["Low","favorable"],["Low–Med","favorable"]] },
-      { m:"Sliding window",       c:[["Very good","favorable"],["Low","caution"],["Very high","favorable"],["Medium","moderate"],["Low","favorable"]] },
-      { m:"Selective retention",  c:[["Good","favorable"],["Medium","moderate"],["Medium","moderate"],["Low","favorable"],["Med","moderate"]] },
-      { m:"Session boundary",     c:[["Very good","favorable"],["Medium","moderate"],["Very high","favorable"],["Med–High","caution"],["Med","moderate"]] },
-      { m:"Offloaded recall",     c:[["Good","favorable"],["High","favorable"],["Medium","moderate"],["Low","favorable"],["Low","favorable"]] },
-      { m:"Structured summaries", c:[["Good","favorable"],["High","favorable"],["Medium","moderate"],["Low","favorable"],["Med","moderate"]] },
-      { m:"Vector retrieval",     c:[["Mixed","caution"],["Med–High","favorable"],["High","favorable"],["Low","favorable"],["High","caution"]] },
-      { m:"Context isolation",    c:[["Very good","favorable"],["High","favorable"],["High","favorable"],["Low","favorable"],["Med–High","caution"]] },
-      { m:"Caching / model knobs",c:[["Good","favorable"],["No change","neutral"],["Low","caution"],["Low","favorable"],["Low","favorable"]] }
-    ],
-    note:"Ratings are directional, not exact estimates. For User impact &amp; Complexity, lower is better — the colors already account for this." },
 
 
   { type:"layers", act:"The plan", nav:"Layered defense",

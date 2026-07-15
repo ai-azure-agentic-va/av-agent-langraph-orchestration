@@ -100,9 +100,20 @@ def test_single_word_still_matches() -> None:
     assert "INC0000001" in _matching(description_contains="data")
 
 
+def test_short_description_contains_matches_title_only() -> None:
+    # Live-verified filter (2026-07-13): searches the TITLE, not the body — 'ledger'
+    # is in INC2's title AND body, 'pipeline' only in its body. And it must be
+    # forwarded to the real API, not dropped.
+    from v1.utils.clients.servicenow import SUPPORTED_FILTERS
+
+    assert "short_description_contains" in SUPPORTED_FILTERS
+    assert _matching(short_description_contains="ledger ingest") == {"INC0000002"}
+    assert _matching(short_description_contains="pipeline") == set()
+
+
 def test_tokenization_applies_to_close_notes_contains() -> None:
     # 'feed truncated' -> tokens 'feed' + 'truncated', both in INC1's close notes.
-    # (FIN exposes no cause substring filter; close_notes_contains is the supported
+    # (The instance exposes no cause substring filter; close_notes_contains is the supported
     # substring filter for resolution/close-note evidence.)
     assert _matching(close_notes_contains="feed truncated") == {"INC0000001"}
 

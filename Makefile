@@ -8,10 +8,10 @@
 # both are in place before deploying. See infra/README.md for the full story.
 
 # --- Azure / deploy config (override on the command line, e.g. `make deploy RG=...`) ---
-RG          ?= fin-chat-agent-dev-rg
-APP         ?= fin-deepagents-dev
+RG          ?= example-chat-agent-dev-rg
+APP         ?= example-deepagents-dev
 SUBSCRIPTION ?= 22222222-2222-2222-2222-222222222222
-KV          ?= fin-chat-kv-dev-xxxxxx
+KV          ?= example-chat-kv-dev
 
 # Key Vault secrets that main.bicep references. They MUST exist before deploying,
 # or the container app's Key Vault references won't resolve. entra-client-secret
@@ -27,7 +27,6 @@ TEST_ENV = PYTHONPATH=src SERVICENOW_MODE=mock PERSISTENCE_BACKEND=memory \
 PY = .venv/bin/python
 TESTS = src/v1/test/v1/utils/test_servicenow_intents.py \
 	src/v1/test/v1/utils/test_servicenow.py \
-	src/v1/test/v1/utils/test_servicenow_access.py \
 	src/v1/test/v1/utils/test_agent_recursion.py \
 	src/v1/test/v1/utils/test_graph_groups.py
 

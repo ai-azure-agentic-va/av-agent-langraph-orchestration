@@ -1,7 +1,7 @@
 using './main.bicep'
 
 // -----------------------------------------------------------------------------
-// fin-deepagents-dev — infra/deploy-shape parameters ONLY.
+// example-deepagents-dev — infra/deploy-shape parameters ONLY.
 // -----------------------------------------------------------------------------
 // App CONFIG (auth, Azure OpenAI/Search endpoints, tenant mappings, LangSmith,
 // ServiceNow, log level, …) is NO LONGER here. It lives in infra/.env.deploy and
@@ -19,7 +19,7 @@ using './main.bicep'
 param imageTag = 'REPLACE_WITH_IMAGE_TAG'
 
 // --- App identity ------------------------------------------------------------
-param containerAppName = 'fin-deepagents-dev'
+param containerAppName = 'example-deepagents-dev'
 
 // --- Runtime shape (matches the langgraph-api image) -------------------------
 param targetPort = 8000
