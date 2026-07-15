@@ -1,7 +1,8 @@
 """Azure Data Factory tools for the ``adf-agent`` subagent.
 
-Authentication uses the process-wide async ``DefaultAzureCredential``
-(:func:`v1.utils.azure_credentials.get_async_azure_credential`), so the SAME
+Authentication uses the process-wide ``DefaultAzureCredential`` via a
+thread-offloaded async adapter
+(:class:`v1.utils.azure_credentials.ThreadOffloadAsyncCredential`), so the SAME
 code works everywhere:
 
 - **Locally** it picks up the developer's ``az login`` session.
@@ -34,14 +35,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from azure.mgmt.datafactory.aio import DataFactoryManagementClient
-from azure.mgmt.datafactory.models import RunFilterParameters, RunQueryFilter
+from azure.mgmt.datafactory.models import (
+    RunFilterParameters,
+    RunQueryFilter,
+    RunQueryOrderBy,
+)
 from langchain_core.tools import tool
 
 from v1.core.config import get_settings
-from v1.utils.azure_credentials import get_async_azure_credential
+from v1.utils.azure_credentials import ThreadOffloadAsyncCredential
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -51,6 +57,10 @@ SOURCE = "adf"
 _MAX_MSG = 600  # truncate long ADF error blobs (some are full HTML pages)
 
 _RUN_ID_HELP = "[adf-agent] Please provide a pipeline run_id (get one from list_pipeline_runs)."
+
+# Run-listing pagination bound: 20 pages × 100 runs keeps count questions exact
+# up to 2,000 runs per window while capping worst-case latency.
+_RUNS_MAX_PAGES = 20
 
 
 def _truncate(text) -> str:
@@ -128,7 +138,12 @@ async def _client(subscription_id: str) -> DataFactoryManagementClient:
                     "Creating DataFactoryManagementClient for subscription %s", subscription_id
                 )
                 client = DataFactoryManagementClient(
-                    credential=get_async_azure_credential(),
+                    # Thread-offloaded adapter over the sync credential: the
+                    # native async credential does blocking work on the event
+                    # loop during acquisition, which `langgraph dev`'s
+                    # blocking-call detector rejects (breaking ADF auth in
+                    # local dev). See ThreadOffloadAsyncCredential.
+                    credential=ThreadOffloadAsyncCredential(),
                     subscription_id=subscription_id,
                 )
                 _clients[subscription_id] = client
@@ -209,20 +224,33 @@ async def list_pipeline_runs(
     pipeline_name: str = "",
     last_n_days: int = 7,
     status: str = "",
+    trigger_name: str = "",
+    start_date: str = "",
+    end_date: str = "",
     factory: str = "",
 ) -> str:
-    """List recent pipeline runs in an Azure Data Factory.
+    """List recent pipeline runs in an Azure Data Factory, newest first.
 
     Args:
         pipeline_name: Optional exact pipeline name to filter by (e.g. "pl_orchestrator").
                        Leave empty to list runs across all pipelines.
-        last_n_days:   How far back to look (default 7).
+        last_n_days:   How far back to look (default 7). Ignored when
+                       start_date/end_date are given.
         status:        Optional status filter, one of "Succeeded", "Failed",
                        "InProgress", "Queued", "Cancelled". Leave empty for all.
+        trigger_name:  Optional exact trigger name to filter by (e.g.
+                       "tr_orchestrator_every_2_hours") — only runs started by
+                       that trigger are returned. Leave empty for all runs.
+        start_date:    Optional window start, "YYYY-MM-DD" (UTC, inclusive).
+                       Use with end_date for questions about a specific date
+                       range (e.g. "between Jul 10 and Jul 12").
+        end_date:      Optional window end, "YYYY-MM-DD" (UTC, inclusive —
+                       covers that whole day).
         factory:       Optional factory alias (from list_factories). Leave empty
                        to use the default factory.
 
-    Returns each run's runId, pipeline name, status, start time and duration.
+    Returns each run's runId, pipeline name, status, start time, duration and
+    what triggered it (trigger or parent pipeline).
     Use the returned runId with get_pipeline_run_tree (hierarchical pipelines)
     or get_pipeline_run_details (child-free pipelines) to see error logs.
     """
@@ -231,6 +259,26 @@ async def list_pipeline_runs(
     except _FactoryError as exc:
         return str(exc)
     now = datetime.now(timezone.utc)
+    window_after = now - timedelta(days=max(1, last_n_days))
+    window_before = now
+    if start_date or end_date:
+        try:
+            if start_date:
+                window_after = datetime.fromisoformat(start_date.strip())
+                if window_after.tzinfo is None:
+                    window_after = window_after.replace(tzinfo=timezone.utc)
+            if end_date:
+                window_before = datetime.fromisoformat(end_date.strip())
+                if window_before.tzinfo is None:
+                    window_before = window_before.replace(tzinfo=timezone.utc)
+                # A bare date means "through the end of that day".
+                if len(end_date.strip()) == 10:
+                    window_before += timedelta(days=1)
+        except ValueError:
+            return (
+                "[adf-agent] Invalid start_date/end_date — use YYYY-MM-DD, e.g. "
+                "start_date='2026-07-10', end_date='2026-07-12'."
+            )
     filters = []
     if pipeline_name:
         filters.append(
@@ -238,36 +286,70 @@ async def list_pipeline_runs(
         )
     if status:
         filters.append(RunQueryFilter(operand="Status", operator="Equals", values_property=[status]))
+    if trigger_name:
+        # ADF's run-query operand is "TriggeredByName" (not "TriggerName");
+        # it matches the trigger or invoking entity name on each run.
+        filters.append(
+            RunQueryFilter(
+                operand="TriggeredByName", operator="Equals", values_property=[trigger_name]
+            )
+        )
     params = RunFilterParameters(
-        last_updated_after=now - timedelta(days=max(1, last_n_days)),
-        last_updated_before=now,
+        last_updated_after=window_after,
+        last_updated_before=window_before,
         filters=filters,
+        # ADF returns pages oldest-first by default, so an unordered query plus
+        # our display cap silently showed the OLDEST runs as "recent".
+        order_by=[RunQueryOrderBy(order_by="RunStart", order="DESC")],
     )
     try:
         client = await _client(sub)
         resp = await client.pipeline_runs.query_by_factory(rg, name, filter_parameters=params)
+        runs = list(resp.value or [])
+        # Page through the full window (bounded) so counts are totals, not the
+        # first-page slice — count questions were silently under-reporting.
+        token = getattr(resp, "continuation_token", None)
+        pages = 1
+        while token and pages < _RUNS_MAX_PAGES:
+            params.continuation_token = token
+            resp = await client.pipeline_runs.query_by_factory(
+                rg, name, filter_parameters=params
+            )
+            runs.extend(resp.value or [])
+            token = getattr(resp, "continuation_token", None)
+            pages += 1
     except Exception as exc:
         return f"[adf-agent] ERROR querying runs in factory '{alias}': {_truncate(exc)}"
-
-    runs = list(resp.value or [])
     if not runs:
         scope = f" for pipeline '{pipeline_name}'" if pipeline_name else ""
-        return (
-            f"[adf-agent] No runs{scope} in factory '{alias}' in the last {last_n_days} day(s)."
+        window = (
+            f"between {window_after.date()} and {window_before.date()}"
+            if (start_date or end_date)
+            else f"in the last {last_n_days} day(s)"
         )
+        return f"[adf-agent] No runs{scope} in factory '{alias}' {window}."
 
     lines = []
     for r in runs[:40]:  # cap output; user can narrow with filters
+        invoked = f"{r.invoked_by.name} ({r.invoked_by.invoked_by_type})" if r.invoked_by else "?"
         lines.append(
             f"  - runId={r.run_id} | {r.pipeline_name} | {r.status} | "
-            f"start={r.run_start} | {r.duration_in_ms or 0} ms"
+            f"start={r.run_start} | {r.duration_in_ms or 0} ms | triggeredBy={invoked}"
         )
-    header = f"[adf-agent] {len(runs)} run(s) in factory '{alias}'" + (
-        f" for '{pipeline_name}'" if pipeline_name else ""
+    exact = token is None
+    header = (
+        f"[adf-agent] {len(runs)}{'' if exact else '+'} run(s) (newest first) in factory "
+        f"'{alias}'" + (f" for '{pipeline_name}'" if pipeline_name else "")
     )
+    if not exact:
+        header += f" (window has even more runs — counts are lower bounds after {_RUNS_MAX_PAGES} pages; narrow the window or filters for exact totals)"
     if len(runs) > 40:
-        header += " (showing first 40 — filter by pipeline_name or status to narrow)"
-    return header + ":\n" + "\n".join(lines)
+        counts = Counter((r.pipeline_name, r.status) for r in runs)
+        header += "\n  totals by pipeline and status:"
+        for (pipe, run_status), n in sorted(counts.items()):
+            header += f"\n    - {pipe} | {run_status}: {n}"
+        header += "\n  showing the newest 40 runs:"
+    return header + "\n" + "\n".join(lines)
 
 
 async def _activity_runs_for(client, rg: str, factory_name: str, run, run_id: str) -> list:
@@ -293,8 +375,10 @@ async def get_pipeline_run_details(run_id: str, factory: str = "") -> str:
         factory: Optional factory alias (from list_factories). Leave empty to
                  use the default factory. Must be the factory the run belongs to.
 
-    Returns the overall run status plus, for each activity in the run, its name,
-    type, status, any error message, and a short output preview — one level only.
+    Returns the overall run status, what triggered the run, plus for each
+    activity in the run its name, type, status, activityRunId, any error
+    message, and a short output preview — one level only. Use this to answer
+    questions about a specific activity (by name or activityRunId) inside a run.
     For runs of hierarchical pipelines (with Execute Pipeline activities), prefer
     get_pipeline_run_tree, which follows the errors into the child runs.
     """
@@ -312,16 +396,20 @@ async def get_pipeline_run_details(run_id: str, factory: str = "") -> str:
     except Exception as exc:
         return f"[adf-agent] ERROR fetching run '{run_id}' in factory '{alias}': {_truncate(exc)}"
 
+    invoked = (
+        f"{run.invoked_by.name} ({run.invoked_by.invoked_by_type})" if run.invoked_by else "?"
+    )
     out = [
         f"[adf-agent] Run {run_id} (factory '{alias}')",
-        f"  pipeline : {run.pipeline_name}",
-        f"  status   : {run.status}",
-        f"  start    : {run.run_start}",
-        f"  end      : {run.run_end}",
-        f"  duration : {run.duration_in_ms or 0} ms",
+        f"  pipeline    : {run.pipeline_name}",
+        f"  status      : {run.status}",
+        f"  triggeredBy : {invoked}",
+        f"  start       : {run.run_start}",
+        f"  end         : {run.run_end}",
+        f"  duration    : {run.duration_in_ms or 0} ms",
     ]
     if run.message:
-        out.append(f"  message  : {_clean_error(run.message)}")
+        out.append(f"  message     : {_clean_error(run.message)}")
 
     try:
         acts = await _activity_runs_for(client, rg, name, run, run_id)
@@ -335,7 +423,10 @@ async def get_pipeline_run_details(run_id: str, factory: str = "") -> str:
 
     out.append(f"  activities ({len(acts)}):")
     for a in acts:
-        out.append(f"    • {a.activity_name} [{a.activity_type}] → {a.status}")
+        out.append(
+            f"    • {a.activity_name} [{a.activity_type}] → {a.status} "
+            f"(activityRunId={a.activity_run_id})"
+        )
         error_line = _error_text(a.error)
         if error_line:
             out.append(f"        {error_line}")

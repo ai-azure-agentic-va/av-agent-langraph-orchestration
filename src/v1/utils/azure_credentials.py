@@ -70,6 +70,30 @@ async def aclose_async_azure_credential() -> None:
         await credential.close()
 
 
+class ThreadOffloadAsyncCredential:
+    """Async ``TokenCredential`` that acquires tokens from the sync
+    ``DefaultAzureCredential`` singleton on a worker thread.
+
+    Async SDK clients (e.g. ``azure.mgmt.datafactory.aio``) call
+    ``await credential.get_token(...)`` on the event loop, but every credential
+    in the chain does blocking work during acquisition (``AzureCliCredential``
+    resolves ``az`` via ``shutil.which``/``os.access`` before shelling out).
+    That stalls the loop and is rejected outright by ``langgraph dev``'s
+    blocking-call detector, which surfaces as the whole chain "failing".
+    Offloading to a thread keeps the loop clean — the same pattern as
+    :func:`get_async_token_provider`. Token caching lives inside the shared
+    sync credential, so acquisitions after the first are cheap.
+    """
+
+    async def get_token(self, *scopes, **kwargs):
+        credential = get_azure_credential()
+        return await asyncio.to_thread(credential.get_token, *scopes, **kwargs)
+
+    async def close(self) -> None:
+        """Nothing to close — the underlying sync singleton is process-wide."""
+        return None
+
+
 def get_token_provider(scope: str) -> Callable[[], str]:
     """Return a bearer-token provider callable for ``scope``.
 
@@ -99,6 +123,7 @@ def get_async_token_provider(scope: str) -> Callable[[], Awaitable[str]]:
 
 
 __all__ = [
+    "ThreadOffloadAsyncCredential",
     "aclose_async_azure_credential",
     "get_async_azure_credential",
     "get_azure_credential",
