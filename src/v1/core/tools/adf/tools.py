@@ -22,7 +22,8 @@ The tools:
 2. ``list_pipelines``           — what pipelines exist in a factory
 3. ``list_pipeline_runs``       — recent runs (optionally filtered by pipeline/status)
 4. ``get_pipeline_run_details`` — one run's status + per-activity errors (flat)
-5. ``get_pipeline_run_tree``    — a run and all child pipeline runs, recursively
+5. ``get_pipeline_run_tree``    — the whole pipeline family a run belongs to,
+   reached from ANY run in it (climbs to the root, then walks back down)
 6. ``get_pipeline_structure``   — a pipeline's activity tree and child references
 
 All errors (auth, permission, unknown factory, ...) are returned as
@@ -171,6 +172,28 @@ def _error_text(err) -> str | None:
         code = err.get("errorCode", "")
         return f"error{f' {code}' if code else ''}: {_clean_error(err['message'])}"
     return None
+
+
+def _invoked_text(run) -> str:
+    """Render what started a run, including the PARENT RUN ID when a pipeline did.
+
+    ``invoked_by.pipeline_run_id`` is the only link from a child run back up to
+    its parent — ADF has no "list my parents" API — so it must be surfaced for
+    callers to navigate a hierarchy upward.
+    """
+    ib = getattr(run, "invoked_by", None)
+    if not ib:
+        return "?"
+    text = f"{ib.name} ({ib.invoked_by_type})"
+    if _is_child_run(run):
+        text += f" parentRunId={ib.pipeline_run_id}"
+    return text
+
+
+def _is_child_run(run) -> bool:
+    """True when this run was started by a parent pipeline's Execute Pipeline."""
+    ib = getattr(run, "invoked_by", None)
+    return bool(ib and ib.invoked_by_type == "PipelineActivity" and ib.pipeline_run_id)
 
 
 @tool
@@ -331,7 +354,7 @@ async def list_pipeline_runs(
 
     lines = []
     for r in runs[:40]:  # cap output; user can narrow with filters
-        invoked = f"{r.invoked_by.name} ({r.invoked_by.invoked_by_type})" if r.invoked_by else "?"
+        invoked = _invoked_text(r)
         lines.append(
             f"  - runId={r.run_id} | {r.pipeline_name} | {r.status} | "
             f"start={r.run_start} | {r.duration_in_ms or 0} ms | triggeredBy={invoked}"
@@ -396,18 +419,17 @@ async def get_pipeline_run_details(run_id: str, factory: str = "") -> str:
     except Exception as exc:
         return f"[adf-agent] ERROR fetching run '{run_id}' in factory '{alias}': {_truncate(exc)}"
 
-    invoked = (
-        f"{run.invoked_by.name} ({run.invoked_by.invoked_by_type})" if run.invoked_by else "?"
-    )
     out = [
         f"[adf-agent] Run {run_id} (factory '{alias}')",
         f"  pipeline    : {run.pipeline_name}",
         f"  status      : {run.status}",
-        f"  triggeredBy : {invoked}",
+        f"  triggeredBy : {_invoked_text(run)}",
         f"  start       : {run.run_start}",
         f"  end         : {run.run_end}",
         f"  duration    : {run.duration_in_ms or 0} ms",
     ]
+    if run.parameters:
+        out.append(f"  parameters  : {_truncate(dict(run.parameters))}")
     if run.message:
         out.append(f"  message     : {_clean_error(run.message)}")
 
@@ -437,17 +459,39 @@ async def get_pipeline_run_details(run_id: str, factory: str = "") -> str:
 
 # Recursion guards for run trees: a ForEach over hundreds of pages could fan
 # out into hundreds of child runs — walk failures fully, but bound the total.
-_TREE_MAX_DEPTH = 5
+# Depth is counted in PIPELINE levels; 8 clears the deepest real hierarchy seen
+# (5) with headroom. The run budget, not depth, is what bounds a wide ForEach.
+_TREE_MAX_DEPTH = 8
 _TREE_MAX_RUNS = 25
 
 
+async def _climb_to_root(client, rg: str, factory_name: str, run_id: str):
+    """Follow ``invoked_by.pipeline_run_id`` up to the run a trigger started.
+
+    A failed run found via ``list_pipeline_runs`` is usually a CHILD, so the
+    family can only be built after climbing to its root first.
+    """
+    run = await client.pipeline_runs.get(rg, factory_name, run_id)
+    visited = {run_id}
+    while _is_child_run(run):
+        parent_id = run.invoked_by.pipeline_run_id
+        if parent_id in visited:  # defensive: ADF should never cycle
+            break
+        visited.add(parent_id)
+        run = await client.pipeline_runs.get(rg, factory_name, parent_id)
+    return run
+
+
 async def _walk_run_tree(
-    client, rg: str, factory_name: str, run_id: str, depth: int, budget: dict
+    client, rg: str, factory_name: str, run_id: str, depth: int, budget: dict, stats: Counter
 ) -> list[str]:
-    indent = "  " * depth
-    if depth > _TREE_MAX_DEPTH:
+    # depth counts PIPELINE levels (not indent steps) so _TREE_MAX_DEPTH means
+    # what it says — indenting by 2 per level here silently capped it at ~2.
+    indent = "    " * depth
+    if depth >= _TREE_MAX_DEPTH:
         return [f"{indent}…[max depth {_TREE_MAX_DEPTH} reached]"]
     if budget["runs"] <= 0:
+        budget["truncated"] = True
         return [f"{indent}…[run budget reached — narrow to a specific child run_id]"]
     budget["runs"] -= 1
 
@@ -456,9 +500,8 @@ async def _walk_run_tree(
     except Exception as exc:
         return [f"{indent}✗ run {run_id}: ERROR fetching: {_truncate(exc)}"]
 
+    stats[run.status] += 1
     lines = [f"{indent}{run.pipeline_name} (runId={run_id}) → {run.status}"]
-    if run.message:
-        lines.append(f"{indent}  message: {_clean_error(run.message)}")
 
     try:
         acts = await _activity_runs_for(client, rg, factory_name, run, run_id)
@@ -466,50 +509,69 @@ async def _walk_run_tree(
         lines.append(f"{indent}  activities: ERROR querying: {_truncate(exc)}")
         return lines
 
-    # Show failures in full and recurse into their children; summarize the rest
-    # so a wide ForEach doesn't drown the answer.
-    succeeded_children = 0
+    # ADF re-wraps a child's error into the parent's message and into the parent's
+    # Execute Pipeline activity error, so a 5-level failure prints the same blob 5
+    # times and buries the root cause. Print an error only where it ORIGINATED —
+    # i.e. not on the hop that merely relays a failed child's error upward.
+    relays = {
+        a.activity_name
+        for a in acts
+        if a.activity_type == "ExecutePipeline"
+        and a.status == "Failed"
+        and isinstance(a.output, dict)
+        and a.output.get("pipelineRunId")
+    }
+    if run.message and not relays:
+        lines.append(f"{indent}  message: {_clean_error(run.message)}")
+
+    # Every child run is expanded — a family's "N failed / M succeeded" count is
+    # only true if the succeeded branches were actually visited. Activity detail
+    # is still failures-only, so a wide ForEach doesn't drown the answer.
     for a in acts:
         child_run_id = (a.output or {}).get("pipelineRunId") if isinstance(a.output, dict) else None
         is_execute = a.activity_type == "ExecutePipeline"
-        if a.status == "Succeeded" and is_execute and child_run_id:
-            succeeded_children += 1
-            continue
-        if a.status == "Succeeded" and not is_execute:
-            continue
-
-        lines.append(f"{indent}  • {a.activity_name} [{a.activity_type}] → {a.status}")
-        error_line = _error_text(a.error)
-        if error_line:
-            lines.append(f"{indent}      {error_line}")
+        if a.status != "Succeeded":
+            suffix = " (failed because its child run below failed)" if a.activity_name in relays else ""
+            lines.append(
+                f"{indent}  • {a.activity_name} [{a.activity_type}] → {a.status}{suffix}"
+            )
+            error_line = None if a.activity_name in relays else _error_text(a.error)
+            if error_line:
+                lines.append(f"{indent}      {error_line}")
         if is_execute and child_run_id:
             lines.extend(
-                await _walk_run_tree(client, rg, factory_name, child_run_id, depth + 2, budget)
+                await _walk_run_tree(
+                    client, rg, factory_name, child_run_id, depth + 1, budget, stats
+                )
             )
 
     total_failed = sum(1 for a in acts if a.status == "Failed")
-    summary = f"{indent}  ({len(acts)} activities: {total_failed} failed"
-    if succeeded_children:
-        summary += f"; {succeeded_children} succeeded child pipeline run(s) not expanded"
-    lines.append(summary + ")")
+    lines.append(f"{indent}  ({len(acts)} activities: {total_failed} failed)")
     return lines
 
 
 @tool
 async def get_pipeline_run_tree(run_id: str, factory: str = "") -> str:
-    """Walk a pipeline run AND all its child pipeline runs, recursively.
+    """Show the WHOLE pipeline family a run belongs to, from ANY run in it.
 
     Args:
-        run_id:  The pipeline run GUID of the top (parent) run.
+        run_id:  Any pipeline run GUID in the family — parent, child or deep
+                 grandchild. It does NOT have to be the top-level run.
         factory: Optional factory alias (from list_factories). Leave empty to
                  use the default factory. Must be the factory the run belongs to.
 
     This is THE tool for diagnosing hierarchical pipelines (parents that invoke
-    children via Execute Pipeline activities, e.g. pl_orchestrator). It follows
-    each Execute Pipeline activity into its child run — and grandchildren —
-    returning the whole tree with statuses and error messages, so the root
-    cause is visible however deep it is. Failed branches are expanded fully;
-    succeeded child runs are counted but not expanded.
+    children via Execute Pipeline activities, e.g. pl_orchestrator). It first
+    climbs UP via each run's parent run id to the run a trigger started, then
+    walks the whole tree back down, so passing a failed child still returns the
+    entire family — every member's pipeline name, run id and status, plus the
+    error messages on failed activities, and a count of how many runs in the
+    family failed vs succeeded.
+
+    Note that a child's failure normally fails its parent too, so several failed
+    runs in one family are usually ONE root cause echoing upward: the real error
+    is the deepest failed activity. Sibling branches can still succeed, so
+    report the counts rather than assuming the whole family failed.
     """
     if not run_id or not run_id.strip():
         return _RUN_ID_HELP
@@ -517,10 +579,30 @@ async def get_pipeline_run_tree(run_id: str, factory: str = "") -> str:
         alias, sub, rg, name = _resolve_factory(factory)
     except _FactoryError as exc:
         return str(exc)
+    requested = run_id.strip()
     client = await _client(sub)
-    budget = {"runs": _TREE_MAX_RUNS}
-    lines = await _walk_run_tree(client, rg, name, run_id.strip(), depth=0, budget=budget)
-    return f"[adf-agent] Run tree (factory '{alias}'):\n" + "\n".join(lines)
+
+    try:
+        root = await _climb_to_root(client, rg, name, requested)
+    except Exception as exc:
+        return f"[adf-agent] ERROR fetching run '{requested}' in factory '{alias}': {_truncate(exc)}"
+
+    budget = {"runs": _TREE_MAX_RUNS, "truncated": False}
+    stats: Counter = Counter()
+    lines = await _walk_run_tree(client, rg, name, root.run_id, depth=0, budget=budget, stats=stats)
+
+    header = f"[adf-agent] Pipeline family (factory '{alias}')"
+    if root.run_id != requested:
+        header += (
+            f"\n  run {requested} is a CHILD; its family root is "
+            f"{root.pipeline_name} (runId={root.run_id}), started by {_invoked_text(root)}"
+        )
+    total = sum(stats.values())
+    counts = ", ".join(f"{n} {status}" for status, n in sorted(stats.items()))
+    summary = f"\n  family: {total} pipeline run(s) — {counts or 'none'}"
+    if budget["truncated"]:
+        summary += " (partial — run budget reached, counts are lower bounds)"
+    return header + ":\n" + "\n".join(lines) + summary
 
 
 def _walk_definition(activities: list, depth: int) -> list[str]:

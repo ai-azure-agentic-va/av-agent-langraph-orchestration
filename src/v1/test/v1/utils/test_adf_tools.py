@@ -31,6 +31,13 @@ _RISK = {"subscription_id": "sub-2", "resource_group": "rg-risk", "factory_name"
 
 
 @dataclass
+class _InvokedBy:
+    name: str
+    invoked_by_type: str
+    pipeline_run_id: str | None = None
+
+
+@dataclass
 class _Run:
     run_id: str
     pipeline_name: str
@@ -39,6 +46,7 @@ class _Run:
     run_end: Any = None
     duration_in_ms: int = 1000
     message: str = ""
+    invoked_by: Any = None
 
 
 @dataclass
@@ -255,6 +263,64 @@ def test_run_tree_follows_failed_child_to_root_cause() -> None:
         assert "Copy data [Copy] → Failed" in result  # root cause reached
         assert "Table not found" in result and "<html>" not in result  # HTML stripped
     finally:
+        restore()
+
+
+def test_run_tree_climbs_from_child_to_root_and_counts_family() -> None:
+    """A failed CHILD run must still yield the whole family.
+
+    Mirrors the shape of the pl_L1_DailyMaster demo tree: the failure is a leaf,
+    its ancestors failed only by propagation, and a sibling succeeded.
+    """
+    runs = {
+        "root": _Run("root", "pl_L1_DailyMaster", "Failed", invoked_by=_InvokedBy("tr", "ScheduleTrigger")),
+        "mid": _Run("mid", "pl_L2_Ingest", "Failed", invoked_by=_InvokedBy("Exec", "PipelineActivity", "root")),
+        "leaf": _Run("leaf", "pl_L3_Copy", "Failed", invoked_by=_InvokedBy("Exec", "PipelineActivity", "mid")),
+        "ok": _Run("ok", "pl_L2_Transform", "Succeeded", invoked_by=_InvokedBy("Exec", "PipelineActivity", "root")),
+    }
+    activities = {
+        "root": [
+            _Activity("Exec_Ingest", "ExecutePipeline", "Failed", output={"pipelineRunId": "mid"}),
+            _Activity("Exec_Transform", "ExecutePipeline", "Succeeded", output={"pipelineRunId": "ok"}),
+        ],
+        "mid": [_Activity("Exec_Copy", "ExecutePipeline", "Failed", output={"pipelineRunId": "leaf"})],
+        "leaf": [_Activity("CopyFile", "Copy", "Failed", error={"errorCode": "5001", "message": "source missing"})],
+        "ok": [_Activity("Transform", "Wait", "Succeeded")],
+    }
+    client = _FakeClient(runs=runs, activities=activities)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        # asked about the LEAF, not the root — the tool must climb up first
+        result = _run(adf.get_pipeline_run_tree.ainvoke({"run_id": "leaf"}))
+        assert "is a CHILD" in result and "runId=root" in result
+        assert "pl_L1_DailyMaster (runId=root) → Failed" in result  # climbed to the root
+        assert "source missing" in result  # root cause still reached
+        # the succeeded sibling branch is expanded, so the counts are real
+        assert "pl_L2_Transform (runId=ok) → Succeeded" in result
+        assert "family: 4 pipeline run(s) — 3 Failed, 1 Succeeded" in result
+    finally:
+        restore()
+
+
+def test_run_tree_depth_cap_counts_pipeline_levels() -> None:
+    """_TREE_MAX_DEPTH must mean N pipeline levels, not N indent steps."""
+    runs = {str(i): _Run(str(i), f"pl_L{i}", "Failed") for i in range(6)}
+    activities = {
+        str(i): [_Activity("Exec", "ExecutePipeline", "Failed", output={"pipelineRunId": str(i + 1)})]
+        for i in range(5)
+    }
+    activities["5"] = [_Activity("Fail", "Fail", "Failed", error={"message": "deepest"})]
+    client = _FakeClient(runs=runs, activities=activities)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    saved = adf._TREE_MAX_DEPTH
+    adf._TREE_MAX_DEPTH = 6  # 6 levels allowed -> all 6 runs must be reached
+    try:
+        result = _run(adf.get_pipeline_run_tree.ainvoke({"run_id": "0"}))
+        assert "max depth" not in result
+        assert "deepest" in result  # the 6th level was actually walked
+        assert "family: 6 pipeline run(s) — 6 Failed" in result
+    finally:
+        adf._TREE_MAX_DEPTH = saved
         restore()
 
 
