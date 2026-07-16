@@ -381,7 +381,17 @@ def normalize_cause(cause: str) -> str:
 
 
 def validate_ticket_limit(limit: int | None) -> int:
-    """Validate a ticket list count limit."""
+    """Validate a ticket list count limit; values above the default are CLAMPED.
+
+    HARD ENFORCEMENT: page size is deployment-controlled, never model-controlled.
+    The model kept passing limit=25 on default-shaped queries despite the prompt's
+    "OMIT limit" instruction, so a prompt-level gate is not enough — any requested
+    limit above the env-configured default (SERVICENOW_DEFAULT_LIMIT, normally 10)
+    is silently clamped down to it. Raise the env var to widen pages; page with
+    offset (single-state queries) to see more. The only path allowed to exceed the
+    default is the explicit ticket_numbers batch, which sizes itself to the count
+    (capped at MAX_TICKET_LIMIT) AFTER this clamp.
+    """
 
     if limit is None:
         return DEFAULT_TICKET_LIMIT
@@ -392,10 +402,7 @@ def validate_ticket_limit(limit: int | None) -> int:
     if limit < 1:
         raise ServiceNowToolInputError("limit must be at least 1")
 
-    if limit > MAX_TICKET_LIMIT:
-        raise ServiceNowToolInputError(f"limit must be {MAX_TICKET_LIMIT} or less")
-
-    return limit
+    return min(limit, DEFAULT_TICKET_LIMIT)
 
 
 def resolve_ticket_limit(*, limit: int | None = None, count: int | None = None) -> int:
@@ -864,11 +871,11 @@ async def servicenow_list_tickets(
                 "Case-insensitive substring matched against the ticket TITLE only "
                 "(short_description). Titles are TERSE — data source names and detail "
                 "live in the long description, so prefer description_contains as the "
-                "primary content filter. Use this only as a SECONDARY narrower for a "
-                "short system/pipeline/tool keyword that appears in titles (e.g. "
-                "'adf', 'pipeline'), optionally ANDed with description_contains to "
-                "cross-filter title vs body. Plain keyword, no % wildcards; "
-                "multi-word matches AND-of-words."
+                "primary content filter. When the ask names TWO different keywords (a "
+                "system/pipeline/tool term AND a data source), SPLIT them: put the "
+                "system/tool term HERE and the data source in description_contains — "
+                "never cram both into description_contains as one AND-of-words value. "
+                "Plain keyword, no % wildcards; multi-word matches AND-of-words."
             )
         ),
     ] = None,
@@ -1009,15 +1016,16 @@ async def servicenow_list_tickets(
         Field(
             description=(
                 "Maximum tickets to return. OMIT it for a normal list (the backend "
-                "default applies); must not exceed the backend max which is 25. Pass "
-                "a higher value only when the user asks for more or completeness "
-                "matters (has_more=true on a prior page, a full-sweep classify)."
+                "default applies). Values ABOVE the backend default are CLAMPED down "
+                "to it — passing a big limit does nothing; to see more results, page "
+                "with offset (single-state queries only) or narrow the filters. Pass "
+                "a value only to request FEWER rows than the default."
             )
         ),
     ] = None,
     count: Annotated[
         int | None,
-        Field(description="Alias for limit. Do not pass both unless they match. Max is 25"),
+        Field(description="Alias for limit. Do not pass both unless they match. Values above the backend default are clamped to it."),
     ] = None,
     offset: Annotated[
         int | None,

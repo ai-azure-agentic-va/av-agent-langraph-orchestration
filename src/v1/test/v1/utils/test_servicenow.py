@@ -196,6 +196,16 @@ def test_all_status_fetches_every_state_not_just_open() -> None:
     assert _list() == {"OPEN-1"}  # safe default unchanged: open-only
 
 
+def test_limit_above_default_is_clamped() -> None:
+    # HARD ENFORCEMENT: page size is deployment-controlled (SERVICENOW_DEFAULT_LIMIT),
+    # never model-controlled — the model kept passing limit=25 despite the prompt.
+    from v1.core.tools.servicenow.tools import DEFAULT_TICKET_LIMIT, validate_ticket_limit
+
+    assert validate_ticket_limit(None) == DEFAULT_TICKET_LIMIT
+    assert validate_ticket_limit(25) == DEFAULT_TICKET_LIMIT
+    assert validate_ticket_limit(1) == 1
+
+
 # -- SNCLIENT-ENVDUP: promoted env helpers ------------------------------------
 
 

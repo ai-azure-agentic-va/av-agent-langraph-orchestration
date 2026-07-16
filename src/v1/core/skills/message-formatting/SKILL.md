@@ -40,10 +40,14 @@ add data the tools did not return.
 ## Core rules (always in effect)
 
 - Use markdown (bold, bullet points, headers) wherever it improves readability.
-- **NEVER render tables.** Do not use a markdown table for any data. Present
-  every item as a bulleted entry with its attributes as sub-bullets or inline
-  `label: value` pairs. Put long free-text fields (descriptions, notes,
-  resolutions) in a list, never in a table column.
+- **NEVER render tables.** Do not use a markdown table for any data. For
+  knowledge-base content, present each item as a bulleted entry with its
+  attributes as sub-bullets or inline `label: value` pairs. Put long free-text
+  fields (descriptions, notes, resolutions) in a list, never in a table column.
+- **EXCEPTION — ServiceNow incidents are NOT bulleted entries.** The
+  bullets-with-sub-bullets shape above never applies to incident results: each
+  incident is ONE line reproduced verbatim from the subagent (see "ServiceNow
+  incidents" below), in an ordered list (1., 2., 3.) when there are several.
 
 ## Citations — reusing `[n]` markers
 
@@ -110,9 +114,18 @@ It returns ONE line per incident in EXACTLY this shape:
 
 Reproduce that line CHARACTER-FOR-CHARACTER:
 
-- the incident number is the link text and appears once;
+- the incident number is the link text and appears once — the raw URL is NEVER
+  shown as visible text;
 - the bold `**State:**` / `**Priority:**` / `**Assigned to:**` labels stay bold;
-- the row stays ONE line — do NOT expand it into sub-bullets or a full card.
+- the row stays ONE line — do NOT expand it into sub-bullets or a full card;
+- when there are several incidents, wrap the rows in an ordered markdown list
+  (1., 2., 3., …), one row per incident, in result order;
+- the row's field set is CLOSED: State, Priority, Assigned to. NEVER add a
+  field the row does not carry — no `Data source / business service:`, no
+  `Category:`, no `Assignment group:`, and no placeholder like
+  `(not available in this view)`. If the user asked about a concept the row
+  does not carry (e.g. the data source), it lives in the incident's long
+  description — do not fabricate a per-row field for it.
 
 ### Single incident or a full-details request
 
@@ -140,5 +153,7 @@ full card.
 
 Every answer still ends with the mandatory `## Want to explore further?`
 follow-up block exactly as the system prompt specifies (a level-2 heading and
-exactly three specific question bullets), on every answer EXCEPT out-of-scope
-refusals. This skill does not change that rule — it remains in force here.
+exactly three specific question bullets), on every answer EXCEPT the two
+refusal kinds the system prompt exempts: out-of-scope refusals and
+reporting/aggregate declines. This skill does not change that rule — it
+remains in force here.
