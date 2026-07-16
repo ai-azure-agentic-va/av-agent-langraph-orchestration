@@ -196,6 +196,25 @@ def test_all_status_fetches_every_state_not_just_open() -> None:
     assert _list() == {"OPEN-1"}  # safe default unchanged: open-only
 
 
+def test_misaligned_offset_rejected() -> None:
+    # A legitimate next_offset is always a multiple of the page size; offset=25
+    # with 10-row pages is model-invented and would silently skip records.
+    client = _mock_client([_INCIDENT])
+
+    import v1.core.tools.servicenow.tools as tools_module
+
+    previous = tools_module._servicenow_client
+    tools_module._servicenow_client = client
+    try:
+        bad = asyncio.run(servicenow_list_tickets.ainvoke({"statuses": "closed_state", "offset": 25}))
+        good = asyncio.run(servicenow_list_tickets.ainvoke({"statuses": "closed_state", "offset": 20}))
+    finally:
+        tools_module._servicenow_client = previous
+
+    assert bad["ok"] is False and bad["kind"] == "invalid_input" and "next_offset" in bad["error"]
+    assert good["ok"] is True
+
+
 def test_limit_above_default_is_clamped() -> None:
     # HARD ENFORCEMENT: page size is deployment-controlled (SERVICENOW_DEFAULT_LIMIT),
     # never model-controlled — the model kept passing limit=25 despite the prompt.

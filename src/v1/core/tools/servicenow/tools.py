@@ -1111,6 +1111,20 @@ async def servicenow_list_tickets(
                 "offset is not supported with multiple statuses; paginate one "
                 "status at a time"
             )
+        # PAGE-ALIGNED OFFSETS ONLY: every sanctioned next_offset is offset+len(rows),
+        # and pages are full until the final one (has_more=false ends paging), so a
+        # legitimate offset is always a multiple of the page size. A model that
+        # invents an offset (e.g. 25 from the pre-clamp era while pages are now 10)
+        # would silently skip records; reject it with the corrective instruction so
+        # the retry reads next_offset instead. ponytail: if the wrapper ever serves a
+        # short page with has_more=true, relax this to accept that next_offset.
+        if normalized_offset % normalized_limit:
+            raise ServiceNowToolInputError(
+                f"offset {normalized_offset} is not a multiple of the page size "
+                f"{normalized_limit}. Never compute offsets — re-issue the SAME query "
+                "with offset set to the exact next_offset value from the previous "
+                "result (pages advance by the page size)."
+            )
         field_filters = _build_field_filters(
             description_contains=description_contains,
             short_description_contains=short_description_contains,
