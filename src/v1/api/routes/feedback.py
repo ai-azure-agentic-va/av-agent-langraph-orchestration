@@ -11,7 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import anyio.to_thread
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
@@ -53,7 +53,6 @@ def create_feedback_router() -> APIRouter:
     @router.post("")
     async def submit_feedback(
         payload: FeedbackPayload,
-        request: Request,
     ) -> dict[str, str]:
         if payload.score not in (0, 1):
             raise HTTPException(status_code=422, detail="score must be 0 or 1")

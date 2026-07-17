@@ -53,7 +53,7 @@ Three new container apps; everything else is **reused** (referenced, never creat
 
 The identity already holds **AcrPull**, **Key Vault Secrets User**, **Search
 Index Data Reader** (`<ai-search-service>`), **Cognitive Services OpenAI User**
-(`example-openai-resource`) — no new role assignments needed.
+(`yasnaran-3501-resource`) — no new role assignments needed.
 
 ## Configuration model
 

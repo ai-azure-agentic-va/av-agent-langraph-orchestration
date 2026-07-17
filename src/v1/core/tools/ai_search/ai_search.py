@@ -1,11 +1,10 @@
 import asyncio
 import itertools
 import logging
-import re
 import threading
 from collections import OrderedDict
 from datetime import date, datetime
-from typing import Any, Iterable, List, Tuple
+from typing import Any, List
 
 from azure.core.credentials import AzureKeyCredential, TokenCredential
 from azure.search.documents import SearchClient
@@ -149,144 +148,78 @@ def _doc_key(result) -> str:
     return _first_value(result, "source_url", "url", "source", "file_name", "document_title", "id")
 
 
-# Citation numbering must stay stable across EVERY ai_search_tool call within a
-# single turn. The orchestrator re-runs searches, and if each call renumbered
-# from [1] the markers in the final answer would collide — [1] could mean three
+# Document numbering must stay stable across EVERY ai_search_tool call within a
+# single turn. The orchestrator can re-run searches, and if each call renumbered
+# from [1] the markers in the final answer would collide — [1] could mean two
 # different documents. We key one registry per LangGraph run (turn) so a given
-# document keeps the same [n] no matter how many searches surface it, and the
-# next turn starts fresh at [1].
+# document keeps the same [n] no matter how many searches surface it, accumulate
+# the full retrieved-document set for the turn, and start fresh on the next turn.
 _MAX_TRACKED_TURNS = 1024
 _anon_counter = itertools.count()  # process-unique keys for unidentifiable docs
 
 
-class _TurnCitations:
-    """Cumulative [n] numbering for one turn (all searches in a run share it)."""
+class _TurnDocuments:
+    """Turn-stable ``[n]`` numbering + the full retrieved-document set for a turn.
+
+    Every search in a run shares one instance: a document keeps the same number
+    however many searches surface it, and the accumulated list is what the tool
+    streams to the UI after each search (an idempotent full replace).
+    """
 
     def __init__(self) -> None:
-        self._by_key: dict[str, int] = {}
+        self._index_by_key: dict[str, int] = {}
+        self._by_index: "dict[int, dict]" = {}
         self._next = 1
-        # Streamed source payload per citation number, kept so the end-of-turn
-        # citation filter can resolve the [n] markers the model actually used
-        # back to their full source records (see ``sources_for``).
-        self._sources_by_index: dict[int, dict] = {}
-        self.lock = threading.Lock()
+        self._lock = threading.Lock()
 
-    def assign(self, doc_key: str) -> Tuple[int, bool]:
-        """Return ``(citation_index, is_new)`` for ``doc_key``.
+    def assign(self, doc_key: str, document: dict) -> int:
+        """Return the turn-stable ``[n]`` for ``doc_key``.
 
         Allocates the next number the first time a document is seen this turn and
-        reuses it on every later search, so the same source never gets two
-        numbers and two sources never share one. ``is_new`` lets the caller emit
-        each source to the UI exactly once (the UI appends).
+        records its display payload; later searches that re-find the document
+        reuse the same number and keep the first-recorded payload.
         """
 
-        idx = self._by_key.get(doc_key)
-        if idx is not None:
-            return idx, False
-        idx = self._next
-        self._by_key[doc_key] = idx
-        self._next += 1
-        return idx, True
+        with self._lock:
+            idx = self._index_by_key.get(doc_key)
+            if idx is None:
+                idx = self._next
+                self._index_by_key[doc_key] = idx
+                self._next += 1
+                self._by_index[idx] = {"index": idx, **document}
+            return idx
 
-    def record_source(self, index: int, source: dict) -> None:
-        """Remember the streamed payload for ``index`` (first writer wins)."""
+    def documents(self) -> List[dict]:
+        """Every document retrieved so far this turn, ascending by ``[n]``."""
 
-        with self.lock:
-            self._sources_by_index.setdefault(index, source)
-
-    def sources_for(self, indices: Iterable[int]) -> List[dict]:
-        """Return the recorded sources for ``indices``, ascending and deduped.
-
-        Unknown indices (a marker the search never produced) are skipped, so a
-        hallucinated ``[n]`` can never conjure a source chip.
-        """
-
-        with self.lock:
-            seen: set[int] = set()
-            out: List[dict] = []
-            for idx in sorted(indices):
-                if idx in seen:
-                    continue
-                seen.add(idx)
-                source = self._sources_by_index.get(idx)
-                if source is not None:
-                    out.append(source)
-            return out
+        with self._lock:
+            return [self._by_index[i] for i in sorted(self._by_index)]
 
 
-_citation_registries: "OrderedDict[str, _TurnCitations]" = OrderedDict()
-_citation_registries_lock = threading.Lock()
+_document_registries: "OrderedDict[str, _TurnDocuments]" = OrderedDict()
+_document_registries_lock = threading.Lock()
 
 
-def _turn_citations(run_id: str | None) -> _TurnCitations:
-    """Per-turn citation registry, created on first use and LRU-evicted.
+def _turn_documents(run_id: str | None) -> _TurnDocuments:
+    """Per-turn document registry, created on first use and LRU-evicted.
 
-    Falls back to a throwaway registry (numbered per call, the old behaviour)
-    when there is no run context — e.g. a unit call outside the graph.
+    Falls back to a throwaway registry (numbered per call) when there is no run
+    context — e.g. a unit call outside the graph.
     """
 
     if not run_id:
-        return _TurnCitations()
-    with _citation_registries_lock:
-        reg = _citation_registries.get(run_id)
+        return _TurnDocuments()
+    with _document_registries_lock:
+        reg = _document_registries.get(run_id)
         if reg is None:
-            reg = _TurnCitations()
-            _citation_registries[run_id] = reg
+            reg = _TurnDocuments()
+            _document_registries[run_id] = reg
             # Bound memory: drop the oldest turn once we exceed the cap.
-            if len(_citation_registries) > _MAX_TRACKED_TURNS:
-                _citation_registries.popitem(last=False)
+            if len(_document_registries) > _MAX_TRACKED_TURNS:
+                _document_registries.popitem(last=False)
         else:
-            _citation_registries.move_to_end(run_id)
+            _document_registries.move_to_end(run_id)
         return reg
-
-
-def _peek_turn_citations(run_id: str | None) -> _TurnCitations | None:
-    """Return the existing registry for ``run_id`` without creating one.
-
-    Used by the end-of-turn citation filter: if no search ran this turn there is
-    no registry and nothing to filter.
-    """
-
-    if not run_id:
-        return None
-    with _citation_registries_lock:
-        reg = _citation_registries.get(run_id)
-        if reg is not None:
-            _citation_registries.move_to_end(run_id)
-        return reg
-
-
-# Inline citation markers as emitted in the answer: ``[1]``, ``[1][3]``, or a
-# comma list like ``[1, 3]``. We capture the digits between the brackets and
-# split them out below.
-_CITATION_MARKER_RE = re.compile(r"\[([\d,\s]+)\]")
-
-
-def cited_indices(text: str) -> List[int]:
-    """Citation numbers actually referenced in ``text``, ascending and deduped."""
-
-    found: set[int] = set()
-    for group in _CITATION_MARKER_RE.findall(text or ""):
-        for part in group.split(","):
-            part = part.strip()
-            if part.isdigit():
-                found.add(int(part))
-    return sorted(found)
-
-
-def cited_sources_for_current_run(answer_text: str) -> List[dict]:
-    """Sources whose ``[n]`` marker appears in ``answer_text`` for this turn.
-
-    Resolves the current run's citation registry and keeps only the sources the
-    model actually cited inline, in citation-number order. Returns ``[]`` when no
-    search ran this turn (no registry) so the UI clears any stray chips. Markers
-    that don't correspond to a retrieved source are ignored.
-    """
-
-    reg = _peek_turn_citations(_current_run_id())
-    if reg is None:
-        return []
-    return reg.sources_for(cited_indices(answer_text))
 
 
 def _current_run_id() -> str | None:
@@ -332,8 +265,8 @@ def _run_search(
     top_k: int,
     index_name: str,
     semantic_configuration: str | None,
-    citations: _TurnCitations,
-) -> Tuple[str, List[dict]]:
+    documents: _TurnDocuments,
+) -> str:
     """Embed the query, run a hybrid Azure AI Search, and shape the results.
 
     Runs in a worker thread (see ai_search_tool) because both the embeddings
@@ -342,18 +275,12 @@ def _run_search(
     thread hop (contextvars don't cross it); the semantic config must be the one
     defined on ``index_name`` or Azure 400s with "Unknown semantic configuration".
 
-    Returns a ``(grounding_text, new_sources)`` pair:
-    - ``grounding_text`` is the numbered passages handed to the LLM. Each
-      ``[n]`` matches a source's ``index`` so the model can cite by number, and
-      that number is stable for the whole turn (``citations``) — re-finding a
-      document in a later search reuses its existing number.
-    - ``new_sources`` holds only the documents numbered for the FIRST time in
-      this call, ready to stream to the UI (which appends them). Documents
-      carried over from an earlier search this turn are already on screen, so
-      they are omitted here but still appear in ``grounding_text``.
-
-    Documents below the configured relevance floor are dropped entirely, so a
-    query with no genuinely relevant hit yields no grounding and no source chips.
+    Chunks are collapsed into one entry per document (``_doc_key``). Each
+    document gets a turn-stable ``[n]`` from ``documents`` and is recorded there
+    for streaming; the returned grounding text prefixes each document's merged
+    content with its ``[n]`` so the model can cite by number. Documents below the
+    configured relevance floor are dropped, so a query with no genuinely relevant
+    hit yields the honest "no results" grounding.
     """
 
     # Reuse the cached client for this index (kept open for the process lifetime).
@@ -381,9 +308,9 @@ def _run_search(
 
     results = search_client.search(**search_kwargs)
 
-    # Collapse chunks to one entry per document, preserving first-seen
-    # (citation) order. Each document accumulates its chunk contents for
-    # grounding while the source metadata comes from its best-scoring chunk.
+    # Collapse chunks to one entry per document, preserving first-seen order.
+    # Each document accumulates its chunk contents for grounding; scores are the
+    # strongest seen across its chunks, other metadata comes from the first chunk.
     docs: "dict[str, dict]" = {}
     for r in results:
         real_key = _doc_key(r)
@@ -407,7 +334,7 @@ def _run_search(
                 "_contents": [content] if content else [],
                 # Turn-stable identity for cumulative numbering. Documents with
                 # no usable identifier get a process-unique key so two distinct
-                # unidentifiable docs never collapse into one citation number.
+                # unidentifiable docs never collapse into one number.
                 "_regkey": real_key or f"_anon_{next(_anon_counter)}",
             }
         else:
@@ -423,37 +350,26 @@ def _run_search(
 
     # Keep only documents that clear the relevance floor; an empty result here
     # means the KB has nothing genuinely on-topic, so the model gets the honest
-    # "no results" grounding and the UI gets no stray source chips.
+    # "no results" grounding and no documents are recorded for the UI.
     relevant = [doc for doc in docs.values() if _passes_relevance(doc)]
     if not relevant:
-        return "No results found in the knowledge base for this query.", []
+        return "No results found in the knowledge base for this query."
 
     passages: List[str] = []
-    new_sources: List[dict] = []
     for doc in relevant:
-        contents = doc.pop("_contents", [])
-        merged = "\n\n".join(contents)
-        # Stable, turn-global citation number for this document.
-        index, is_new = citations.assign(doc.pop("_regkey"))
+        merged = "\n\n".join(doc.pop("_contents", []))
+        regkey = doc.pop("_regkey")
+        # Lean display payload for the UI (drop empties); add a short preview.
+        display = {k: v for k, v in doc.items() if v not in (None, "")}
+        if merged:
+            display["preview"] = merged[:300]
+        # Turn-stable [n] for this document; records it for the UI on first sight.
+        index = documents.assign(regkey, display)
         passages.append(
             f"[{index}] {doc['title']}\nURL: {doc['url'] or ''}\nCONTENT:\n{merged}"
         )
 
-        # Emit each source to the UI only once per turn; re-found documents are
-        # already on screen under the same number and only need grounding text.
-        if is_new:
-            source = {"index": index, **doc}
-            if merged:
-                # Short preview for the UI; the full content stays in grounding.
-                source["preview"] = merged[:300]
-            # Drop empty/None fields so the streamed array stays lean.
-            cleaned = {k: v for k, v in source.items() if v not in (None, "")}
-            # Retain the exact payload streamed now so the end-of-turn citation
-            # filter can re-emit this same record if the model cites [index].
-            citations.record_source(index, cleaned)
-            new_sources.append(cleaned)
-
-    return "\n\n---\n\n".join(passages), new_sources
+    return "\n\n---\n\n".join(passages)
 
 
 def _emit(writer, payload: dict) -> None:
@@ -467,15 +383,20 @@ def _emit(writer, payload: dict) -> None:
         logger.debug("ai_search_tool stream emit failed", exc_info=True)
 
 
-@tool("ai_search_tool")
-async def ai_search_tool(query: str, top_k: int | None = None) -> str:
+@tool("ai_search_tool", response_format="content_and_artifact")
+async def ai_search_tool(query: str, top_k: int | None = None) -> tuple[str, list[dict]]:
     """
-    Search the company knowledge base and return cited passages.
+    Search the company knowledge base and return numbered passages to cite.
     Args:
          query (str): The search query.
          top_k (int, optional): The number of top results to return. Defaults to settings.ai_search_default_top_k.
     Returns:
-         str: A formatted string containing the search results with cited passages.
+         tuple[str, list[dict]]: ``(grounding_text, documents)``. ``grounding_text`` is the
+         numbered passages the model cites with ``[n]`` markers. ``documents`` is the full
+         retrieved-document set for the turn and becomes the ToolMessage ``artifact`` — it is
+         NOT shown to the model, but it IS persisted in the checkpoint, so a thread reopened
+         from history (where the live custom ``documents`` stream event never replays) can
+         still rebuild "Referenced Sources" and link inline ``[n]`` markers.
     """
     # Resolve the default here (not in the signature) so it tracks settings at
     # call time rather than being frozen at import.
@@ -514,21 +435,27 @@ async def ai_search_tool(query: str, top_k: int | None = None) -> str:
         settings.azure_ai_search_default_index,
     )
 
-    # Resolve the turn's citation registry here (in the run context) so [n]
-    # markers stay stable across every search this turn; passed into the thread
+    # Resolve the turn's document registry here (in the run context) so [n]
+    # numbers stay stable across every search this turn; passed into the thread
     # because contextvars don't cross it.
-    citations = _turn_citations(_current_run_id())
+    documents = _turn_documents(_current_run_id())
 
-    _emit(writer, {"type": "search_start"})
     try:
-        grounding_text, sources = await asyncio.to_thread(
-            _run_search, query, top_k, index_name, semantic_configuration, citations
+        grounding_text = await asyncio.to_thread(
+            _run_search, query, top_k, index_name, semantic_configuration, documents
         )
     except Exception as exc:  # surface search failures to the model, not as a crash
-        return f"Knowledge base search failed: {type(exc).__name__}: {exc}"
+        # response_format="content_and_artifact" requires EVERY return to be a
+        # (content, artifact) tuple; no documents were retrieved on failure.
+        return f"Knowledge base search failed: {type(exc).__name__}: {exc}", []
 
-    # Stream only the sources newly numbered by this search; the UI appends them
-    # under their turn-stable [n]. An empty list (no relevant hit, or every hit
-    # already shown) appends nothing — so a "not found" answer shows no chips.
-    _emit(writer, {"type": "search_complete", "sources": sources})
-    return grounding_text
+    # The FULL set of documents retrieved this turn (every search's hits, cited or
+    # not), numbered 1..n, goes out two ways: (1) the custom stream event drives the
+    # LIVE "Referenced Sources" UI as it streams, and (2) it is returned as the tool
+    # `artifact`, which persists on the ToolMessage in the checkpoint so a thread
+    # reopened from history — where the stream event never replays — can rebuild the
+    # same list and inline [n] links. Emitting the whole accumulated list each time
+    # makes the live event an idempotent replace — no ordering/merge assumptions.
+    turn_documents = documents.documents()
+    _emit(writer, {"type": "documents", "documents": turn_documents})
+    return grounding_text, turn_documents

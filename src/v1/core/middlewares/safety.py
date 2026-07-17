@@ -1,18 +1,10 @@
-from typing import List
 from langchain.agents.middleware import (
     AgentMiddleware,
     AgentState,
-    ModelRequest,
-    ModelResponse,
     hook_config,
 )
-from typing import Any, Callable, Optional, Literal, List, Dict
-from langchain_core.messages import (
-    SystemMessage,
-    HumanMessage,
-    AIMessage,
-)
-import json
+from typing import Any, Optional, List
+from langchain_core.messages import AIMessage
 import re
 
 from langchain_core.runnables import RunnableConfig

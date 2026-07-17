@@ -1,53 +1,18 @@
 
 from __future__ import annotations
 from functools import lru_cache
-import json
-import os
 from typing import Annotated
-from pydantic import Field, AliasChoices
+from pydantic import Field, AliasChoices, BeforeValidator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from v1.utils.helper import _split_csv
-from pydantic import (
-    AnyHttpUrl,
-    BeforeValidator
-)
 StringList = Annotated[list[str], BeforeValidator(_split_csv), NoDecode]
 
 class Settings(BaseSettings):
-    """Runtime configuration for the demo backend.
-
-    CORS_ORIGINS is intentionally stored as a plain string because pydantic-settings
-    expects complex env values like list[str] to be JSON. A comma-separated value is
-    friendlier for Docker Compose, so we parse it ourselves through cors_origin_list.
-    """
+    """Runtime configuration for the demo backend."""
     postgress_url: str = Field(default="postgresql://postgres:postgres@localhost:5432/deepagent?sslmode=disable", alias="POSTGRESS_DATABASE_URL")
     persistence_backend: str = Field(default="memory", alias="PERSISTENCE_BACKEND")
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-    api_bearer_token: str = Field(
-        default="dev-token-change-me",
-        alias="API_BEARER_TOKEN",
-        description="A token used to authenticate API requests. In production, use a secure, randomly generated token and keep it secret.",
-    )
-    app_name: str = "DeepAgent CopilotKit AG-UI Demo"
-    agent_name: str = Field(default="deepagent-demo", alias="AGENT_NAME")
-    agent_description: str = Field(
-        default="A LangGraph DeepAgent demo exposed through CopilotKit AG-UI.",
-        alias="AGENT_DESCRIPTION",
-        description="A brief description of the agent's purpose and capabilities.",
-    )
-    cors_origins: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173",
-        alias="CORS_ORIGINS",
-    )
     agent_max_steps: int = Field(default=50, alias="AGENT_MAX_STEPS")
-    #Entra auth config
-    entra_tenant_id: str | None = Field(default=None, alias="ENTRA_TENANT_ID")
-    entra_client_id: str | None = Field(default=None, alias="ENTRA_CLIENT_ID")
-    entra_audience: str | None = Field(default=None, alias="ENTRA_AUDIENCE")
-    entra_issuer: AnyHttpUrl | None = Field(default=None, alias="ENTRA_ISSUER")
-    entra_jwks_url: AnyHttpUrl | None = Field(default=None, alias="ENTRA_JWKS_URL")
-    entra_required_scopes: StringList = Field(default_factory=list, alias="ENTRA_REQUIRED_SCOPES")
-    entra_group_claim: str = Field(default="groups", alias="ENTRA_GROUP_CLAIM")
 
     tenant_group_index_mapping: dict[str, str] = Field(
         default_factory=dict,
@@ -81,7 +46,6 @@ class Settings(BaseSettings):
         ),
     )
     #Openai Config
-    ai_llm_default_top_p: float = 0.95
     # Optional: some models (e.g. reasoning / gpt-5 chat deployments) reject any
     # temperature other than the default and 400 if one is sent. Leave unset to
     # omit `temperature` from the request entirely (uses the model default);
@@ -89,7 +53,64 @@ class Settings(BaseSettings):
     ai_llm_default_temperature: float | None = Field(
         default=None, alias="AI_LLM_DEFAULT_TEMPERATURE"
     )
-    ai_llm_default_tmax_token: int = 25000
+    # Cap on the model's output (completion) tokens per call. Passed to the chat
+    # client as `max_tokens`, which langchain-openai serialises as
+    # `max_completion_tokens` — the field gpt-5 / reasoning deployments require.
+    ai_llm_default_max_tokens: int = Field(
+        default=10000, alias="AI_LLM_DEFAULT_MAX_TOKENS"
+    )
+
+    # --- Long-conversation context controls -------------------------------
+    # These knobs tune the layered defense that keeps long chats fast, cheap,
+    # and within the model's context window. They only take effect because
+    # ``v1.core.agent`` reads them and wires them into middleware — a value set
+    # here (or in .env) is inert unless agent.py passes it through.
+    context_edit_trigger_tokens: int = Field(
+        default=120000,
+        alias="CONTEXT_EDIT_TRIGGER_TOKENS",
+        description=(
+            "Selective retention. Once the request exceeds this many (approximate) "
+            "tokens, ContextEditingMiddleware clears the bodies of OLDER tool results "
+            "(ai_search grounding, ServiceNow detail cards) to a '[cleared]' placeholder "
+            "in the model-facing view only — the persisted messages and their artifacts "
+            "(e.g. citation 'Referenced Sources') are untouched. Set below the "
+            "summarization trigger (~231k on gpt-5.1) so tool bloat is shed before a "
+            "full compaction is paid for. The agent can re-query / re-fetch anything it "
+            "still needs."
+        ),
+    )
+    context_edit_keep_tool_results: int = Field(
+        default=3,
+        alias="CONTEXT_EDIT_KEEP_TOOL_RESULTS",
+        description=(
+            "How many of the most-recent tool results ContextEditingMiddleware keeps in "
+            "full when it clears older ones. The live turn's fresh results are always "
+            "preserved; only stale ones are cleared."
+        ),
+    )
+    context_window_floor_fraction: float = Field(
+        default=0.92,
+        alias="CONTEXT_WINDOW_FLOOR_FRACTION",
+        description=(
+            "Sliding-window safety floor. The hard per-call ceiling, as a fraction of the "
+            "model's max input tokens, that SlidingWindowFloorMiddleware enforces by "
+            "trimming the OLDEST messages from the request view (never mutating state). "
+            "Kept ABOVE the summarization trigger (0.85) so summarization normally fires "
+            "first; the floor only catches mis-fires or a single oversized turn."
+        ),
+    )
+    ai_llm_max_input_tokens: int | None = Field(
+        default=None,
+        alias="AI_LLM_MAX_INPUT_TOKENS",
+        description=(
+            "Absolute input-token budget used as the base for context_window_floor_fraction. "
+            "Leave unset to derive it from the model profile (max_input_tokens, e.g. 272000 "
+            "for gpt-5.1). Set it explicitly when the deployment name is custom and the "
+            "profile does not resolve a limit — otherwise the floor would lose its base and "
+            "silently degrade. INPUT tokens only; leave headroom for AI_LLM_DEFAULT_MAX_TOKENS "
+            "completion output."
+        ),
+    )
     #Search Configs
     ai_search_default_top_k: int = 7
     ai_search_min_score: float = Field(
@@ -146,7 +167,7 @@ class Settings(BaseSettings):
         "AZURE_AI_SEARCH_ENDPOINT",
         "AZURE_SEARCH_ENDPOINT",
         ),
-        agent_description="The endpoint URL for the Azure Search service, e.g., https://my-search.search.windows.net",
+        description="The endpoint URL for the Azure Search service, e.g., https://my-search.search.windows.net",
     )
     azure_search_api_key: str | None = Field(
         default=None,
@@ -154,7 +175,7 @@ class Settings(BaseSettings):
         "AZURE_AI_SEARCH_API_KEY",
         "AZURE_SEARCH_API_KEY",
         ),
-        agent_description="The API key for the Azure Search service."
+        description="The API key for the Azure Search service."
     )
     azure_ai_search_default_index: str = Field(
         default="documents",
@@ -162,7 +183,7 @@ class Settings(BaseSettings):
         "AZURE_AI_SEARCH_DEFAULT_INDEX",
         "AZURE_SEARCH_DEFAULT_INDEX",
         ),
-        agent_description=(
+        description=(
             "The default Azure Search index name to query if no index is specified. "
             "This should match the name of the index you created and populated with your documents. "
             "You can override this on a per-query basis if you have multiple indexes."
@@ -172,7 +193,7 @@ class Settings(BaseSettings):
     azure_vector_field_name: str = Field(
         default="content_vector",
         alias="AZURE_VECTOR_FIELD_NAME",
-        agent_description=(
+        description=(
             "The name of the vector field in your Azure Search index. This should match the field you used to store the document embeddings. The default is 'content_vector', which is a common choice"
             " but you may have named it differently when setting up your index."
         )
@@ -190,7 +211,7 @@ class Settings(BaseSettings):
         "last_modified",
         ],
         alias="AZURE_SEARCH_SELECT_FIELDS",
-        agent_description=(
+        description=(
             "Fields to select in Azure Search queries, matching the index schema. "
             "Every field listed here must exist in the target index or Azure Search "
             "rejects the query. Override when pointing at an index with a different schema."
@@ -213,17 +234,17 @@ class Settings(BaseSettings):
         "AZURE_OPENAI_ENDPOINT",
         "API_ENDPOINT",
         ),
-        agent_description="The base URL for the Azure OpenAI resource, e.g., https://my-resource.openai.azure.com/",
+        description="The base URL for the Azure OpenAI resource, e.g., https://my-resource.openai.azure.com/",
     )
     api_key: str | None = Field(
         default=None,
         alias="AZURE_OPENAI_API_KEY",
-        agent_description="The API key for authenticating with Azure OpenAI. Required if API_ENDPOINT is set.",
+        description="The API key for authenticating with Azure OpenAI. Required if API_ENDPOINT is set.",
     )
     api_version: str = Field(
         default="2026-05-05",
         alias="AZURE_OPENAI_API_VERSION",
-        agent_description="The API version to use for Azure OpenAI requests.",
+        description="The API version to use for Azure OpenAI requests.",
     )
     embedding_deployment: str | None = Field(
         default="text-embedding-3-large",
@@ -232,7 +253,7 @@ class Settings(BaseSettings):
             "AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT",
             "AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME"
         ),
-        agent_description="The deployment name for the embedding model.",
+        description="The deployment name for the embedding model.",
     )
     chat_deployment: str | None = Field(
         default="gpt-chat-latest",
@@ -240,7 +261,7 @@ class Settings(BaseSettings):
             "AZURE_OPENAI_CHAT_DEPLOYMENT",
             "AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"
         ),
-        agent_description="The deployment name for the chat model.",
+        description="The deployment name for the chat model.",
     )
     
     use_managed_identity: bool = Field(
@@ -249,57 +270,21 @@ class Settings(BaseSettings):
             "AZURE_USE_MANAGED_IDENTITY",
             "AZURE_OPENAI_USE_MANAGED_IDENTITY",
         ),
-        agent_description=(
+        description=(
             "Whether to authenticate to Azure OpenAI and Azure AI Search with a "
             "managed identity (DefaultAzureCredential) instead of static API keys."
         ),
     )
-    fallback_enabled: bool = Field(
-        default=True,
-        alias="AZURE_OPENAI_FALLBACK_ENABLED",
-        agent_description="Whether to enable fallback for Azure OpenAI requests.",
-    )
-    fallback_dimensions: int = Field(
-        default=1536,
-        alias="AZURE_OPENAI_FALLBACK_DIMENSIONS",
-        agent_description="The dimensions for fallback embeddings.",
-    )
     azure_openai_scope: str = Field(
         default="https://cognitiveservices.azure.com/.default",
         alias="AZURE_OPENAI_SCOPE",
-        agent_description="The scope to use for Azure OpenAI authentication. Typically, this should not need to be changed unless you have a custom Azure setup.",
-    )
-    azure_search_scope: str = Field(
-        default="https://search.azure.com/.default",
-        alias="AZURE_SEARCH_SCOPE",
-        agent_description="The AAD scope to use for Azure AI Search authentication when using managed identity. Typically does not need to change.",
+        description="The scope to use for Azure OpenAI authentication. Typically, this should not need to be changed unless you have a custom Azure setup.",
     )
     azure_openai_embedding_version: str = Field(
         default="2024-02-01",
         alias="AZURE_OPENAI_EMBEDDING_API_VERSION",
-         agent_description="The API version to use for Azure OpenAI embedding requests.",
+        description="The API version to use for Azure OpenAI embedding requests.",
     )
-
-    
-    
-
-
-    @property
-    def cors_origin_list(self) -> list[str]:
-        """Return CORS origins from either JSON-list or comma-separated env syntax."""
-        value = self.cors_origins.strip()
-        if not value:
-            return []
-
-        # Also support JSON arrays for users who prefer Pydantic's native style:
-        # CORS_ORIGINS='["http://localhost:5173", "http://127.0.0.1:5173"]'
-        if value.startswith("["):
-            parsed = json.loads(value)
-            if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
-                raise ValueError("CORS_ORIGINS JSON value must be a list of strings")
-            return [origin.strip() for origin in parsed if origin.strip()]
-
-        return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
 @lru_cache

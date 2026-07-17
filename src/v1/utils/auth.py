@@ -65,11 +65,6 @@ class _FallbackAuth:
 
     exceptions = _FallbackExceptions
 
-    class _Types:
-        MinimalUserDict = dict[str, Any]
-
-    types = _Types
-
     def authenticate(self, fn: Any) -> Any:
         return fn
 
@@ -248,14 +243,13 @@ class JwtAuthenticator:
         groups_source = "token"
         group_names: tuple[str, ...] = ()
         group_pairs: list[dict[str, str | None]] = []
-        # Resolve group memberships via Microsoft Graph whenever enabled — even
-        # when the token already carries a groups claim. The inline claim holds
-        # object-ids (GUIDs) only, while TENANT_GROUP_*_MAPPING may be keyed by
-        # display name, so Graph's id+displayName pairs are folded into `groups`
-        # alongside the token's GUIDs and the mapping can be keyed by either.
-        # Best-effort: a Graph failure keeps the token groups (or leaves groups
-        # empty when the token had none) and never fails authentication.
-        if graph_groups_enabled():
+        # When the token carries no groups claim (app registration doesn't emit
+        # groups, or Entra returned a group "overage" for a user in too many
+        # groups), fall back to Microsoft Graph using the user's oid. Graph returns
+        # both object-ids and display names; we fold both into `groups` so the
+        # group->index mapping can be keyed by either. Best-effort: a Graph failure
+        # leaves groups empty and never fails authentication.
+        if not groups and graph_groups_enabled():
             oid = _claim_str(claims, "oid")
             if oid:
                 # Pass the raw token as the OBO assertion so the resolver can read
@@ -268,10 +262,10 @@ class JwtAuthenticator:
                     group_pairs = [
                         {"id": g.id, "displayName": g.display_name} for g in graph_groups
                     ]
-                    groups_source = "token+graph" if groups else "graph"
                     groups = tuple(
-                        sorted(set(groups) | {g.id for g in graph_groups} | set(group_names))
+                        sorted({g.id for g in graph_groups} | set(group_names))
                     )
+                    groups_source = "graph"
         # Diagnostic (DEBUG only): where group memberships came from plus the
         # id<->displayName pairs — handy for configuring TENANT_GROUP_INDEX_MAPPING.
         # `overage` (`_claim_names`/`_claim_sources` present, no `groups`) means
@@ -477,12 +471,6 @@ def _extract_bearer_token(authorization: str | None) -> str:
     if scheme.lower() != "bearer" or not token:
         raise AuthValidationError("Authorization must use Bearer scheme")
     return token.strip()
-
-
-def extract_bearer_token(authorization: str | None) -> str:
-    """Return the Bearer token from an Authorization header."""
-
-    return _extract_bearer_token(authorization)
 
 
 def _decode_jwt(token: str) -> tuple[Mapping[str, Any], Mapping[str, Any], bytes, bytes]:
@@ -694,7 +682,6 @@ def _auth_failure_context(
 
 authenticator = JwtAuthenticator()
 auth = Auth()
-my_auth = auth
 
 
 @auth.authenticate  # type: ignore[untyped-decorator]

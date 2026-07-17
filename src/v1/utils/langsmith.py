@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
-from typing import Any, cast
-from urllib.parse import urlparse
+from typing import Any
 
-from v1.utils.helper import hash_identifier, sanitize_for_logging, truthy
-
-_DEFAULT_LANGSMITH_ENDPOINT = "https://api.smith.langchain.com"
+from v1.utils.helper import hash_identifier, sanitize_for_logging
 
 _LANGSMITH_SAFE_KEYS = {
     "auth_mode",
@@ -22,23 +18,6 @@ _LANGSMITH_SAFE_KEYS = {
     "tenant_hash",
     "token_fingerprint",
 }
-
-
-
-
-def log_extra(event: str, **fields: Any) -> dict[str, Any]:
-    """Build a sanitized ``extra=`` logging payload, auto-attaching the in-scope
-    ``request_id`` and dropping ``None`` values."""
-
-    payload: dict[str, Any] = {"event": event}
-    request_id = fields.pop("request_id", None)
-    if request_id:
-        payload["request_id"] = request_id
-    for key, value in fields.items():
-        if value is None:
-            continue
-        payload[key] = value
-    return cast(dict[str, Any], sanitize_for_logging(payload))
 
 
 def safe_langsmith_metadata(
@@ -90,39 +69,6 @@ def public_auth_metadata(principal: Any | None) -> dict[str, Any]:
     return {key: metadata[key] for key in _LANGSMITH_SAFE_KEYS if key in metadata}
 
 
-def langsmith_status() -> dict[str, Any]:
-    """Return safe LangSmith tracing configuration status for readiness/debug endpoints."""
-
-    tracing_enabled = truthy(os.getenv("LANGSMITH_TRACING"))
-    endpoint = (os.getenv("LANGSMITH_ENDPOINT") or _DEFAULT_LANGSMITH_ENDPOINT).strip()
-    project = (os.getenv("LANGSMITH_PROJECT") or "agent-orchestration").strip()
-    api_key_configured = bool((os.getenv("LANGSMITH_API_KEY") or "").strip())
-    status = "disabled"
-    detail = None
-    if tracing_enabled:
-        status = "configured" if api_key_configured else "error"
-        if not api_key_configured:
-            detail = "LANGSMITH_API_KEY is required when LANGSMITH_TRACING=true"
-    return cast(
-        dict[str, Any],
-        sanitize_for_logging(
-            {
-                "status": status,
-                "tracing_enabled": tracing_enabled,
-                "endpoint_host": _endpoint_host(endpoint),
-                "endpoint_mode": (
-                    "default_saas"
-                    if endpoint.rstrip("/") == _DEFAULT_LANGSMITH_ENDPOINT
-                    else "custom"
-                ),
-                "project": project,
-                "key_configured": api_key_configured,
-                "detail": detail,
-            }
-        ),
-    )
-
-
 def _sorted_strings(values: Any) -> list[str]:
     if values is None:
         return []
@@ -132,10 +78,3 @@ def _sorted_strings(values: Any) -> list[str]:
         return sorted({str(value) for value in values})
     except TypeError:
         return [str(values)]
-
-
-def _endpoint_host(value: str) -> str:
-    parsed = urlparse(value)
-    if parsed.netloc:
-        return parsed.netloc
-    return value.split("/", 1)[0]

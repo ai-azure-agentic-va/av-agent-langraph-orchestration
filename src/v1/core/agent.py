@@ -9,6 +9,10 @@ import threading
 from deepagents import HarnessProfile, create_deep_agent, register_harness_profile
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.state import StateBackend
+from langchain.agents.middleware.context_editing import (
+    ClearToolUsesEdit,
+    ContextEditingMiddleware,
+)
 from langchain_openai import AzureChatOpenAI
 from v1.core.config import get_settings
 from v1.utils.azure_credentials import get_async_token_provider, get_token_provider
@@ -18,9 +22,9 @@ from v1.core.tools import (
 )
 from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
 from v1.core.subagents import SERVICENOW_SUBAGENT, close_servicenow_resources
-from v1.core.middlewares.citations import CitationFilterMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
 from v1.core.middlewares.servicenow_access import ServiceNowAccessMiddleware
+from v1.core.middlewares.sliding_window import SlidingWindowFloorMiddleware
 from v1.core.prompts import SYSTEM_PROMPT
 from v1.utils.checkpointer import close_checkpointer, get_checkpointer
 
@@ -30,16 +34,21 @@ settings = get_settings()
 
 def build_azure_chat_model() -> AzureChatOpenAI:
     logger.info(
-        "Building AzureChatOpenAI model with endpoint: %s, deployment: %s, api_version: %s, managed_identity: %s",
+        "Building AzureChatOpenAI model with endpoint: %s, deployment: %s, api_version: %s, managed_identity: %s, max_tokens: %s",
         settings.endpoint,
         settings.chat_deployment,
         settings.api_version,
         settings.use_managed_identity,
+        settings.ai_llm_default_max_tokens,
     )
     kwargs: dict[str, Any] = {
         "azure_endpoint": settings.endpoint,
         "azure_deployment": settings.chat_deployment,
         "api_version": settings.api_version,
+        # Cap the completion length. langchain-openai maps `max_tokens` to the
+        # API's `max_completion_tokens`, the field gpt-5 / reasoning deployments
+        # accept (they 400 on the legacy `max_tokens`).
+        "max_tokens": settings.ai_llm_default_max_tokens,
     }
     # Only send `temperature` when explicitly configured: reasoning / gpt-5 chat
     # deployments 400 on any non-default temperature, so omitting it lets the
@@ -131,9 +140,55 @@ async def build_agent(config=None) -> Any:
     return _agent
 
 
+# Fallback model input budget (gpt-5.1 / gpt-5 expose max_input_tokens=272000).
+# Used only when neither AI_LLM_MAX_INPUT_TOKENS nor model.profile resolves a limit
+# (e.g. a custom Azure deployment name), so the sliding-window floor always has a base.
+_DEFAULT_MAX_INPUT_TOKENS = 272000
+
+
+def _resolve_max_input_tokens(model: AzureChatOpenAI) -> int:
+    """Absolute input-token budget for the sliding-window floor.
+
+    Prefers the explicit ``AI_LLM_MAX_INPUT_TOKENS`` override, then the model's
+    profile (``max_input_tokens``, which only resolves for recognized deployment
+    names like ``gpt-5.1``), and finally a safe default. Computing this here — from
+    the shared model instance — keeps ``SlidingWindowFloorMiddleware`` independent of
+    whether the profile resolves at runtime.
+    """
+
+    if settings.ai_llm_max_input_tokens:
+        return settings.ai_llm_max_input_tokens
+    profile = getattr(model, "profile", None)
+    if isinstance(profile, dict):
+        profile_limit = profile.get("max_input_tokens")
+        if isinstance(profile_limit, int) and profile_limit > 0:
+            return profile_limit
+    return _DEFAULT_MAX_INPUT_TOKENS
+
+
 def _build_agent_sync(checkpointer: Any) -> Any:
     model = get_azure_chat_model()
     _ensure_harness_profiles_registered()
+
+    # Long-conversation layered defense (see docs/research long-context strategy):
+    # ContextEditingMiddleware performs SELECTIVE RETENTION — above
+    # CONTEXT_EDIT_TRIGGER_TOKENS it clears the bodies of older tool results
+    # (ai_search grounding, ServiceNow cards) to a placeholder in the model view
+    # only, keeping the newest CONTEXT_EDIT_KEEP_TOOL_RESULTS intact; it deep-copies
+    # the view so persisted messages/artifacts (e.g. citation sources) are untouched.
+    # SlidingWindowFloorMiddleware is the hard SAFETY FLOOR — a last-resort per-call
+    # ceiling that trims the oldest messages if a request still exceeds the window.
+    floor_tokens = int(_resolve_max_input_tokens(model) * settings.context_window_floor_fraction)
+    logger.info(
+        "Context floor: max_input_tokens=%s, floor_fraction=%s -> floor_tokens=%s; "
+        "context-edit trigger=%s keep=%s",
+        _resolve_max_input_tokens(model),
+        settings.context_window_floor_fraction,
+        floor_tokens,
+        settings.context_edit_trigger_tokens,
+        settings.context_edit_keep_tool_results,
+    )
+
     agent = create_deep_agent(
         model=model,
         tools=[
@@ -142,6 +197,9 @@ def _build_agent_sync(checkpointer: Any) -> Any:
         subagents=[
             SERVICENOW_SUBAGENT,
         ],
+        # Order matters: first entry = OUTERMOST, last = INNERMOST (closest to the
+        # model). deepagents appends these AFTER its SummarizationMiddleware, so both
+        # context-management layers below see the post-summarization effective view.
         middleware=[
             SafetyGateMiddleware(),
             # Per-request gate: for callers in SERVICENOW_DISABLED_GROUPS (e.g.
@@ -149,10 +207,18 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             # restriction note, and hard-blocks ServiceNow delegation. Sits inner
             # of deepagents' SubAgentMiddleware so it sees the assembled request.
             ServiceNowAccessMiddleware(),
-            # Runs after the answer to emit a `sources_final` event holding only
-            # the sources the model cited inline (the streamed `search_complete`
-            # chips include every retrieved doc, cited or not).
-            CitationFilterMiddleware(),
+            # Selective retention: clear stale tool-result bodies before the model
+            # call (view-only; persisted artifacts / citations preserved).
+            ContextEditingMiddleware(
+                edits=[
+                    ClearToolUsesEdit(
+                        trigger=settings.context_edit_trigger_tokens,
+                        keep=settings.context_edit_keep_tool_results,
+                    )
+                ]
+            ),
+            # Sliding-window safety floor: innermost, last-resort hard ceiling.
+            SlidingWindowFloorMiddleware(max_tokens=floor_tokens),
         ],
         system_prompt=SYSTEM_PROMPT,
         backend=build_backend(),
@@ -183,10 +249,9 @@ _EXCLUDED_MIDDLEWARE = frozenset(
     }
 )
 
-# Provider keys for the models :func:`build_chat_model` returns: ``AzureChatOpenAI``
-# resolves to ``"azure"``; the offline ``KeywordPlannerModel`` to
-# ``"keywordplannermodel"`` (derived from its class name).
-_HARNESS_PROFILE_KEYS = ("azure", "keywordplannermodel")
+# Provider key for the model :func:`build_azure_chat_model` returns:
+# ``AzureChatOpenAI`` resolves to ``"azure"`` (its LangSmith provider key).
+_HARNESS_PROFILE_KEYS = ("azure",)
 
 _harness_profiles_lock = threading.Lock()
 _harness_profiles_registered = False

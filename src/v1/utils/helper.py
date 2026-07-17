@@ -138,13 +138,6 @@ def redact_text(value: str) -> str:
     return redacted
 
 
-def redact_text_uncapped(value: str) -> str:
-    """Credential scrubbing without the length cap — for user-facing chat answers.
-    Do NOT use for logs, persisted state, or metadata (those keep the cap)."""
-
-    return _scrub_credentials(value)
-
-
 def sanitize_for_logging(value: Any, *, _depth: int = 0) -> Any:
     """Recursively make a value safe for logs, traces, and persisted state."""
 
@@ -182,47 +175,4 @@ def sanitize_for_logging(value: Any, *, _depth: int = 0) -> Any:
         json.dumps(value)
     except (TypeError, ValueError):
         return redact_text(repr(value))
-    return value
-
-
-def sanitized_json(value: Any) -> str:
-    """Serialize a sanitized value without leaking credential-like fields."""
-
-    return json.dumps(sanitize_for_logging(value), sort_keys=True, separators=(",", ":"))
-
-
-def sanitize_for_streaming(value: Any, *, _depth: int = 0) -> Any:
-    """Scrub credentials for user-facing SSE chunks. Like :func:`sanitize_for_logging`
-    but without truncation, so the chat answer reaches the client intact."""
-
-    if _depth >= MAX_METADATA_DEPTH:
-        return "[MAX_DEPTH]"
-
-    if value is None or isinstance(value, bool | int | float):
-        return value
-
-    if isinstance(value, bytes):
-        return f"{REDACTED}:bytes:{token_fingerprint(value)}"
-
-    if isinstance(value, str):
-        return redact_text_uncapped(value)
-
-    if isinstance(value, Mapping):
-        sanitized: dict[str, Any] = {}
-        for key, item in value.items():
-            safe_key = redact_text_uncapped(str(key))
-            if is_sensitive_key(key):
-                fingerprint = token_fingerprint(str(item)) if item is not None else None
-                sanitized[safe_key] = f"{REDACTED}:{fingerprint}" if fingerprint else REDACTED
-            else:
-                sanitized[safe_key] = sanitize_for_streaming(item, _depth=_depth + 1)
-        return sanitized
-
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [sanitize_for_streaming(item, _depth=_depth + 1) for item in value]
-
-    try:
-        json.dumps(value)
-    except (TypeError, ValueError):
-        return redact_text_uncapped(repr(value))
     return value
