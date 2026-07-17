@@ -248,13 +248,14 @@ class JwtAuthenticator:
         groups_source = "token"
         group_names: tuple[str, ...] = ()
         group_pairs: list[dict[str, str | None]] = []
-        # When the token carries no groups claim (app registration doesn't emit
-        # groups, or Entra returned a group "overage" for a user in too many
-        # groups), fall back to Microsoft Graph using the user's oid. Graph returns
-        # both object-ids and display names; we fold both into `groups` so the
-        # group->index mapping can be keyed by either. Best-effort: a Graph failure
-        # leaves groups empty and never fails authentication.
-        if not groups and graph_groups_enabled():
+        # Resolve group memberships via Microsoft Graph whenever enabled — even
+        # when the token already carries a groups claim. The inline claim holds
+        # object-ids (GUIDs) only, while TENANT_GROUP_*_MAPPING may be keyed by
+        # display name, so Graph's id+displayName pairs are folded into `groups`
+        # alongside the token's GUIDs and the mapping can be keyed by either.
+        # Best-effort: a Graph failure keeps the token groups (or leaves groups
+        # empty when the token had none) and never fails authentication.
+        if graph_groups_enabled():
             oid = _claim_str(claims, "oid")
             if oid:
                 # Pass the raw token as the OBO assertion so the resolver can read
@@ -267,10 +268,10 @@ class JwtAuthenticator:
                     group_pairs = [
                         {"id": g.id, "displayName": g.display_name} for g in graph_groups
                     ]
+                    groups_source = "token+graph" if groups else "graph"
                     groups = tuple(
-                        sorted({g.id for g in graph_groups} | set(group_names))
+                        sorted(set(groups) | {g.id for g in graph_groups} | set(group_names))
                     )
-                    groups_source = "graph"
         # Diagnostic (DEBUG only): where group memberships came from plus the
         # id<->displayName pairs — handy for configuring TENANT_GROUP_INDEX_MAPPING.
         # `overage` (`_claim_names`/`_claim_sources` present, no `groups`) means

@@ -468,16 +468,47 @@ def test_authenticate_end_to_end_rs256() -> None:
         "tid": "tenant-1",
         "oid": "user-oid",
         "scp": "api.read api.write",
-        "groups": ["g-1"],  # present -> no Microsoft Graph fallback (no network)
+        "groups": ["g-1"],
     }
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    with _env(APP_ENV="local"):
+    # Graph enrichment disabled -> no network; token groups pass through as-is.
+    with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"):
         principal = auth.authenticate_authorization("Bearer " + token)
     assert principal.subject == "user-oid"
     assert principal.auth_mode == "jwt"
     assert "api.read" in principal.scopes
     assert principal.tenant == "tenant-1"
     assert principal.groups == ("g-1",)
+
+
+def test_authenticate_merges_graph_display_names_with_token_groups() -> None:
+    """A token that already carries group GUIDs still gets Graph display names
+    merged in, so display-name-keyed TENANT_GROUP_*_MAPPING entries can match."""
+
+    from unittest import mock
+
+    from v1.utils.graph_groups import GraphGroup
+
+    auth = JwtAuthenticator(_e2e_config())
+    now = int(time.time())
+    claims = {
+        "iss": "https://idp/",
+        "aud": "api://app",
+        "exp": now + 3600,
+        "oid": "user-oid",
+        "scp": "api.read api.write",
+        "groups": ["g-1"],
+    }
+    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
+    with (
+        _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="true"),
+        mock.patch(
+            "v1.utils.auth.resolve_groups_via_graph",
+            return_value=(GraphGroup(id="g-1", display_name="APPL-TEAM-NAME"),),
+        ),
+    ):
+        principal = auth.authenticate_authorization("Bearer " + token)
+    assert principal.groups == ("APPL-TEAM-NAME", "g-1")
 
 
 def test_authenticate_rejects_missing_required_scope() -> None:
@@ -492,7 +523,7 @@ def test_authenticate_rejects_missing_required_scope() -> None:
         "groups": ["g-1"],
     }
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    with _env(APP_ENV="local"):
+    with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"):
         _expect(
             AuthValidationError,
             "missing required scope",
@@ -512,7 +543,7 @@ def test_authenticate_rejects_expired_token() -> None:
         "groups": ["g-1"],
     }
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    with _env(APP_ENV="local"):
+    with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"):
         _expect(
             AuthValidationError,
             "expired",
