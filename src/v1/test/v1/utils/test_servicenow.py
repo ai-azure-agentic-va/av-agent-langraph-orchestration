@@ -215,6 +215,53 @@ def test_misaligned_offset_rejected() -> None:
     assert good["ok"] is True
 
 
+def test_multi_status_pagination_cursor_round_trips() -> None:
+    # Multi-state results page via a per-state cursor next_offset ('new:5,...'):
+    # passed back verbatim it yields the NEXT rows — no repeats, nothing skipped —
+    # while a model-invented integer offset on a multi-state query stays rejected.
+    incidents = [
+        {**_INCIDENT, "number": f"NEW-{i}", "state": {"value": "1", "display_value": "New"}}
+        for i in range(6)
+    ] + [
+        {
+            **_INCIDENT,
+            "number": f"WIP-{i}",
+            "state": {"value": "2", "display_value": "In Progress"},
+        }
+        for i in range(6)
+    ]
+    import v1.core.tools.servicenow.tools as tools_module
+
+    def _list(payload: dict) -> dict:
+        previous = tools_module._servicenow_client
+        tools_module._servicenow_client = _mock_client(incidents)
+        try:
+            return asyncio.run(servicenow_list_tickets.ainvoke(payload))
+        finally:
+            tools_module._servicenow_client = previous
+
+    page1 = _list({"statuses": "new,in_progress", "limit": 10})
+    assert page1["ok"] is True and page1["count"] == 10 and page1["has_more"] is True
+    cursor = page1["next_offset"]
+    assert isinstance(cursor, str) and "new:" in cursor and "in_progress:" in cursor
+
+    page2 = _list({"statuses": "new,in_progress", "limit": 10, "offset": cursor})
+    assert page2["ok"] is True and page2["has_more"] is False
+
+    first = {t["ticket_number"] for t in page1["tickets"]}
+    second = {t["ticket_number"] for t in page2["tickets"]}
+    assert not first & second, "cursor page repeated rows"
+    assert first | second == {f"NEW-{i}" for i in range(6)} | {
+        f"WIP-{i}" for i in range(6)
+    }, "cursor paging skipped rows"
+
+    bad = _list({"statuses": "new,in_progress", "offset": 10})
+    assert bad["ok"] is False and bad["kind"] == "invalid_input"
+
+    drifted = _list({"statuses": "new,on_hold", "offset": "new:5,in_progress:5"})
+    assert drifted["ok"] is False and drifted["kind"] == "invalid_input"
+
+
 def test_limit_above_default_is_clamped() -> None:
     # HARD ENFORCEMENT: page size is deployment-controlled (SERVICENOW_DEFAULT_LIMIT),
     # never model-controlled — the model kept passing limit=25 despite the prompt.

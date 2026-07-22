@@ -388,7 +388,7 @@ def validate_ticket_limit(limit: int | None) -> int:
     "OMIT limit" instruction, so a prompt-level gate is not enough — any requested
     limit above the env-configured default (SERVICENOW_DEFAULT_LIMIT, normally 10)
     is silently clamped down to it. Raise the env var to widen pages; page with
-    offset (single-state queries) to see more. The only path allowed to exceed the
+    offset (int for one state, per-state cursor for several) to see more. The only path allowed to exceed the
     default is the explicit ticket_numbers batch, which sizes itself to the count
     (capped at MAX_TICKET_LIMIT) AFTER this clamp.
     """
@@ -427,6 +427,47 @@ def validate_offset(offset: int | None) -> int:
         raise ServiceNowToolInputError("offset must be 0 or greater")
 
     return offset
+
+
+def parse_offset(offset: int | str | None) -> int | dict[str, int]:
+    """Validate a pagination offset: an int, or a multi-status CURSOR string.
+
+    A multi-status query fans out one API call per state, so a single int can't
+    honestly index those independent result sets. Its next_offset is instead a
+    composite cursor like ``'new:5,in_progress:5'`` — how many of EACH state's
+    rows have been consumed. Accept that exact string back and hand every state
+    its own offset.
+    """
+
+    if offset is None:
+        return 0
+
+    if isinstance(offset, str):
+        text = offset.strip()
+        if not text:
+            return 0
+        if ":" not in text:
+            if not text.isdigit():
+                raise ServiceNowToolInputError(
+                    "offset must be an integer or the exact next_offset cursor "
+                    "from the previous result"
+                )
+            return validate_offset(int(text))
+        cursor: dict[str, int] = {}
+        for part in text.split(","):
+            name, _, count = part.partition(":")
+            name = name.strip()
+            count = count.strip()
+            if not name or not count.isdigit():
+                raise ServiceNowToolInputError(
+                    f"malformed offset cursor '{offset}'. Never build a cursor — "
+                    "re-issue the SAME query with offset set to the exact "
+                    "next_offset value from the previous result."
+                )
+            cursor[normalize_status(name)] = int(count)
+        return cursor
+
+    return validate_offset(offset)
 
 
 def _canonical_status(state_display: str) -> str:
@@ -618,10 +659,11 @@ def normalize_ticket_list(
     *,
     statuses: tuple[str, ...] | None,
     limit: int,
-    offset: int = 0,
+    offset: int | str = 0,
     mode: str | None = None,
     degraded: bool = False,
     has_more: bool = False,
+    next_cursor: str | None = None,
     filters: Mapping[str, Any] | None = None,
     detail: bool = True,
 ) -> dict[str, Any]:
@@ -644,12 +686,11 @@ def normalize_ticket_list(
         tickets = [_ticket_base(incident) for incident in incidents]
 
     # A multi-status query fans out one API call per state and merges them; a single
-    # shared offset can't honestly index those independent result sets (and is rejected
-    # upstream), so there is NO usable next-page cursor. Emit next_offset only for a
-    # SINGLE state — null tells the agent "not pageable; narrow to one state to page".
-    # (A bare call defaults to the OPEN bucket = 3 states, so it is multi-status too;
-    # statuses=None here is only the direct ticket_numbers fetch, where paging is moot.)
-    pageable = statuses is not None and len(statuses) == 1
+    # shared int can't honestly index those independent result sets, so its next-page
+    # cursor is the composite ``next_cursor`` string the caller computed from per-state
+    # consumption ('new:5,in_progress:5'). A SINGLE state keeps the simple integer
+    # next_offset. (statuses=None is the direct ticket_numbers fetch — paging is moot.)
+    pageable = statuses is not None and len(statuses) == 1 and isinstance(offset, int)
     return {
         "ok": True,
         "source": SOURCE,
@@ -657,7 +698,7 @@ def normalize_ticket_list(
         "count": len(tickets),
         "limit": limit,
         "offset": offset,
-        "next_offset": offset + len(tickets) if pageable else None,
+        "next_offset": offset + len(tickets) if pageable else next_cursor,
         "status_filter": list(statuses or []),
         "filters_applied": dict(filters or {}),
         "detail": detail,
@@ -1018,8 +1059,8 @@ async def servicenow_list_tickets(
                 "Maximum tickets to return. OMIT it for a normal list (the backend "
                 "default applies). Values ABOVE the backend default are CLAMPED down "
                 "to it — passing a big limit does nothing; to see more results, page "
-                "with offset (single-state queries only) or narrow the filters. Pass "
-                "a value only to request FEWER rows than the default."
+                "with offset=<next_offset from the previous result> or narrow the "
+                "filters. Pass a value only to request FEWER rows than the default."
             )
         ),
     ] = None,
@@ -1028,12 +1069,15 @@ async def servicenow_list_tickets(
         Field(description="Alias for limit. Do not pass both unless they match. Values above the backend default are clamped to it."),
     ] = None,
     offset: Annotated[
-        int | None,
+        int | str | None,
         Field(
             description=(
-                "Pagination start, 0-based (defaults to 0). To page, advance by "
-                "limit and read next_offset from the result. Not supported together "
-                "with multiple statuses — paginate one status at a time."
+                "Pagination cursor; omit for the first page. NEVER compute one — "
+                "to page, re-issue the SAME query with offset set to the exact "
+                "next_offset value from the previous result. Single-state results "
+                "return an integer next_offset; multi-state results (including the "
+                "open default) return a per-state cursor string like "
+                "'new:4,in_progress:6' — pass it back verbatim."
             )
         ),
     ] = None,
@@ -1086,7 +1130,9 @@ async def servicenow_list_tickets(
             if open_only:
                 normalized_statuses = open_only
         normalized_limit = resolve_ticket_limit(limit=limit, count=count)
-        normalized_offset = validate_offset(offset)
+        normalized_offset = parse_offset(offset)
+        offset_cursor = normalized_offset if isinstance(normalized_offset, dict) else None
+        int_offset = normalized_offset if isinstance(normalized_offset, int) else 0
         # Explicit ticket numbers are a DIRECT fetch by name: status is irrelevant (the
         # caller wants each named incident regardless of its state, exactly like
         # servicenow_get_ticket_detail and the raw API), so bypass the status fan-out —
@@ -1103,13 +1149,39 @@ async def servicenow_list_tickets(
             normalized_limit = min(
                 max(normalized_limit, len(requested_numbers)), MAX_TICKET_LIMIT
             )
-        # A single shared offset cannot be fanned across per-status queries
+        # CURSOR paging (multi-status): each state pages independently, so the
+        # cursor must describe THIS query's states — anything else means the model
+        # changed the query between pages, which silently skips records.
+        if offset_cursor is not None:
+            if requested_numbers:
+                raise ServiceNowToolInputError(
+                    "an offset cursor cannot be combined with ticket_numbers"
+                )
+            # A cursor sent to a SINGLE-state query collapses to that state's int
+            # offset (e.g. after the model narrowed statuses); extra states error.
+            if normalized_statuses is not None and len(normalized_statuses) == 1:
+                if set(offset_cursor) - set(normalized_statuses):
+                    raise ServiceNowToolInputError(
+                        "offset cursor names statuses this query does not include. "
+                        "Re-issue the SAME query (same statuses and filters) with "
+                        "the exact next_offset value from the previous result."
+                    )
+                int_offset = offset_cursor.get(normalized_statuses[0], 0)
+                offset_cursor = None
+            elif set(offset_cursor) - set(normalized_statuses or ()):
+                raise ServiceNowToolInputError(
+                    "offset cursor names statuses this query does not include. "
+                    "Re-issue the SAME query (same statuses and filters) with the "
+                    "exact next_offset value from the previous result."
+                )
+        # A single shared INT offset cannot be fanned across per-status queries
         # honestly (each status has its own result set), so reject it rather than
         # silently re-returning page 1.
-        if normalized_offset and normalized_statuses is not None and len(normalized_statuses) > 1:
+        if int_offset and offset_cursor is None and normalized_statuses is not None and len(normalized_statuses) > 1:
             raise ServiceNowToolInputError(
-                "offset is not supported with multiple statuses; paginate one "
-                "status at a time"
+                "an integer offset is not supported with multiple statuses; pass "
+                "the next_offset cursor string from the previous result (e.g. "
+                "'new:4,in_progress:6') to page a multi-status query"
             )
         # PAGE-ALIGNED OFFSETS ONLY: every sanctioned next_offset is offset+len(rows),
         # and pages are full until the final one (has_more=false ends paging), so a
@@ -1118,9 +1190,9 @@ async def servicenow_list_tickets(
         # would silently skip records; reject it with the corrective instruction so
         # the retry reads next_offset instead. ponytail: if the wrapper ever serves a
         # short page with has_more=true, relax this to accept that next_offset.
-        if normalized_offset % normalized_limit:
+        if int_offset % normalized_limit:
             raise ServiceNowToolInputError(
-                f"offset {normalized_offset} is not a multiple of the page size "
+                f"offset {int_offset} is not a multiple of the page size "
                 f"{normalized_limit}. Never compute offsets — re-issue the SAME query "
                 "with offset set to the exact next_offset value from the previous "
                 "result (pages advance by the page size)."
@@ -1156,7 +1228,7 @@ async def servicenow_list_tickets(
                 await client.list_incidents(
                     filters=field_filters or None,
                     limit=normalized_limit,
-                    offset=normalized_offset,
+                    offset=int_offset,
                 )
             ]
         elif len(normalized_statuses) == 1:
@@ -1164,19 +1236,21 @@ async def servicenow_list_tickets(
                 await client.list_incidents(
                     filters={**field_filters, **_status_filters(normalized_statuses[0])},
                     limit=normalized_limit,
-                    offset=normalized_offset,
+                    offset=int_offset,
                 )
             ]
         else:
             # Fan the per-status queries out concurrently — a shared OAuth token
             # and one AsyncClient make this safe, and asyncio.gather preserves
             # caller order, so latency is the slowest call instead of their sum.
+            # Each status pages from its OWN offset (the composite cursor).
             envelopes = list(
                 await asyncio.gather(
                     *(
                         client.list_incidents(
                             filters={**field_filters, **_status_filters(status)},
                             limit=normalized_limit,
+                            offset=(offset_cursor or {}).get(status, 0),
                         )
                         for status in normalized_statuses
                     )
@@ -1193,44 +1267,71 @@ async def servicenow_list_tickets(
             has_more = has_more or bool(envelope.get("has_more"))
             groups.append(list(envelope.get("incidents", [])))
 
+        # STATE BACKSTOP set: drop any row whose state was not requested. The
+        # per-status fan-out already sends a state filter per call, but if the live
+        # wrapper ever ignores/mishandles it, closed rows would silently ride an
+        # open-only query. Enforce the contract locally so that can never reach the
+        # user. (None = direct ticket_numbers fetch — status is irrelevant there.)
+        allowed = (
+            {"closed" if s == "closed_state" else s for s in normalized_statuses}
+            if normalized_statuses is not None
+            else None
+        )
+
         # Interleave round-robin across the per-status results so one populous
-        # status cannot starve the others out of the shared limit.
+        # status cannot starve the others out of the shared limit, stopping the
+        # moment the page is full. pointers[i] counts how many of group i's fetched
+        # rows were CONSUMED (shown, or passed over as duplicate / wrong-state) —
+        # exactly the per-state offset the NEXT page must start from.
         merged: list[Mapping[str, Any]] = []
         seen: set[str] = set()
-        for rank in range(max((len(group) for group in groups), default=0)):
-            for group in groups:
-                if rank >= len(group):
+        pointers = [0] * len(groups)
+        while len(merged) < normalized_limit:
+            progressed = False
+            for i, group in enumerate(groups):
+                if len(merged) >= normalized_limit:
+                    break
+                if pointers[i] >= len(group):
                     continue
-                incident = group[rank]
+                incident = group[pointers[i]]
+                pointers[i] += 1
+                progressed = True
                 number = _reference_value(incident.get("number")).upper()
                 if number in seen:
                     continue
+                if (
+                    allowed is not None
+                    and _canonical_status(_reference_value(incident.get("state")))
+                    not in allowed
+                ):
+                    continue
                 seen.add(number)
                 merged.append(incident)
+            if not progressed:
+                break
+        has_more = has_more or any(
+            pointers[i] < len(groups[i]) for i in range(len(groups))
+        )
 
-        # STATE BACKSTOP: drop any row whose state was not requested. The per-status
-        # fan-out already sends a state filter per call, but if the live wrapper ever
-        # ignores/mishandles it, closed rows would silently ride an open-only query.
-        # Enforce the contract locally so that can never reach the user. (None =
-        # direct ticket_numbers fetch — status is deliberately irrelevant there.)
-        if normalized_statuses is not None:
-            allowed = {
-                "closed" if s == "closed_state" else s for s in normalized_statuses
-            }
-            merged = [
-                i
-                for i in merged
-                if _canonical_status(_reference_value(i.get("state"))) in allowed
-            ]
+        # Multi-status pages advance per state: emit the composite cursor the next
+        # page sends back verbatim as ``offset``.
+        next_cursor: str | None = None
+        if normalized_statuses is not None and len(normalized_statuses) > 1:
+            base = offset_cursor or {}
+            next_cursor = ",".join(
+                f"{status}:{base.get(status, 0) + pointers[i]}"
+                for i, status in enumerate(normalized_statuses)
+            )
 
         return normalize_ticket_list(
-            merged[:normalized_limit],
+            merged,
             statuses=normalized_statuses,
             limit=normalized_limit,
-            offset=normalized_offset,
+            offset=offset if offset_cursor is not None and isinstance(offset, str) else int_offset,
             mode=mode,
             degraded=degraded,
-            has_more=has_more or len(merged) > normalized_limit,
+            has_more=has_more,
+            next_cursor=next_cursor,
             filters=field_filters,
             detail=detail,
         )

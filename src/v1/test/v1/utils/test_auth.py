@@ -468,10 +468,10 @@ def test_authenticate_end_to_end_rs256() -> None:
         "tid": "tenant-1",
         "oid": "user-oid",
         "scp": "api.read api.write",
-        "groups": ["g-1"],  # present -> no Microsoft Graph fallback (no network)
+        "groups": ["g-1"],
     }
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    with _env(APP_ENV="local"):
+    with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"):
         principal = auth.authenticate_authorization("Bearer " + token)
     assert principal.subject == "user-oid"
     assert principal.auth_mode == "jwt"
@@ -492,7 +492,7 @@ def test_authenticate_rejects_missing_required_scope() -> None:
         "groups": ["g-1"],
     }
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    with _env(APP_ENV="local"):
+    with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"):
         _expect(
             AuthValidationError,
             "missing required scope",
@@ -512,12 +512,41 @@ def test_authenticate_rejects_expired_token() -> None:
         "groups": ["g-1"],
     }
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    with _env(APP_ENV="local"):
+    with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"):
         _expect(
             AuthValidationError,
             "expired",
             lambda: auth.authenticate_authorization("Bearer " + token),
         )
+
+
+def test_authenticate_merges_token_groups_with_graph() -> None:
+    """Token GUID groups are supplemented with Graph ids + display names."""
+    import v1.utils.auth as auth_module
+    from v1.utils.graph_groups import GraphGroup
+
+    auth = JwtAuthenticator(_e2e_config())
+    now = int(time.time())
+    claims = {
+        "iss": "https://idp/",
+        "aud": "api://app",
+        "exp": now + 3600,
+        "oid": "user-oid",
+        "scp": "api.read",
+        "groups": ["guid-1"],
+    }
+    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
+    original = auth_module.resolve_groups_via_graph
+    try:
+        auth_module.resolve_groups_via_graph = lambda oid, **kw: (
+            GraphGroup(id="guid-1", display_name="APPL-DEVELOPERS"),
+            GraphGroup(id="guid-2", display_name=None),
+        )
+        with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="true"):
+            principal = auth.authenticate_authorization("Bearer " + token)
+    finally:
+        auth_module.resolve_groups_via_graph = original
+    assert principal.groups == ("APPL-DEVELOPERS", "guid-1", "guid-2")
 
 
 # -- bearer / decode hardening -------------------------------------------------

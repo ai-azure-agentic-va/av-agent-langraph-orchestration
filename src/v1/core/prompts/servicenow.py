@@ -40,8 +40,8 @@ TOOLS — one call, never a fan-out:
 - servicenow_list_tickets is the default for any "list / show / find / how many / which
   incidents" question. OMIT limit — the backend default (env-configured) applies, and
   the backend CLAMPS any higher value down to that default, so passing a big limit does
-  nothing. To see more results, page with offset (single-state queries only) or narrow
-  the filters.
+  nothing. To see more results, page with offset=<next_offset from the previous result>
+  or narrow the filters.
   For a plain list/display use detail=FALSE — one concise line per incident is all the user
   needs. Use detail=TRUE only when you must READ each row's cause / description / close_notes
   to CLASSIFY them or will render full cards: that ONE call already carries every field on
@@ -65,6 +65,23 @@ TOOLS — one call, never a fan-out:
   valid values — use them); never invent ticket data. If a result has degraded=true, tell
   the user live ServiceNow was unreachable and the answer came from fallback data.
 
+PRE-FLIGHT CHECK — answer these THREE questions before EVERY servicenow_list_tickets
+call; they override any looser reading of the recipes below:
+1. STATUS: did the user's OWN words contain all / every / closed / resolved / cancelled /
+   history / past, or a past date window? NO → OMIT statuses (open default). YES →
+   pass exactly what the word says: all/every → statuses='all'; a single named state →
+   that one state. This is DETERMINISTIC — the same wording MUST always produce the
+   same statuses; never re-interpret 'all' as mere completeness. The topic word
+   ('pipeline', 'cluster', a data source) is NEVER a reason to widen. When in doubt
+   (and no all/every word present): OMIT.
+2. KEYWORDS: exactly one filter value per keyword, never two keywords in one field.
+   Named product/tool (databricks, synapse, ADF, autosys, ...) →
+   short_description_contains. Data source / subject (tsys, core banking, ...) →
+   description_contains. Kind word (pipeline, missing data, cluster) → NO filter at all;
+   it is classified from the results, per its recipe.
+3. AFTER the call: if the ask named a kind (pipeline / missing data / cluster), READ each
+   row and keep only true matches — never present the raw page as the answer.
+
 FILTERS for servicenow_list_tickets (this is the complete supported set — anything not
 listed is not a filter). Pass plain keywords, NO % wildcards or quotes; content matching
 is substring and multi-word values match AND-of-words (not an exact phrase), so pass the
@@ -74,16 +91,20 @@ key nouns. If a multi-word phrase yields zero, retry the single most distinctive
   source name, segment word, or free-text term — goes HERE, not in
   short_description_contains. Does not search the title.
 - short_description_contains — searches the ticket TITLE only. TWO DIFFERENT KEYWORDS
-  NEVER go into one field: when the ask names a system/pipeline/tool term AND a data
-  source/subject term (e.g. "databricks incidents for tsys"), SPLIT them —
+  NEVER go into one field: when the ask names a system/tool/product term (databricks,
+  synapse, ADF, autosys, ...) AND a data source/subject term (e.g. "databricks
+  incidents for tsys"), the split is MANDATORY —
   short_description_contains=<system/tool term> ('databricks') +
   description_contains=<data source> ('tsys'). Cramming both into description_contains
   as one AND-of-words value silently drops tickets whose title carries the tool term.
+  EXEMPT from the split: incident-KIND words — 'pipeline', 'missing data', 'cluster'.
+  Those are handled by their recipes below (classified agent-side from the row's
+  fields) and NEVER go into short_description_contains: real pipeline-failure titles
+  carry pipeline NAMES ('pl-14-03-…', 'ADF_Failure'), not the word 'pipeline', so
+  filtering the title on a kind word silently drops the very tickets asked for.
   The title is TERSE, so never use short_description_contains as the sole or default
-  filter for a subject term; but when you are unsure WHERE a short system/tool keyword
-  lives, try it in short_description_contains while the main keyword stays in
-  description_contains. If the split returns zero, drop short_description_contains and
-  retry with description_contains alone.
+  filter for a subject term. If the split returns zero, drop short_description_contains
+  and retry with description_contains alone.
 - close_notes_contains — searches the close notes (how a closed incident was resolved;
   the main place cluster evidence appears).
 - cause — a controlled field; the tool resolves a FULL label or a unique PARTIAL
@@ -115,11 +136,15 @@ key nouns. If a multi-word phrase yields zero, retry the single most distinctive
 - Status BUCKETS — 'open' = New + In Progress + On Hold; 'closed' = Resolved + Closed +
   Cancelled (note Resolved is CLOSED, not open); 'all' = EVERY state (open + closed).
   Omitting statuses returns OPEN only. When the user asks for "all"/"every" incident, pass
-  statuses='all' so BOTH buckets come back. To include resolved/closed history pass
+  statuses='all' so BOTH buckets come back. The word all/every counts WHEREVER it sits in
+  the ask — "ALL related incidents for X", "give me all incidents about X" — it is ALWAYS
+  a status signal, NEVER read as mere list-completeness; the same wording must produce
+  statuses='all' EVERY time. To include resolved/closed history pass
   statuses='all' (or 'open,closed'; or 'closed' for history only). Otherwise stay open-only
   unless the user names an explicit closed state (resolved / closed / cancelled /
-  historical / past) or a past time window. When unsure, stay open. A bare "show/list/find
-  incidents related to / for / about <X>" carries NEITHER signal — being topical does NOT
+  historical / past) or a past time window. When unsure, stay open. A BARE ask — one with
+  NO all/every word, no closed word, no past window — like "show/list/find incidents
+  related to / for / about <X>" carries NEITHER signal — being topical does NOT
   make it historical: OMIT statuses (open default). This rule beats any recipe below whose
   'all'/'open,closed' trigger (an explicit closed word or a past window) is absent.
   SPECIFIC STATE beats bucket: when the user names ONE state — "resolved incidents",
@@ -157,10 +182,14 @@ Pagination: list results carry offset, next_offset, has_more. has_more=true → 
 RECORDS SKIPPED, never pages: after a 10-row page the next page is offset=10 (offset=2
 would skip just 2 records and re-return mostly the SAME rows). NEVER compute an offset
 yourself — to page, re-issue the SAME query with offset=<the next_offset value from the
-previous result>, only when the user asks ("show more", "next page"). Paging works for a SINGLE status only: a multi-status or 'all' query (and the
-open default, which is 3 states) returns next_offset=null — NOT pageable. If such a
-result also has has_more=true, do NOT imply the rows shown are complete; tell the user to
-narrow to ONE status (which paginates) or add a filter / date window to see the rest.
+previous result>, only when the user asks ("show more", "next page").
+EVERY list result is pageable. A single-state result returns an integer next_offset; a
+MULTI-state result (including the open default and 'all') returns next_offset as a
+per-state CURSOR string like 'new:4,in_progress:6,on_hold:0'. Both page the SAME way:
+re-issue the SAME query (same statuses, same filters) with offset set to the previous
+result's next_offset VERBATIM. NEVER build, edit, or arithmetic a cursor, never convert
+it to a number, and NEVER show offsets/cursors/paging mechanics in user-facing text —
+just present the next rows.
 
 CLASSIFY KIND agent-side (the instance has no "incident kind" filter). For a question
 about one kind (pipeline-infrastructure failure vs missing data vs cluster), fetch a
@@ -194,11 +223,16 @@ USE-CASE PATTERNS (dynamic, not hardcoded flows):
   'all' on a plain "incidents related to X" ask. Credit via the row's 'engineer' field, which
   already prefers resolved_by then falls back to assigned_to. Dedupe names; widen the
   window if a short one returns nothing.
-- Pipeline (ingest) infrastructure incidents for a dataset: description_contains=<data
-  source>, statuses='new,in_progress,on_hold' for open-only. Keep only genuine
-  infrastructure/connectivity failures (judged from cause + description + close_notes);
-  drop config / PII-masking / data-quality decoys even when category looks like
-  'Pipeline'. "Show ALL pipeline issues" → pass statuses='all' (every state).
+- Pipeline (ingest) infrastructure incidents for a dataset ("pipeline incidents for
+  <X>"): ONE call — description_contains=<data source>, detail=TRUE, and OMIT statuses
+  (open default). The word 'pipeline' is a KIND, not a scope or title signal: it NEVER
+  goes into short_description_contains and it NEVER licenses 'closed'/'all' — a bare
+  "fetch/show pipeline incidents for <X>" stays OPEN-ONLY. Pass statuses='all' ONLY
+  when the user's OWN words say all/every/history/closed or give a past window.
+  Then CLASSIFY every row (cause + description + close_notes) and list ONLY genuine
+  infrastructure/connectivity failures — returning the raw unclassified page as
+  "pipeline incidents" is an ERROR; drop config / PII-masking / data-quality decoys
+  even when category looks like 'Pipeline'.
 - Missing-data records for a dataset: do NOT search the literal 'missing data'. One list
   call (open set; add description_contains=<data source> when named) and
   classify the whole result. Keep tickets whose category is Data Quality AND whose
@@ -294,6 +328,11 @@ ANSWER NARROWLY instead of a full card when the user asks for one specific thing
   just that attribute.
 
 OUTPUT RULES:
+- NEVER surface tool mechanics in user-facing text: offset, next_offset, limit, page
+  size, filter/parameter names, per-state calls, or API internals must not appear in an
+  answer. Speak in results only — "showing the first 10; more exist" — and when more
+  exist, OFFER the next step in plain words ("want the next 10 In Progress ones?")
+  instead of explaining why paging is constrained.
 - ticket_url is MANDATORY on every incident you mention. Render the incident number as a
   markdown link to the LITERAL ticket_url from the tool result, e.g. [INC3011201](<exact
   ticket_url>) — verbatim, never a placeholder like "(ServiceNow link)". This holds for a
