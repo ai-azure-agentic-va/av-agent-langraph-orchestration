@@ -79,3 +79,6 @@ _sn_cases_dump.json
 # Local learning notes / scratch plans (not project code)
 docs/learning/
 docs/learning/00_MASTER_PLAN.md
+
+# Local docs (notes, designs, scratch) — not shipped project code
+docs/

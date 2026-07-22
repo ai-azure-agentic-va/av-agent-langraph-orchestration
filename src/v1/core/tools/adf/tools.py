@@ -11,20 +11,20 @@ code works everywhere:
 No keys or secrets are stored — the identity just needs the *Data Factory
 Reader* role (or higher) on each target factory.
 
-Multi-factory: the reachable factories are configured through
-``ADF_FACTORY_MAPPING`` (friendly alias → subscription / resource group /
-factory name) with ``ADF_DEFAULT_FACTORY`` naming the alias used when the
-caller does not pick one. Every tool takes an optional ``factory`` alias.
+Factory config: the target factory is configured through ``ADF_FACTORY_MAPPING``
+(friendly alias → subscription / resource group / factory name); with a single
+entry it is used automatically, so callers never pass ``factory``. The optional
+``factory`` alias on each tool remains for a possible future multi-factory
+deployment but is left empty in normal single-factory use.
 
 The tools:
 
-1. ``list_factories``           — which factories the agent can query
-2. ``list_pipelines``           — what pipelines exist in a factory
-3. ``list_pipeline_runs``       — recent runs (optionally filtered by pipeline/status)
-4. ``get_pipeline_run_details`` — one run's status + per-activity errors (flat)
-5. ``get_pipeline_run_tree``    — the whole pipeline family a run belongs to,
+1. ``list_pipelines``           — what pipelines exist in the factory
+2. ``list_pipeline_runs``       — recent runs (optionally filtered by pipeline/status)
+3. ``get_pipeline_run_details`` — one run's status + per-activity errors (flat)
+4. ``get_pipeline_run_tree``    — the whole pipeline family a run belongs to,
    reached from ANY run in it (climbs to the root, then walks back down)
-6. ``get_pipeline_structure``   — a pipeline's activity tree and child references
+5. ``get_pipeline_structure``   — a pipeline's activity tree and child references
 
 All errors (auth, permission, unknown factory, ...) are returned as
 ``[adf-agent]``-prefixed text so the model can read them and react, matching
@@ -197,31 +197,11 @@ def _is_child_run(run) -> bool:
 
 
 @tool
-async def list_factories() -> str:
-    """List the Azure Data Factories this agent can query, marking the default.
-
-    Use this when the user asks which factories/environments are available, or
-    when a factory alias is needed and the user has not named one. Takes no
-    arguments. Pass a returned alias as the `factory` argument of other tools.
-    """
-    mapping = settings.adf_factory_mapping
-    if not mapping:
-        return "[adf-agent] No Data Factory is configured (ADF_FACTORY_MAPPING is empty)."
-    default = _default_alias()
-    lines = []
-    for alias in _factory_aliases():
-        entry = mapping[alias]
-        marker = "  (default)" if alias == default else ""
-        lines.append(f"  - {alias}: factory '{entry.get('factory_name', '?')}'{marker}")
-    return f"[adf-agent] {len(mapping)} configured factory(ies):\n" + "\n".join(lines)
-
-
-@tool
 async def list_pipelines(factory: str = "") -> str:
     """List every pipeline defined in an Azure Data Factory.
 
     Args:
-        factory: Optional factory alias (from list_factories). Leave empty to
+        factory: Optional factory alias. Leave empty to
                  use the default factory.
 
     Use this when the user asks what pipelines exist, or as a first step before
@@ -269,7 +249,7 @@ async def list_pipeline_runs(
                        range (e.g. "between Jul 10 and Jul 12").
         end_date:      Optional window end, "YYYY-MM-DD" (UTC, inclusive —
                        covers that whole day).
-        factory:       Optional factory alias (from list_factories). Leave empty
+        factory:       Optional factory alias. Leave empty
                        to use the default factory.
 
     Returns each run's runId, pipeline name, status, start time, duration and
@@ -395,7 +375,7 @@ async def get_pipeline_run_details(run_id: str, factory: str = "") -> str:
 
     Args:
         run_id:  The pipeline run GUID (from list_pipeline_runs).
-        factory: Optional factory alias (from list_factories). Leave empty to
+        factory: Optional factory alias. Leave empty to
                  use the default factory. Must be the factory the run belongs to.
 
     Returns the overall run status, what triggered the run, plus for each
@@ -557,7 +537,7 @@ async def get_pipeline_run_tree(run_id: str, factory: str = "") -> str:
     Args:
         run_id:  Any pipeline run GUID in the family — parent, child or deep
                  grandchild. It does NOT have to be the top-level run.
-        factory: Optional factory alias (from list_factories). Leave empty to
+        factory: Optional factory alias. Leave empty to
                  use the default factory. Must be the factory the run belongs to.
 
     This is THE tool for diagnosing hierarchical pipelines (parents that invoke
@@ -630,7 +610,7 @@ async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
 
     Args:
         pipeline_name: Exact pipeline name, e.g. "pl_orchestrator".
-        factory:       Optional factory alias (from list_factories). Leave empty
+        factory:       Optional factory alias. Leave empty
                        to use the default factory.
 
     Use this to explain what a pipeline does or whether it is hierarchical —
@@ -658,7 +638,6 @@ async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
 
 
 ADF_TOOLS = [
-    list_factories,
     list_pipelines,
     list_pipeline_runs,
     get_pipeline_run_details,
@@ -673,7 +652,6 @@ __all__ = [
     "get_pipeline_run_details",
     "get_pipeline_run_tree",
     "get_pipeline_structure",
-    "list_factories",
     "list_pipeline_runs",
     "list_pipelines",
 ]

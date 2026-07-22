@@ -193,17 +193,7 @@ def test_misconfigured_entry_names_missing_keys() -> None:
         restore()
 
 
-# --- list_factories / list_pipelines -----------------------------------------
-
-
-def test_list_factories_marks_default() -> None:
-    restore = _patch(_Settings({"fin": _FIN, "risk": _RISK}, default="fin"))
-    try:
-        result = _run(adf.list_factories.ainvoke({}))
-        assert "fin: factory 'adf-fin'  (default)" in result
-        assert "risk: factory 'adf-risk'" in result
-    finally:
-        restore()
+# --- list_pipelines ----------------------------------------------------------
 
 
 def test_list_pipelines_names_factory_alias() -> None:

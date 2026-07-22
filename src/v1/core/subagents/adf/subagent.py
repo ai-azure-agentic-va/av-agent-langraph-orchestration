@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from v1.core.prompts import ADF_SUBAGENT_PROMPT
 from v1.core.tools import (
-    get_current_datetime,
     get_pipeline_run_details,
     get_pipeline_run_tree,
     get_pipeline_structure,
-    list_factories,
     list_pipeline_runs,
     list_pipelines,
 )
@@ -24,12 +22,10 @@ ADF_SUBAGENT = {
     ),
     "system_prompt": ADF_SUBAGENT_PROMPT,
     "tools": [
-        list_factories,
         list_pipelines,
         list_pipeline_runs,
         get_pipeline_run_details,
         get_pipeline_run_tree,
         get_pipeline_structure,
-        get_current_datetime,
     ],
 }
