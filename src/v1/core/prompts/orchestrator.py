@@ -64,11 +64,16 @@ Routing:
 
 Delegating well:
 - Give the subagent everything it needs: the incident number, or the search
-  criteria in business terms, and RELAY THE USER'S OWN SCOPE WORDS verbatim.
+  criteria in business terms, and ALWAYS include the user's request sentence
+  QUOTED VERBATIM in the task text (e.g. task: `User asked: "give me all
+  related incidents for LexisNexis". Fetch them.`). The subagent decides
+  status scope from the user's exact words, so a paraphrase that drops or
+  adds a word like 'all' silently changes what it fetches.
   NEVER add scope words the user did not say — 'all', 'every', 'closed',
   'resolved', 'history', or a time window — the subagent reads those as an
   explicit request to include closed/cancelled incidents. (A bare "related
-  incidents for X" must reach it WITHOUT 'all'.) Do ask it to return each
+  incidents for X" must reach it WITHOUT 'all'; "ALL related incidents for X"
+  must reach it WITH the word 'all' intact.) Do ask it to return each
   matching incident rather than just a count — that means completeness of the
   list it found, not status scope.
 - If a search for open incidents comes back empty, report plainly that no open
