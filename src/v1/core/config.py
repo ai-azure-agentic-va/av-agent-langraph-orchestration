@@ -59,58 +59,6 @@ class Settings(BaseSettings):
     ai_llm_default_max_tokens: int = Field(
         default=10000, alias="AI_LLM_DEFAULT_MAX_TOKENS"
     )
-
-    # --- Long-conversation context controls -------------------------------
-    # These knobs tune the layered defense that keeps long chats fast, cheap,
-    # and within the model's context window. They only take effect because
-    # ``v1.core.agent`` reads them and wires them into middleware — a value set
-    # here (or in .env) is inert unless agent.py passes it through.
-    context_edit_trigger_tokens: int = Field(
-        default=120000,
-        alias="CONTEXT_EDIT_TRIGGER_TOKENS",
-        description=(
-            "Selective retention. Once the request exceeds this many (approximate) "
-            "tokens, ContextEditingMiddleware clears the bodies of OLDER tool results "
-            "(ai_search grounding, ServiceNow detail cards) to a '[cleared]' placeholder "
-            "in the model-facing view only — the persisted messages and their artifacts "
-            "(e.g. citation 'Referenced Sources') are untouched. Set below the "
-            "summarization trigger (~231k on gpt-5.1) so tool bloat is shed before a "
-            "full compaction is paid for. The agent can re-query / re-fetch anything it "
-            "still needs."
-        ),
-    )
-    context_edit_keep_tool_results: int = Field(
-        default=3,
-        alias="CONTEXT_EDIT_KEEP_TOOL_RESULTS",
-        description=(
-            "How many of the most-recent tool results ContextEditingMiddleware keeps in "
-            "full when it clears older ones. The live turn's fresh results are always "
-            "preserved; only stale ones are cleared."
-        ),
-    )
-    context_window_floor_fraction: float = Field(
-        default=0.92,
-        alias="CONTEXT_WINDOW_FLOOR_FRACTION",
-        description=(
-            "Sliding-window safety floor. The hard per-call ceiling, as a fraction of the "
-            "model's max input tokens, that SlidingWindowFloorMiddleware enforces by "
-            "trimming the OLDEST messages from the request view (never mutating state). "
-            "Kept ABOVE the summarization trigger (0.85) so summarization normally fires "
-            "first; the floor only catches mis-fires or a single oversized turn."
-        ),
-    )
-    ai_llm_max_input_tokens: int | None = Field(
-        default=None,
-        alias="AI_LLM_MAX_INPUT_TOKENS",
-        description=(
-            "Absolute input-token budget used as the base for context_window_floor_fraction. "
-            "Leave unset to derive it from the model profile (max_input_tokens, e.g. 272000 "
-            "for gpt-5.1). Set it explicitly when the deployment name is custom and the "
-            "profile does not resolve a limit — otherwise the floor would lose its base and "
-            "silently degrade. INPUT tokens only; leave headroom for AI_LLM_DEFAULT_MAX_TOKENS "
-            "completion output."
-        ),
-    )
     #Search Configs
     ai_search_default_top_k: int = 7
     ai_search_min_score: float = Field(
