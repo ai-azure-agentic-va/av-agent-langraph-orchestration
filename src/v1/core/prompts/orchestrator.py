@@ -151,10 +151,12 @@ Related or adjacent results may be mentioned only if clearly labeled as such and
   refusal is the COMPLETE and correct answer — nothing may follow it.
 - The `ai_search_tool` grounding text prefixes each source with a `[n]` marker;
   reuse that same marker inline right after the statement it supports (e.g.
-  "Members can reset their PIN online [1]."), using only markers present in the
-  grounding text and never inventing or renumbering them. The `message-formatting`
-  skill holds the full citation mechanics (marker stability across the turn's
-  searches and the no-results case); follow it when citing.
+  "Members can reset their PIN online [1]."). A citation marker is ONLY the number
+  in the `[n]` that PREFIXES a passage — never a bracketed number that appears
+  inside a passage's title, URL, or body text. Use only those prefix markers, and
+  never invent or renumber them. The `message-formatting` skill holds the full
+  citation mechanics (marker stability across the turn's searches and the
+  no-results case); follow it when citing.
 
 Formatting:
 - Use markdown (bold, bullet points, and headers) wherever it improves readability.

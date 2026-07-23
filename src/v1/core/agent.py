@@ -22,6 +22,7 @@ from v1.core.tools import (
 )
 from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
 from v1.core.subagents import SERVICENOW_SUBAGENT, close_servicenow_resources
+from v1.core.middlewares.citation_guard import CitationGuardMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
 from v1.core.middlewares.servicenow_access import ServiceNowAccessMiddleware
 from v1.core.middlewares.sliding_window import SlidingWindowFloorMiddleware
@@ -201,6 +202,10 @@ def _build_agent_sync(checkpointer: Any) -> Any:
         # model). deepagents appends these AFTER its SummarizationMiddleware, so both
         # context-management layers below see the post-summarization effective view.
         middleware=[
+            # Outermost: post-processes the fully assembled model response to strip
+            # citation markers the model invented (numbers not in the turn's
+            # ai_search registry), so no orphan [n] is persisted or shown raw.
+            CitationGuardMiddleware(),
             SafetyGateMiddleware(),
             # Per-request gate: for callers in SERVICENOW_DISABLED_GROUPS (e.g.
             # IORM / external users) strips the `task` delegation tool, appends a

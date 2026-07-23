@@ -55,8 +55,11 @@ The `ai_search_tool` grounding text prefixes each source with a `[n]` marker.
 
 - When a statement draws on a source, reuse that same `[n]` marker inline right
   after the statement (e.g. "Members can reset their PIN online [1].").
-- Use only the markers present in the grounding text, keep each identical to its
-  source's number, and never invent or renumber them.
+- A citation marker is ONLY the number in the `[n]` that PREFIXES a passage.
+  A bracketed number inside a passage's title, URL, or body (e.g. a document's own
+  "[1242]" cross-reference) is NOT a citation marker — never emit it as one.
+- Use only the prefix markers present in the grounding text, keep each identical
+  to its source's number, and never invent or renumber them.
 - The numbers are stable across EVERY search in this turn: the same document
   keeps the same number if it resurfaces in a later search, and a new document
   gets the next unused number. Cite the exact number shown next to the passage

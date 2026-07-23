@@ -1,6 +1,7 @@
 import asyncio
 import itertools
 import logging
+import re
 import threading
 from collections import OrderedDict
 from datetime import date, datetime
@@ -157,6 +158,15 @@ def _doc_key(result) -> str:
 _MAX_TRACKED_TURNS = 1024
 _anon_counter = itertools.count()  # process-unique keys for unidentifiable docs
 
+# A source document's own title/body can contain bracketed integers (e.g. a
+# runbook's "[1242]" cross-reference). Once inlined into the grounding text they
+# are textually identical to the leading ``[n]`` citation marker we prepend, so
+# the model copies them verbatim and emits invalid citations that match no
+# document and render as raw brackets in the UI. We rewrite any ``[n]`` inside
+# the grounded title/content to ``(n)`` so the prepended marker is the ONLY
+# citable ``[n]`` the model ever sees. See the passage builder in `_run_search`.
+_CONTENT_BRACKET_NUM_RE = re.compile(r"\[(\d+)\]")
+
 
 class _TurnDocuments:
     """Turn-stable ``[n]`` numbering + the full retrieved-document set for a turn.
@@ -195,6 +205,12 @@ class _TurnDocuments:
         with self._lock:
             return [self._by_index[i] for i in sorted(self._by_index)]
 
+    def indices(self) -> set[int]:
+        """The set of ``[n]`` numbers assigned to documents so far this turn."""
+
+        with self._lock:
+            return set(self._by_index)
+
 
 _document_registries: "OrderedDict[str, _TurnDocuments]" = OrderedDict()
 _document_registries_lock = threading.Lock()
@@ -220,6 +236,25 @@ def _turn_documents(run_id: str | None) -> _TurnDocuments:
         else:
             _document_registries.move_to_end(run_id)
         return reg
+
+
+def assigned_citation_indices(run_id: str | None) -> set[int]:
+    """The ``[n]`` numbers assigned to documents for ``run_id`` this turn.
+
+    Read-only peek for the citation guard: unlike :func:`_turn_documents` it never
+    CREATES a registry, so probing a turn that ran no search returns an empty set
+    (and the guard then leaves the answer's markers untouched — there is no ground
+    truth to validate against).
+    """
+
+    if not run_id:
+        return set()
+    with _document_registries_lock:
+        reg = _document_registries.get(run_id)
+        if reg is None:
+            return set()
+        _document_registries.move_to_end(run_id)
+    return reg.indices()
 
 
 def _current_run_id() -> str | None:
@@ -365,8 +400,15 @@ def _run_search(
             display["preview"] = merged[:300]
         # Turn-stable [n] for this document; records it for the UI on first sight.
         index = documents.assign(regkey, display)
+        # Neutralize any [n] the source's own title/body carries so the ONLY
+        # citable [n] in the grounding is the leading marker we prepend — the
+        # model can no longer copy a source cross-reference into a bogus citation.
+        # (The UI display payload keeps the raw title/preview; only the model-
+        # facing grounding text is rewritten.)
+        safe_title = _CONTENT_BRACKET_NUM_RE.sub(r"(\1)", doc["title"])
+        safe_content = _CONTENT_BRACKET_NUM_RE.sub(r"(\1)", merged)
         passages.append(
-            f"[{index}] {doc['title']}\nURL: {doc['url'] or ''}\nCONTENT:\n{merged}"
+            f"[{index}] {safe_title}\nURL: {doc['url'] or ''}\nCONTENT:\n{safe_content}"
         )
 
     return "\n\n---\n\n".join(passages)
