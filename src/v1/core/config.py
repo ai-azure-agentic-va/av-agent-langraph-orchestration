@@ -101,6 +101,43 @@ class Settings(BaseSettings):
             "(default) leaves the ADF subagent enabled for everyone."
         ),
     )
+    #Azure Data Lake Storage Config
+    adls_account_mapping: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        alias="ADLS_ACCOUNT_MAPPING",
+        description=(
+            "JSON object mapping a friendly account alias to the coordinates of an "
+            "Azure Data Lake Storage Gen2 account the adls-agent may read, e.g. "
+            '{"finance-dev": {"account_url": "https://fin.dfs.core.windows.net", '
+            '"filesystem": "curated", "config_path": "config/datasets"}}. '
+            "`account_url` accepts either the .dfs or .blob endpoint; `filesystem` is "
+            "the container; `config_path` (optional, default 'config/datasets') is the "
+            "folder holding one <dataset>.json manifest per dataset. Empty (default) "
+            "disables the ADLS subagent entirely: it is not registered on the "
+            "orchestrator and the system prompt carries no ADLS routing text."
+        ),
+    )
+    adls_default_account: str | None = Field(
+        default=None,
+        alias="ADLS_DEFAULT_ACCOUNT",
+        description=(
+            "Alias (a key of ADLS_ACCOUNT_MAPPING) of the storage account the ADLS "
+            "tools use when the caller does not name one. When exactly one account is "
+            "mapped it is the implicit default and this can stay unset; with several "
+            "accounts and no default the tools ask the model to pass account=<alias>."
+        ),
+    )
+    adls_disabled_groups: StringList = Field(
+        default_factory=list,
+        alias="ADLS_DISABLED_GROUPS",
+        description=(
+            "Comma-separated Entra group object-ids or display names for which the "
+            "Azure Data Lake Storage subagent is DISABLED, matched the same way as "
+            "SERVICENOW_DISABLED_GROUPS. A caller whose groups intersect this set "
+            "cannot delegate to the adls-agent; everyone else keeps it. Empty "
+            "(default) leaves the ADLS subagent enabled for everyone."
+        ),
+    )
     servicenow_disabled_groups: StringList = Field(
         default_factory=list,
         alias="SERVICENOW_DISABLED_GROUPS",

@@ -29,6 +29,7 @@ TESTS = src/v1/test/v1/utils/test_servicenow_intents.py \
 	src/v1/test/v1/utils/test_servicenow.py \
 	src/v1/test/v1/utils/test_subagent_access.py \
 	src/v1/test/v1/utils/test_adf_tools.py \
+	src/v1/test/v1/utils/test_adls_tools.py \
 	src/v1/test/v1/utils/test_agent_recursion.py \
 	src/v1/test/v1/utils/test_graph_groups.py
 

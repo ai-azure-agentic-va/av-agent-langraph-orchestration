@@ -3525,6 +3525,135 @@
         "display_value": "Data Quality"
       },
       "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3400030"
+    },
+    {
+      "_mock_note": "ADF-LINK-1 | Pipeline Failure (live sandbox join) | Cardpay - Raw to INT ingestion hop",
+      "sys_id": "cc10dd11ee12ff13aa14bb15cc16dd17",
+      "number": "INC3410010",
+      "short_description": "(AutoTkt) pl-315-00-md-cardpay-daily-process_data failure in ADF",
+      "description": "Automated alert: the ADF pipeline pl-315-00-md-cardpay-daily-process_data failed during its scheduled run (PipelineRunId 07cf0d04-858b-11f1-8759-8e76dfbcc945). Activity epipe-315-01-md-cardpay-raw_to_int-transform_data [ExecutePipeline] failed with errorCode BadRequest: \"Operation on target Fail to represent pipeline status failed: pipeline execution failed for ingestion hop CARDPAY_INT\". The child pipeline pl-315-01-md-cardpay-raw_to_int-transform_data (PipelineRunId e1fa54da-9fec-4d94-9020-8e05c6de0063) is the origin of the failure. Sibling branch epipe-315-02-md-cardpay-int_to_cur-transform_data completed successfully, so the impact is limited to the CARDPAY_INT hop. No data landed for int_cardpay.transaction_detail.",
+      "priority": {
+        "value": "1",
+        "display_value": "1 - Critical"
+      },
+      "state": {
+        "value": "2",
+        "display_value": "In Progress"
+      },
+      "active": {
+        "value": "true",
+        "display_value": "true"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "D0004",
+        "display_value": "Dana Sample (D0004)"
+      },
+      "resolved_by": {
+        "value": "",
+        "display_value": ""
+      },
+      "cause": "Data Availability",
+      "opened_at": "2026-07-22 04:33:10",
+      "sys_created_on": "2026-07-22 04:33:10",
+      "sys_updated_on": "2026-07-22 05:10:00",
+      "resolved_at": "",
+      "closed_at": "",
+      "resolution_notes": "",
+      "configuration_item": {
+        "value": "pl31500mdcardpaydailyprocessdata",
+        "display_value": "pl-315-00-md-cardpay-daily-process_data"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3410010"
+    },
+    {
+      "_mock_note": "ADF-LINK-2 | Pipeline Failure historical (resolution notes) | Cardpay - Raw to INT ingestion hop",
+      "sys_id": "cc20dd21ee22ff23aa24bb25cc26dd27",
+      "number": "INC3410020",
+      "short_description": "(AutoTkt) pl-315-00-md-cardpay-daily-process_data failure in ADF",
+      "description": "Automated alert: the ADF pipeline pl-315-00-md-cardpay-daily-process_data failed at the CARDPAY_INT ingestion hop. Activity epipe-315-01-md-cardpay-raw_to_int-transform_data returned errorCode BadRequest. Upstream cardpay extract was delivered late to the landing zone, so the raw-to-INT transform found no partition for the business date.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "display_value": "DEPS - DATA PIPELINE SUPPORT L3"
+      },
+      "assigned_to": {
+        "value": "K0005",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "K0005",
+        "display_value": "Morgan Blake (K0005)"
+      },
+      "cause": "Incomplete file transfer",
+      "opened_at": "2026-06-18 03:12:44",
+      "sys_created_on": "2026-06-18 03:12:44",
+      "sys_updated_on": "2026-06-19 14:20:00",
+      "resolved_at": "2026-06-18 09:05:12",
+      "closed_at": "2026-06-19 14:20:00",
+      "resolution_notes": "Cardpay source delivered the extract 3 hours past the landing-zone SLA. Once the file landed, re-triggered pl-315-01-md-cardpay-raw_to_int-transform_data; the CARDPAY_INT hop completed and int_cardpay.transaction_detail was populated. Row counts reconciled across RAW, INT and CUR. Raised a monitoring request so late delivery alerts before the transform starts.",
+      "configuration_item": {
+        "value": "pl31500mdcardpaydailyprocessdata",
+        "display_value": "pl-315-00-md-cardpay-daily-process_data"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3410020"
+    },
+    {
+      "_mock_note": "ADF-LINK-3 | Pipeline Failure historical | MORE - daily process (happy-path pipeline, past incident)",
+      "sys_id": "cc30dd31ee32ff33aa34bb35cc36dd37",
+      "number": "INC3410030",
+      "short_description": "(AutoTkt) pl-314-01-md-more-daily-process_data failure in ADF",
+      "description": "Automated alert: the ADF pipeline pl-314-01-md-more-daily-process_data failed during its scheduled run. Activity exec-pl-md-more-daily-raw-int-process_data [ExecutePipeline] failed at the MORE_INT ingestion hop after the generic transform pipeline pl-00-parallel-generic-01-md-de_di_raw_int_cur-transform_data_strgopt exceeded its storage-optimised compute quota. Downstream cur_more.account_summary was not refreshed.",
+      "priority": {
+        "value": "2",
+        "display_value": "2 - High"
+      },
+      "state": {
+        "value": "7",
+        "display_value": "Closed"
+      },
+      "active": {
+        "value": "false",
+        "display_value": "false"
+      },
+      "assignment_group": {
+        "value": "1a2b3c4d5e6f70819aabbccddeeff001",
+        "display_value": "DEPS - PLATFORM ENGINEERING"
+      },
+      "assigned_to": {
+        "value": "R0003",
+        "display_value": ""
+      },
+      "resolved_by": {
+        "value": "R0003",
+        "display_value": "Pat Rivers (R0003)"
+      },
+      "cause": "Cluster issue",
+      "opened_at": "2026-07-05 02:40:19",
+      "sys_created_on": "2026-07-05 02:40:19",
+      "sys_updated_on": "2026-07-06 11:00:00",
+      "resolved_at": "2026-07-05 07:22:03",
+      "closed_at": "2026-07-06 11:00:00",
+      "resolution_notes": "Storage-optimised cluster hit its node quota during the raw-to-INT transform. Increased the pool ceiling and re-ran pl-314-01-md-more-daily-process_data end to end; all three child pipelines completed successfully and cur_more.account_summary refreshed.",
+      "configuration_item": {
+        "value": "pl31401mdmoredailyprocessdata",
+        "display_value": "pl-314-01-md-more-daily-process_data"
+      },
+      "ticket_url": "https://finqa.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC3410030"
     }
   ]
 }

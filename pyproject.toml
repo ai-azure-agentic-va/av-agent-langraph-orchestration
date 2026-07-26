@@ -29,6 +29,10 @@ dependencies = [
   "azure-mgmt-datafactory>=9.0.0",
   "azure-keyvault-secrets>=4.8.0",
   "azure-search-documents>=11.5.0",
+  # ADLS Gen2 reads for the adls-agent. A Gen2 filesystem is a blob container and
+  # the tools only list/download, so the blob SDK covers it — no need for
+  # azure-storage-file-datalake (directory/ACL semantics we never touch).
+  "azure-storage-blob>=12.20.0",
   "langsmith>=0.1.95",
   "pydantic>=2.8.0",
   "pyjwt[crypto]>=2.8.0",

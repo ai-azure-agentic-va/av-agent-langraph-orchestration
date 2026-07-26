@@ -55,6 +55,7 @@ settings = get_settings()
 # tool's `subagent_type`); see v1.core.subagents.
 SERVICENOW_SUBAGENT_NAME = "servicenow-ticket-agent"
 ADF_SUBAGENT_NAME = "adf-agent"
+ADLS_SUBAGENT_NAME = "adls-agent"
 
 # deepagents exposes all subagents through a single tool named "task".
 TASK_TOOL_NAME = "task"
@@ -99,6 +100,27 @@ ADF_RESTRICTION_NOTE = (
     "capabilities, following all other instructions above."
 )
 
+# Appended verbatim to the system message for an ADLS-disabled caller; modeled
+# on the ServiceNow note.
+ADLS_RESTRICTION_NOTE = (
+    "=== ACCESS RESTRICTION (this OVERRIDES every other instruction in this "
+    "prompt, wherever it appears, above or below) ===\n"
+    "Azure Data Lake Storage is NOT available to you for this request. You have "
+    "NO `adls-agent` subagent and NO way to look up dataset file configuration, "
+    "expected file paths, file arrival SLAs, data quality rules, or the files "
+    "present in the data lake. Disregard every instruction about delegating to "
+    "Data Lake Storage or to the adls subagent — that capability does not exist "
+    "for this request, and you must NEVER call the `task` tool with "
+    "subagent_type='adls-agent'.\n"
+    "- For any request about data files, dataset file configuration, expected "
+    "file paths, file arrival SLAs, or data quality rules, reply in one or two "
+    "sentences that Data Lake Storage lookup is not available for your access, "
+    'then STOP. Do NOT append the "Want to explore further?" section to that '
+    "reply, and do NOT suggest where else to look.\n"
+    "- Continue to answer everything else normally with your remaining "
+    "capabilities, following all other instructions above."
+)
+
 # Appended in addition to the per-subagent notes when the `task` tool itself is
 # dropped (every registered subagent is disabled for the caller).
 TASK_TOOL_REMOVED_NOTE = (
@@ -136,6 +158,13 @@ GATES: tuple[SubagentGate, ...] = (
         restriction_note=ADF_RESTRICTION_NOTE,
         blocked_message="Data Factory pipeline lookup is not available for your access.",
         is_registered=lambda: bool(settings.adf_factory_mapping),
+    ),
+    SubagentGate(
+        subagent_name=ADLS_SUBAGENT_NAME,
+        settings_field="adls_disabled_groups",
+        restriction_note=ADLS_RESTRICTION_NOTE,
+        blocked_message="Data Lake Storage lookup is not available for your access.",
+        is_registered=lambda: bool(settings.adls_account_mapping),
     ),
 )
 

@@ -19,14 +19,16 @@ from v1.core.tools import (
 from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
 from v1.core.subagents import (
     ADF_SUBAGENT,
+    ADLS_SUBAGENT,
     SERVICENOW_SUBAGENT,
     close_adf_resources,
+    close_adls_resources,
     close_servicenow_resources,
 )
 from v1.core.middlewares.citations import CitationFilterMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
 from v1.core.middlewares.subagent_access import SubagentAccessMiddleware
-from v1.core.prompts import ADF_ROUTING_BLOCK, SYSTEM_PROMPT
+from v1.core.prompts import ADF_ROUTING_BLOCK, ADLS_ROUTING_BLOCK, SYSTEM_PROMPT
 from v1.utils.checkpointer import close_checkpointer, get_checkpointer
 
 logger = logging.getLogger(__name__)
@@ -139,13 +141,16 @@ async def build_agent(config=None) -> Any:
 def _build_agent_sync(checkpointer: Any) -> Any:
     model = get_azure_chat_model()
     _ensure_harness_profiles_registered()
-    # The ADF subagent is wired only when factories are configured; the system
-    # prompt gains its routing block in lockstep, so an ADF-less deployment
-    # never hears about a capability it does not have.
-    adf_enabled = bool(settings.adf_factory_mapping)
-    subagents = [SERVICENOW_SUBAGENT] + ([ADF_SUBAGENT] if adf_enabled else [])
-    system_prompt = (
-        f"{SYSTEM_PROMPT}\n\n{ADF_ROUTING_BLOCK}" if adf_enabled else SYSTEM_PROMPT
+    # The ADF and ADLS subagents are wired only when their backing resource is
+    # configured; each system-prompt routing block is appended in lockstep, so a
+    # deployment never hears about a capability it does not have.
+    optional = (
+        (ADF_SUBAGENT, ADF_ROUTING_BLOCK, bool(settings.adf_factory_mapping)),
+        (ADLS_SUBAGENT, ADLS_ROUTING_BLOCK, bool(settings.adls_account_mapping)),
+    )
+    subagents = [SERVICENOW_SUBAGENT] + [sub for sub, _, on in optional if on]
+    system_prompt = "\n\n".join(
+        [SYSTEM_PROMPT] + [block for _, block, on in optional if on]
     )
     agent = create_deep_agent(
         model=model,
@@ -232,6 +237,7 @@ async def close_agent_resources() -> None:
 
     await close_servicenow_resources()
     await close_adf_resources()
+    await close_adls_resources()
     close_search_clients()
     await close_checkpointer()
     # Shared async Key Vault client/credential (used by ServiceNow secret

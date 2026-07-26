@@ -49,10 +49,14 @@ class _Settings:
         servicenow_disabled: list[str] | None = None,
         adf_disabled: list[str] | None = None,
         adf_factories: dict | None = None,
+        adls_disabled: list[str] | None = None,
+        adls_accounts: dict | None = None,
     ) -> None:
         self.servicenow_disabled_groups = servicenow_disabled or []
         self.adf_disabled_groups = adf_disabled or []
         self.adf_factory_mapping = adf_factories if adf_factories is not None else {"fin": {}}
+        self.adls_disabled_groups = adls_disabled or []
+        self.adls_account_mapping = adls_accounts if adls_accounts is not None else {"lake": {}}
 
 
 def _patch(settings: _Settings, caller_groups: tuple[str, ...]):
@@ -145,6 +149,19 @@ def test_unregistered_adf_gate_is_ignored() -> None:
         restore()
 
 
+def test_unregistered_adls_gate_is_ignored() -> None:
+    # No storage accounts configured -> the ADLS subagent is not wired, so its
+    # gate must not fire even for a caller in ADLS_DISABLED_GROUPS.
+    restore = _patch(
+        _Settings(adls_disabled=["FIN-APP-EXT"], adls_accounts={}),
+        caller_groups=("FIN-APP-EXT",),
+    )
+    try:
+        assert sa._disabled_subagents_for_caller() == frozenset()
+    finally:
+        restore()
+
+
 # --- model-call gating ------------------------------------------------------
 
 
@@ -178,13 +195,35 @@ def test_adf_only_disabled_keeps_task_and_notes_adf() -> None:
         text = forwarded.system_message.text
         assert "Azure Data Factory is NOT available" in text
         assert "ServiceNow is NOT available" not in text
+        assert "Azure Data Lake Storage is NOT available" not in text
+    finally:
+        restore()
+
+
+def test_adls_only_disabled_keeps_task_and_notes_adls() -> None:
+    restore = _patch(
+        _Settings(adls_disabled=["FIN-NO-ADLS"]),
+        caller_groups=("FIN-NO-ADLS",),
+    )
+    try:
+        forwarded = _forwarded_request(_request_with_task())
+        # ServiceNow and ADF delegation must survive an ADLS-only restriction
+        assert sa.TASK_TOOL_NAME in [t.name for t in forwarded.tools]
+        text = forwarded.system_message.text
+        assert "Azure Data Lake Storage is NOT available" in text
+        assert "ServiceNow is NOT available" not in text
+        assert "Azure Data Factory is NOT available" not in text
     finally:
         restore()
 
 
 def test_all_subagents_disabled_drops_task_tool() -> None:
     restore = _patch(
-        _Settings(servicenow_disabled=["FIN-APP-EXT"], adf_disabled=["FIN-APP-EXT"]),
+        _Settings(
+            servicenow_disabled=["FIN-APP-EXT"],
+            adf_disabled=["FIN-APP-EXT"],
+            adls_disabled=["FIN-APP-EXT"],
+        ),
         caller_groups=("FIN-APP-EXT",),
     )
     try:
@@ -195,7 +234,23 @@ def test_all_subagents_disabled_drops_task_tool() -> None:
         text = forwarded.system_message.text
         assert "ServiceNow is NOT available" in text
         assert "Azure Data Factory is NOT available" in text
+        assert "Azure Data Lake Storage is NOT available" in text
         assert sa.TASK_TOOL_REMOVED_NOTE in text
+    finally:
+        restore()
+
+
+def test_servicenow_and_adf_disabled_keeps_task_for_adls() -> None:
+    # A partially-restricted caller must keep `task`: the ADLS subagent is still
+    # a legitimate delegation target.
+    restore = _patch(
+        _Settings(servicenow_disabled=["FIN-APP-EXT"], adf_disabled=["FIN-APP-EXT"]),
+        caller_groups=("FIN-APP-EXT",),
+    )
+    try:
+        forwarded = _forwarded_request(_request_with_task())
+        assert sa.TASK_TOOL_NAME in [t.name for t in forwarded.tools]
+        assert sa.TASK_TOOL_REMOVED_NOTE not in forwarded.system_message.text
     finally:
         restore()
 
@@ -204,7 +259,7 @@ def test_servicenow_disabled_without_adf_registered_drops_task_tool() -> None:
     # Pre-ADF behavior preserved: ServiceNow is the only registered subagent,
     # so disabling it removes the task tool entirely.
     restore = _patch(
-        _Settings(servicenow_disabled=["FIN-APP-EXT"], adf_factories={}),
+        _Settings(servicenow_disabled=["FIN-APP-EXT"], adf_factories={}, adls_accounts={}),
         caller_groups=("FIN-APP-EXT",),
     )
     try:
@@ -277,13 +332,44 @@ def test_disabled_adf_task_call_is_blocked_but_servicenow_runs() -> None:
         restore()
 
 
+def test_disabled_adls_task_call_is_blocked_but_adf_runs() -> None:
+    restore = _patch(
+        _Settings(adls_disabled=["FIN-NO-ADLS"]),
+        caller_groups=("FIN-NO-ADLS",),
+    )
+    try:
+        blocked = sa.SubagentAccessMiddleware().wrap_tool_call(
+            _task_call(sa.ADLS_SUBAGENT_NAME, "call_5"),
+            lambda _req: "must not run",
+        )
+        assert isinstance(blocked, ToolMessage)
+        assert blocked.status == "error"
+        assert "data lake" in blocked.content.lower()
+
+        allowed = sa.SubagentAccessMiddleware().wrap_tool_call(
+            _task_call(sa.ADF_SUBAGENT_NAME, "call_6"),
+            lambda _req: "delegated",
+        )
+        assert allowed == "delegated"
+    finally:
+        restore()
+
+
 def test_internal_caller_task_calls_run() -> None:
     restore = _patch(
-        _Settings(servicenow_disabled=["FIN-APP-EXT"], adf_disabled=["FIN-NO-ADF"]),
+        _Settings(
+            servicenow_disabled=["FIN-APP-EXT"],
+            adf_disabled=["FIN-NO-ADF"],
+            adls_disabled=["FIN-NO-ADLS"],
+        ),
         caller_groups=("FIN-APP-INT",),
     )
     try:
-        for subagent in (sa.SERVICENOW_SUBAGENT_NAME, sa.ADF_SUBAGENT_NAME):
+        for subagent in (
+            sa.SERVICENOW_SUBAGENT_NAME,
+            sa.ADF_SUBAGENT_NAME,
+            sa.ADLS_SUBAGENT_NAME,
+        ):
             result = sa.SubagentAccessMiddleware().wrap_tool_call(
                 _task_call(subagent, "call_4"),
                 lambda _req: "delegated",
