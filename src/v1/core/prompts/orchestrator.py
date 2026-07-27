@@ -252,7 +252,11 @@ Reporting / analytics scope:
   delegate those normally.
 - When the subagent returns incidents, PRESERVE exactly what it hands back,
   verbatim — including every ticket_url link, the one-line-per-incident list
-  shape, any full detail card, and UTC timestamps. The `message-formatting`
+  shape, any single-incident summary, any full detail card, and every timestamp
+  exactly as handed over — timestamps carry NO timezone label (the UI converts
+  them to the viewer's local zone), so never add 'UTC' or any other zone marker.
+  The link belongs to EVERY one of those shapes, the short summary included.
+  The `message-formatting`
   skill holds the exact rules (the list-row shape reproduced
   character-for-character, no dropped or invented/placeholder fields, and
   narrow-question handling); read its `SKILL.md` before rendering ServiceNow

@@ -429,6 +429,32 @@ def validate_offset(offset: int | None) -> int:
     return offset
 
 
+# Separator between a cursor's OFFSET part and the ticket numbers already shown.
+# The suffix exists because the wrapper only offers offset/limit paging over a LIVE
+# result set: when an incident is created (or re-ordered) between two page fetches,
+# every later record shifts down one slot, so the next offset re-serves a row the
+# previous page already displayed. Carrying the last page's numbers lets the merge
+# skip them. ponytail: only the PREVIOUS page is carried, so a shift larger than one
+# page can still duplicate — the real fix is keyset paging (order by a stable key and
+# page from the last one seen), which needs a sort/after param the wrapper lacks.
+_CURSOR_SEEN_SEP = "|"
+
+
+def split_cursor(offset: int | str | None) -> tuple[int | str | None, frozenset[str]]:
+    """Split a cursor into its offset part and the ticket numbers already shown.
+
+    Accepts both cursor shapes with an optional ``|INC1,INC2`` suffix — the single
+    state ``'10|INC1,INC2'`` and the composite ``'new:4,on_hold:2|INC1,INC2'`` — and
+    returns the offset text untouched so :func:`parse_offset` keeps its contract.
+    """
+
+    if not isinstance(offset, str) or _CURSOR_SEEN_SEP not in offset:
+        return offset, frozenset()
+    head, _, tail = offset.partition(_CURSOR_SEEN_SEP)
+    seen = {part.strip().upper() for part in tail.split(",") if part.strip()}
+    return head.strip(), frozenset(seen)
+
+
 def parse_offset(offset: int | str | None) -> int | dict[str, int]:
     """Validate a pagination offset: an int, or a multi-status CURSOR string.
 
@@ -486,26 +512,26 @@ def _canonical_status(state_display: str) -> str:
     return _STATUS_ALIASES.get(slug, slug.replace(" ", "_"))
 
 
-def _utc_timestamp(raw: Any) -> str | None:
-    """Render a ServiceNow incident timestamp with an explicit ``UTC`` marker.
+def _incident_timestamp(raw: Any) -> str | None:
+    """Render a ServiceNow incident timestamp as a BARE ``YYYY-MM-DD HH:MM:SS``.
 
     ServiceNow serves incident timestamps (opened_at, closed_at, resolved_at,
-    sys_updated_on, ...) in UTC, but the bare ``YYYY-MM-DD HH:MM:SS`` string
-    carries no zone — so neither the model nor the user can tell which timezone
-    it is. We append a ``UTC`` suffix on the OUTPUT side so the timezone travels
-    with the value into the answer (e.g. ``'2026-05-10 17:00:00 UTC'``). The
-    suffix is display-only: filtering/date math reads the raw incident fields,
-    never this normalized value. Returns ``None`` for an empty/missing timestamp
-    (rendered 'Not available' downstream) and never double-appends when a ``UTC``
-    marker is already present.
+    sys_updated_on, ...) in UTC. We deliberately emit NO timezone label: the UI
+    converts the value to the viewer's own local zone, so a 'UTC' suffix riding
+    the string is simply WRONG next to a converted clock value — and it survives
+    conversion, because it is literal text inside the model's prose rather than a
+    parsed field. This function is the single place that decides, so any marker a
+    record happens to carry is stripped here rather than in three prompt layers.
+    Filtering/date math reads the raw incident fields, never this display value.
+    Returns ``None`` for an empty/missing timestamp ('Not available' downstream).
     """
 
     text = _reference_value(raw).strip()
     if not text:
         return None
     if text.upper().endswith("UTC"):
-        return text
-    return f"{text} UTC"
+        text = text[:-3].strip()
+    return text or None
 
 
 def _error_payload(exc: Exception, *, kind: str = "servicenow_error") -> dict[str, Any]:
@@ -586,16 +612,17 @@ def _ticket_base(incident: Mapping[str, Any]) -> dict[str, Any]:
             _reference_display(incident.get("resolved_by"))
             or _reference_display(incident.get("assigned_to"))
         ),
-        # UTC-labeled: ServiceNow serves these in UTC; mark them so the user sees the
-        # zone. opened_at rides the compact row too (it is on every record anyway) so
+        # Bare date+time, NO zone label — the UI converts to the viewer's local zone,
+        # so a 'UTC' suffix would survive the conversion and mislabel the result.
+        # opened_at rides the compact row too (it is on every record anyway) so
         # "when was it opened" never renders 'Not available' off a detail=False row.
         # Live QA records can OMIT opened_at while carrying sys_created_on (same
         # instant — record creation IS the open time), so fall back to it.
         "opened_at": (
-            _utc_timestamp(incident.get("opened_at"))
-            or _utc_timestamp(incident.get("sys_created_on"))
+            _incident_timestamp(incident.get("opened_at"))
+            or _incident_timestamp(incident.get("sys_created_on"))
         ),
-        "updated_at": _utc_timestamp(incident.get("sys_updated_on")),
+        "updated_at": _incident_timestamp(incident.get("sys_updated_on")),
         # Deep link to the incident, constructed sys_id-based by the client from the
         # instance origin (the API returns no usable link). The sys_id lives ONLY
         # inside this URL — it is never surfaced as its own field. Present on every
@@ -623,10 +650,10 @@ def _ticket_detail_fields(incident: Mapping[str, Any]) -> dict[str, Any]:
         # value (empty -> '' so the output layer renders 'Not available').
         "assigned_to": _reference_display(incident.get("assigned_to")),
         "resolved_by": _reference_display(incident.get("resolved_by")),
-        # UTC-labeled: ServiceNow serves these in UTC; mark the zone on output.
+        # Bare date+time, NO zone label (see _incident_timestamp — the UI localizes).
         # (opened_at already rides the compact _ticket_base row.)
-        "resolved_at": _utc_timestamp(incident.get("resolved_at")),
-        "closed_at": _utc_timestamp(incident.get("closed_at")),
+        "resolved_at": _incident_timestamp(incident.get("resolved_at")),
+        "closed_at": _incident_timestamp(incident.get("closed_at")),
         "cause": _reference_value(incident.get("cause")),
         # Resolution text: read close_notes, FALLING BACK to the record's
         # ``resolution_notes`` key. The live wrapper serves the field as
@@ -677,6 +704,7 @@ def normalize_ticket_list(
     filters: Mapping[str, Any] | None = None,
     detail: bool = True,
     total_count: int | None = None,
+    consumed: int | None = None,
 ) -> dict[str, Any]:
     """Normalize merged incident results with validated filter metadata.
 
@@ -701,7 +729,13 @@ def normalize_ticket_list(
     # cursor is the composite ``next_cursor`` string the caller computed from per-state
     # consumption ('new:5,in_progress:5'). A SINGLE state keeps the simple integer
     # next_offset. (statuses=None is the direct ticket_numbers fetch — paging is moot.)
+    # Advance by rows CONSUMED, not rows shown. The merge passes over duplicates and
+    # wrong-state rows, so len(tickets) under-counts what was read — advancing by it
+    # rewinds the offset into the previous page and re-serves its tail.
     pageable = statuses is not None and len(statuses) == 1 and isinstance(offset, int)
+    next_offset: int | str | None = next_cursor
+    if next_cursor is None and pageable:
+        next_offset = offset + (len(tickets) if consumed is None else consumed)
     return {
         "ok": True,
         "source": SOURCE,
@@ -713,7 +747,7 @@ def normalize_ticket_list(
         "total_count": len(tickets) if total_count is None else total_count,
         "limit": limit,
         "offset": offset,
-        "next_offset": offset + len(tickets) if pageable else next_cursor,
+        "next_offset": next_offset,
         "status_filter": list(statuses or []),
         "filters_applied": dict(filters or {}),
         "detail": detail,
@@ -1114,12 +1148,13 @@ async def servicenow_list_tickets(
         int | str | None,
         Field(
             description=(
-                "Pagination cursor; omit for the first page. NEVER compute one — "
-                "to page, re-issue the SAME query with offset set to the exact "
-                "next_offset value from the previous result. Single-state results "
-                "return an integer next_offset; multi-state results (including the "
-                "open default) return a per-state cursor string like "
-                "'new:4,in_progress:6' — pass it back verbatim."
+                "Pagination cursor; omit for the first page. NEVER compute one — to "
+                "page, re-issue the SAME query with offset set to the previous "
+                "result's next_offset VERBATIM. It is an OPAQUE token: it may be a "
+                "plain integer, a per-state cursor like 'new:4,in_progress:6', or "
+                "either of those with a trailing '|INC…,INC…' segment naming the rows "
+                "already shown. Pass the WHOLE value back — dropping the part after "
+                "'|' makes incidents repeat on the next page."
             )
         ),
     ] = None,
@@ -1172,6 +1207,9 @@ async def servicenow_list_tickets(
             if open_only:
                 normalized_statuses = open_only
         normalized_limit = resolve_ticket_limit(limit=limit, count=count)
+        # Strip the "already shown" suffix before parsing: the offset half keeps its
+        # existing int/composite contract, the numbers half feeds the merge's skip set.
+        offset, carried_seen = split_cursor(offset)
         normalized_offset = parse_offset(offset)
         offset_cursor = normalized_offset if isinstance(normalized_offset, dict) else None
         int_offset = normalized_offset if isinstance(normalized_offset, int) else 0
@@ -1348,7 +1386,10 @@ async def servicenow_list_tickets(
                 pointers[i] += 1
                 progressed = True
                 number = _reference_value(incident.get("number")).upper()
-                if number in seen:
+                # Skip rows this page already holds AND rows the PREVIOUS page showed
+                # (carried on the cursor). Both still advance the pointer above, so the
+                # next offset steps past them instead of re-reading them forever.
+                if number in seen or number in carried_seen:
                     continue
                 if (
                     allowed is not None
@@ -1374,6 +1415,20 @@ async def servicenow_list_tickets(
                 for i, status in enumerate(normalized_statuses)
             )
 
+        # Carry THIS page's numbers so the next one can skip them if the live result
+        # set shifts under us between the two calls. Only attach it while paging
+        # continues — a final page has no successor to warn.
+        page_numbers = ",".join(
+            _reference_value(incident.get("number")).upper() for incident in merged
+        )
+        if has_more and page_numbers:
+            if next_cursor is not None:
+                next_cursor = f"{next_cursor}{_CURSOR_SEEN_SEP}{page_numbers}"
+            elif normalized_statuses is not None and len(normalized_statuses) == 1:
+                next_cursor = (
+                    f"{int_offset + sum(pointers)}{_CURSOR_SEEN_SEP}{page_numbers}"
+                )
+
         return normalize_ticket_list(
             merged,
             statuses=normalized_statuses,
@@ -1386,6 +1441,7 @@ async def servicenow_list_tickets(
             filters=field_filters,
             detail=detail,
             total_count=total_count,
+            consumed=sum(pointers),
         )
     except ServiceNowToolInputError as exc:
         return _error_payload(exc, kind="invalid_input")

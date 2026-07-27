@@ -390,6 +390,200 @@ def test_total_count_contains_filters_and_ci() -> None:
     assert SUPPORTED_FILTERS["assigned_to_name"].kind == "passthrough"
 
 
+def test_pagination_never_repeats_a_row_across_pages() -> None:
+    """Two ways page 2 used to re-serve rows from page 1.
+
+    1. next_offset advanced by rows SHOWN, but the merge passes over duplicate and
+       wrong-state rows, so it under-counted what was actually read and rewound into
+       the previous page.
+    2. The wrapper pages a LIVE result set by raw record offset: an incident created
+       between two calls shifts every later record down a slot, so the same offset
+       hands back a row the previous page already showed.
+    """
+
+    import asyncio
+
+    from v1.core.tools.servicenow.tools import servicenow_list_tickets
+
+    def record(number: int, state: str) -> dict[str, str]:
+        return {
+            "number": f"INC{number}",
+            "state": state,
+            "short_description": f"row {number}",
+            "priority": "3 - Moderate",
+        }
+
+    def install(pages) -> object:
+        class _Stub:
+            async def list_incidents(self, *, filters=None, limit=10, offset=0):
+                rows = pages(str((filters or {}).get("state")), offset, limit)
+                return {
+                    "ok": True,
+                    "mode": "real",
+                    "incidents": rows,
+                    "result_count": len(rows),
+                    "total_count": 100,
+                    "has_more": True,
+                    "next_offset": offset + limit,
+                    "degraded": False,
+                }
+
+        stub = _Stub()
+        tools_module.get_servicenow_client = lambda: asyncio.sleep(0, result=stub)
+        return stub
+
+    import v1.core.tools.servicenow.tools as tools_module
+
+    original_client = tools_module.get_servicenow_client
+    page = servicenow_list_tickets.coroutine
+    try:
+        # (1) The state backstop drops one row of a full page. The next offset must
+        # step past every row READ (10), not just the 9 rendered.
+        install(lambda state, offset, limit: [
+            record(3000 + i, "closed" if i == 4 else "new")
+            for i in range(offset, offset + limit)
+        ])
+        first = asyncio.run(page(statuses=["new"], limit=10))
+        assert first["count"] == 9, first["count"]
+        assert str(first["next_offset"]).split("|")[0] == "10", first["next_offset"]
+        second = asyncio.run(page(statuses=["new"], limit=10, offset=first["next_offset"]))
+        assert second.get("ok"), second
+        assert not _numbers(first) & _numbers(second)
+
+        # (2) A new incident lands at the front of 'new' between the two pages, so
+        # every later record shifts down one. The cursor carries page 1's numbers, so
+        # the straddling row is skipped instead of shown twice.
+        shift = {"rows": 0}
+        base = {"1": 1000, "2": 2000, "3": 3000}
+        canonical = {"1": "new", "2": "in_progress", "3": "on_hold"}
+
+        def shifting(state, offset, limit):
+            rows = []
+            for i in range(offset, offset + limit):
+                index = i - (shift["rows"] if state == "1" else 0)
+                rows.append(
+                    record(base[state] + index, canonical[state])
+                    if index >= 0
+                    else record(9999, "new")
+                )
+            return rows
+
+        install(shifting)
+        first = asyncio.run(page(limit=6))
+        shift["rows"] = 1
+        second = asyncio.run(page(limit=6, offset=first["next_offset"]))
+        assert _numbers(first) and _numbers(second)
+        assert not _numbers(first) & _numbers(second), sorted(
+            _numbers(first) & _numbers(second)
+        )
+    finally:
+        tools_module.get_servicenow_client = original_client
+
+
+def _numbers(payload: dict) -> set[str]:
+    return {ticket["ticket_number"] for ticket in payload["tickets"]}
+
+
+def test_timestamps_carry_no_timezone_label() -> None:
+    """Incident timestamps render BARE — the UI converts them to the viewer's zone.
+
+    User report: "sometimes the UI still shows UTC next to the timestamps". The
+    label was appended in code and then preserved by three prompt layers, so this
+    pins both halves: the tool emits none, and no layer asks for one back.
+    """
+
+    from pathlib import Path
+
+    from v1.core.tools.servicenow.tools import (
+        _incident_timestamp,
+        normalize_ticket_detail,
+    )
+
+    # Stripped whether or not the record already carries a marker.
+    assert _incident_timestamp("2026-05-10 17:00:00") == "2026-05-10 17:00:00"
+    assert _incident_timestamp("2026-05-10 17:00:00 UTC") == "2026-05-10 17:00:00"
+    assert _incident_timestamp("2026-05-10 17:00:00 utc") == "2026-05-10 17:00:00"
+    assert _incident_timestamp("  ") is None
+    assert _incident_timestamp("UTC") is None
+
+    client = ServiceNowClient(
+        ServiceNowConfig(mode="mock", instance_url="https://example.service-now.com")
+    )
+    envelope = asyncio.run(client.list_incidents(limit=10))
+    stamps = ("opened_at", "updated_at", "resolved_at", "closed_at")
+    seen = 0
+    for incident in envelope["incidents"]:
+        ticket = normalize_ticket_detail(incident)["ticket"]
+        for key in stamps:
+            value = ticket.get(key)
+            if value is None:
+                continue
+            seen += 1
+            assert not value.upper().endswith("UTC"), f"{key}: {value}"
+    assert seen, "fixture produced no timestamps to check"
+
+    # The prompt layers must not ask the model to put the label back.
+    root = Path(__file__).resolve().parents[4]
+    for relative in (
+        "v1/core/prompts/servicenow.py",
+        "v1/core/prompts/orchestrator.py",
+        "v1/core/skills/message-formatting/SKILL.md",
+    ):
+        text = (root / relative).read_text(encoding="utf-8")
+        for banned in ("UTC marker intact", "never drop the time or", "and UTC timestamps"):
+            assert banned not in text, f"{relative}: still mandates a UTC label ({banned})"
+
+
+def test_ticket_url_present_on_every_view() -> None:
+    """ticket_url rides EVERY normalized shape, including the single-ticket detail.
+
+    User report: "the incident URL is missing on summarize queries". A summary is
+    rendered from the DETAIL payload, so this pins the data half of the invariant —
+    the link must never be the thing that distinguishes one view from another.
+    """
+
+    from pathlib import Path
+
+    from v1.core.tools.servicenow.tools import (
+        normalize_ticket_detail,
+        normalize_ticket_list,
+    )
+
+    client = ServiceNowClient(
+        ServiceNowConfig(mode="mock", instance_url="https://example.service-now.com")
+    )
+    envelope = asyncio.run(client.list_incidents(limit=5))
+    incidents = envelope["incidents"]
+    assert incidents, "mock fixture returned no incidents"
+
+    def expect(url: object, where: str) -> None:
+        assert isinstance(url, str) and url, f"{where}: missing ticket_url ({url!r})"
+        # sys_id-based deep link — the only form that resolves in ServiceNow.
+        assert "sys_id=" in url, f"{where}: not a sys_id deep link ({url})"
+
+    detail = normalize_ticket_detail(incidents[0])
+    expect(detail["ticket"].get("ticket_url"), "ticket_detail")
+
+    for is_detail in (True, False):
+        listed = normalize_ticket_list(
+            incidents, statuses=("new",), limit=5, detail=is_detail
+        )
+        for ticket in listed["tickets"]:
+            expect(ticket.get("ticket_url"), f"ticket_list(detail={is_detail})")
+
+    # Render half: the SUMMARY view is defined by SUBTRACTION from the full card and
+    # sits under an aggressive "omit empty fields" rule, so unless each layer names
+    # the link on the summary path the model drops it there and only there.
+    root = Path(__file__).resolve().parents[4]
+    for relative, marker in (
+        ("v1/core/prompts/servicenow.py", "SUMMARY or the FULL CARD"),
+        ("v1/core/prompts/orchestrator.py", "any single-incident summary"),
+        ("v1/core/skills/message-formatting/SKILL.md", "a summary OR a full-details"),
+    ):
+        text = (root / relative).read_text(encoding="utf-8")
+        assert marker in text, f"{relative}: lost the summary ticket_url mandate"
+
+
 def _main() -> int:
     checks = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

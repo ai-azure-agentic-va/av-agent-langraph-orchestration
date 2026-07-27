@@ -130,10 +130,15 @@ Reproduce that line CHARACTER-FOR-CHARACTER:
   does not carry (e.g. the data source), it lives in the incident's long
   description — do not fabricate a per-row field for it.
 
-### Single incident or a full-details request
+### Single incident — a summary OR a full-details request
 
-It returns the complete card. Render that card's fields verbatim:
+Both shapes ("summarize INC…", "what is INC…", "full details for INC…") come back
+as a card. Render that card's fields verbatim:
 
+- the card OPENS with the incident number as a markdown link, `[INC…](<ticket_url>)`,
+  exactly as a list row does. Keep it. A summary is the SHORTEST view, not a
+  link-free one — never downgrade its number to plain or bold text, and never
+  replace the link with "(ServiceNow link)" or the bare URL as visible text;
 - do NOT drop fields the subagent returned;
 - but NEVER add fields the subagent omitted — no placeholder rows like
   `Resolved at: Not set` / `Not available` / `N/A` for data it did not return.
@@ -142,9 +147,11 @@ It returns the complete card. Render that card's fields verbatim:
 
 ### Timestamps
 
-Timestamps come back in UTC with an explicit `UTC` suffix (e.g.
-`2026-05-10 17:00:00 UTC`). Keep that `UTC` marker intact — never strip it or
-drop the time component.
+Timestamps come back as a bare date+time (e.g. `2026-05-10 17:00:00`) with NO
+timezone label. That is intentional — the UI converts each one into the viewer's
+own local zone. Reproduce the value exactly: keep the time component, and NEVER
+append a zone marker of any kind (`UTC`, `GMT`, `Z`, `+00:00`, "local time").
+Labelling an already-converted clock value with a zone makes it wrong.
 
 ### Narrow questions
 
