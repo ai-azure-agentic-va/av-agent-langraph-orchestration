@@ -54,10 +54,21 @@ _DEFAULT_TOKEN_EXPIRES_IN_SECONDS = 1800.0
 _REAL_MODE_ALIASES = frozenset({"real", "live", "servicenow"})
 _MOCK_MODE_ALIASES = frozenset({"mock", "servicenow_mock", "servicenow-mock"})
 
-# Reference fields whose accessor unwraps a {display_value, value} pair.
+# Reference fields whose accessor unwraps a {display_value, value} pair. Three
+# filter forms collapse onto the same two people fields:
+#   * ``assigned_to`` / ``resolved_by``                 — user CODE ('D7834')
+#   * ``assigned_to_contains`` / ``resolved_by_contains`` — name SUBSTRING; a first
+#     OR last name alone matches (added 2026-07-27, the preferred lookup)
+#   * ``assigned_to_name`` / ``resolved_by_name``       — exact ``'Name (CODE)'``
+# The ``*_name`` pair is kept as an exact-match escape hatch: the live instance
+# matches ``*_contains`` server-side and we have NOT verified which column it
+# searches, so a caller holding a full ``'Name (CODE)'`` string keeps a filter with
+# known exact semantics.
 _REFERENCE_FILTER_FIELDS = {
     "assigned_to": "assigned_to",
     "resolved_by": "resolved_by",
+    "assigned_to_contains": "assigned_to",
+    "resolved_by_contains": "resolved_by",
     "assigned_to_name": "assigned_to",
     "resolved_by_name": "resolved_by",
 }
@@ -409,8 +420,10 @@ class _FilterSpec:
 # live-verified working against the live wrapper on 2026-07-13). The keys that stay
 # NOT supported (cause_contains,
 # probable_cause_contains, resolution_notes_contains, solved_by_name) — and the
-# record fields that are OUTPUTS rather than filters (``category``, ``opened_at``) —
-# are deliberately absent. ``cause`` is exact-match against the closed "Probable cause"
+# record fields that are OUTPUTS rather than filters (``category``, ``opened_at``,
+# and ``ci``/``cmdb_ci``: the instance exposes a ``ci`` param but it is EXACT-match
+# on the full CI name, so a partial value silently returns zero — CI is read back
+# from each record instead) — are deliberately absent. ``cause`` is exact-match against the closed "Probable cause"
 # value set on the ServiceNow instance: Action Request, Code Error, Data Availability, Data
 # Quality, Deployment Issue, Documentation Issues, Education/Training, False Positive,
 # Holiday, Maintenance, Network Cluster Issue, Network or Connectivity Issue,
@@ -432,6 +445,12 @@ SUPPORTED_FILTERS: dict[str, _FilterSpec] = {
     "cause": _FilterSpec("cause", "exact"),
     "assigned_to": _FilterSpec("assigned_to", "passthrough"),
     "resolved_by": _FilterSpec("resolved_by", "passthrough"),
+    # Live-verified 2026-07-27: substring match on the people fields, so a first OR
+    # last name alone works ('Dhanalakshmi', 'Okafor'). PREFERRED over the *_name
+    # pair below, which needs the exact 'Name (CODE)' string — but both are kept:
+    # they are separate wrapper params with different match semantics.
+    "assigned_to_contains": _FilterSpec("assigned_to_contains", "contains"),
+    "resolved_by_contains": _FilterSpec("resolved_by_contains", "contains"),
     "assigned_to_name": _FilterSpec("assigned_to_name", "passthrough"),
     "resolved_by_name": _FilterSpec("resolved_by_name", "passthrough"),
     "created_after": _FilterSpec("created_after", "date"),
@@ -816,11 +835,16 @@ class ServiceNowClient:
             api_has_more = body.get("has_more")
             api_has_more = api_has_more if isinstance(api_has_more, bool) else None
             api_next_offset = _coerce_int(body.get("next_offset"))
+            # How many records match the query in total, across every page (the API
+            # sends it as a float, e.g. 356.0). result_count is only the PAGE size,
+            # so this is the ONLY honest source for "N incidents match".
+            api_total_count = _coerce_int(body.get("total_count"))
         elif isinstance(body, list):
             incidents = body
             result_count = offset + len(incidents)
             api_has_more = None
             api_next_offset = None
+            api_total_count = None
         else:
             raise ServiceNowError("ServiceNow response had an unexpected shape")
 
@@ -835,6 +859,7 @@ class ServiceNowClient:
             degraded=False,
             has_more=api_has_more,
             next_offset=api_next_offset,
+            total_count=api_total_count,
         )
 
     # -- shared helpers ------------------------------------------------------
@@ -859,6 +884,7 @@ class ServiceNowClient:
         degraded: bool,
         has_more: bool | None = None,
         next_offset: int | None = None,
+        total_count: int | None = None,
     ) -> dict[str, Any]:
         # Construct a SYS_ID-based deep link for every record (ticket_url is mandatory —
         # the agent must always be able to hand back a clickable incident link, in mock
@@ -900,6 +926,10 @@ class ServiceNowClient:
         )
         return {
             "result_count": result_count,
+            # Total matches across ALL pages. Real mode gets it from the API's
+            # ``total_count``; mock's result_count IS the full matched set, so it
+            # doubles as the total there.
+            "total_count": result_count if total_count is None else total_count,
             "limit": limit,
             "offset": offset,
             "next_offset": resolved_next,

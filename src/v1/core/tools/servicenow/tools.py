@@ -560,7 +560,17 @@ def _ticket_base(incident: Mapping[str, Any]) -> dict[str, Any]:
         # assignment_group is a reference field whose raw value is a sys_id — show
         # the DISPLAY name only, never the sys_id (empty -> 'Not available' on render).
         "assignment_group": _reference_display(incident.get("assignment_group")),
-        "configuration_item": _reference_value(incident.get("configuration_item")),
+        # CI — the live wrapper serves it as ``cmdb_ci`` (the bundled mock fixture
+        # uses ``configuration_item``), so read both or real mode renders it blank.
+        # Its display value carries the FULL pipeline/application name (e.g.
+        # 'PL-500-COPY_SESSION_REQUEST', 'Databricks', 'ASL'), which is how a
+        # "pipeline incidents" ask is classified agent-side. It is OUTPUT ONLY: the
+        # instance's ``ci`` param is exact-match on the whole name, so a partial
+        # value returns zero — never filter on it.
+        "configuration_item": (
+            _reference_value(incident.get("cmdb_ci"))
+            or _reference_value(incident.get("configuration_item"))
+        ),
         # Surface the root-cause keyword on every list/summary row (not just on
         # the detail fetch) so the subagent can post-filter a list by cause type
         # — pipeline-infra vs PII/config error, "timeout" vs "vendor outage" —
@@ -666,6 +676,7 @@ def normalize_ticket_list(
     next_cursor: str | None = None,
     filters: Mapping[str, Any] | None = None,
     detail: bool = True,
+    total_count: int | None = None,
 ) -> dict[str, Any]:
     """Normalize merged incident results with validated filter metadata.
 
@@ -696,6 +707,10 @@ def normalize_ticket_list(
         "source": SOURCE,
         "kind": "ticket_list",
         "count": len(tickets),
+        # How many incidents match the query in TOTAL, across every page (the API's
+        # ``total_count``), vs ``count`` = rows on THIS page. Users ask "how many
+        # incidents are there for X" — answer from this, never from count.
+        "total_count": len(tickets) if total_count is None else total_count,
         "limit": limit,
         "offset": offset,
         "next_offset": offset + len(tickets) if pageable else next_cursor,
@@ -743,6 +758,8 @@ def _build_field_filters(
     cause: str | None,
     assigned_to: str | None,
     resolved_by: str | None,
+    assigned_to_contains: str | None,
+    resolved_by_contains: str | None,
     assigned_to_name: str | None,
     resolved_by_name: str | None,
     assignment_group: str | None,
@@ -768,8 +785,10 @@ def _build_field_filters(
     def _present(value: str | None) -> bool:
         return value is not None and bool(value.strip())
 
-    if (_present(assigned_to) or _present(assigned_to_name)) and (
-        _present(resolved_by) or _present(resolved_by_name)
+    # Any assigned-to form vs any resolved-by form — all three per role are the same
+    # underlying field, so the AND-returns-zero trap applies across every combination.
+    if any(map(_present, (assigned_to, assigned_to_contains, assigned_to_name))) and any(
+        map(_present, (resolved_by, resolved_by_contains, resolved_by_name))
     ):
         raise ServiceNowToolInputError(
             "assigned_to and resolved_by cannot be combined in one query (the API ANDs "
@@ -786,6 +805,8 @@ def _build_field_filters(
         "close_notes_contains": close_notes_contains,
         "assigned_to": assigned_to,
         "resolved_by": resolved_by,
+        "assigned_to_contains": assigned_to_contains,
+        "resolved_by_contains": resolved_by_contains,
         "assigned_to_name": assigned_to_name,
         "resolved_by_name": resolved_by_name,
         "assignment_group": assignment_group,
@@ -958,7 +979,7 @@ async def servicenow_list_tickets(
             description=(
                 "ServiceNow user CODE of the assignee, e.g. 'D7834' — NOT a sys_id "
                 "and NOT the display name (a sys_id returns 0 records). PREFERRED over "
-                "assigned_to_name whenever you have the code (extract it from a "
+                "assigned_to_contains whenever you have the code (extract it from a "
                 "'Name (CODE)' string). Do NOT also set resolved_by in the same call — "
                 "the API ANDs them and returns ~0; to find everything a person worked, "
                 "query assigned_to and resolved_by in SEPARATE calls and union."
@@ -971,8 +992,33 @@ async def servicenow_list_tickets(
             description=(
                 "ServiceNow user CODE of the resolver, e.g. 'D7834' (same rules as "
                 "assigned_to: code only, never a sys_id; preferred over "
-                "resolved_by_name). Do NOT also set assigned_to in the same call — the "
+                "resolved_by_contains). Do NOT also set assigned_to in the same call — the "
                 "API ANDs them and returns ~0; query the two in SEPARATE calls and union."
+            )
+        ),
+    ] = None,
+    assigned_to_contains: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Case-insensitive SUBSTRING of the assignee's name — a FIRST name or a "
+                "LAST name alone is enough ('Dhanalakshmi', 'Okafor'). Use this whenever "
+                "the user names a person but you do NOT have their user code: it needs no "
+                "code and no exact full name. Do NOT also set resolved_by/"
+                "resolved_by_contains in the same call — the API ANDs them and returns ~0; "
+                "to find everything a person worked, query assigned-to and resolved-by in "
+                "SEPARATE calls and union."
+            )
+        ),
+    ] = None,
+    resolved_by_contains: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Case-insensitive SUBSTRING of the resolver's name — a FIRST or LAST name "
+                "alone is enough (same rules as assigned_to_contains). Do NOT also set "
+                "assigned_to/assigned_to_contains in the same call — query the two "
+                "separately and union."
             )
         ),
     ] = None,
@@ -980,16 +1026,14 @@ async def servicenow_list_tickets(
         str | None,
         Field(
             description=(
-                "EXACT full name of the assignee INCLUDING the user-ID code in "
-                "parentheses, e.g. 'Dhanalakshmi Sundharam (D7834)'. The code is "
-                "REQUIRED: a bare name without the parenthesized code returns ZERO on "
-                "the live instance, and partial names never match. If you do not have "
-                "the user's code, do NOT guess it or pass a bare name — ask the user "
-                "for their user ID, or read it from a ticket they worked via "
-                "servicenow_get_ticket_detail, and reuse the full 'Name (CODE)' "
-                "verbatim. Note: the assigned_to_name field comes back empty in the "
-                "response body even when this filter matches, so read the assigned_to "
-                "display value to confirm."
+                "EXACT-match fallback: the assignee's full name INCLUDING the user-ID code "
+                "in parentheses, e.g. 'Dhanalakshmi Sundharam (D7834)'. A bare name without "
+                "the code returns ZERO, and partial names never match — so prefer "
+                "assigned_to_contains (first OR last name alone) unless you specifically "
+                "want an exact whole-name match. Never guess a code to satisfy this filter; "
+                "use assigned_to_contains instead. Note: the assigned_to_name field comes "
+                "back empty in the response body even when this filter matches, so read the "
+                "assigned_to display value to confirm."
             )
         ),
     ] = None,
@@ -997,11 +1041,9 @@ async def servicenow_list_tickets(
         str | None,
         Field(
             description=(
-                "EXACT full name of the resolver INCLUDING the user-ID code in "
-                "parentheses, e.g. 'Dhanalakshmi Sundharam (D7834)'. The code is "
-                "REQUIRED and partial/bare names return ZERO (same rule as "
-                "assigned_to_name) — if you lack the code, ask the user for their user "
-                "ID or read it from a ticket they worked, do not guess."
+                "EXACT-match fallback for the resolver: full name INCLUDING the "
+                "parenthesized user-ID code (same rules as assigned_to_name — bare or "
+                "partial names return ZERO). Prefer resolved_by_contains."
             )
         ),
     ] = None,
@@ -1204,6 +1246,8 @@ async def servicenow_list_tickets(
             cause=cause,
             assigned_to=assigned_to,
             resolved_by=resolved_by,
+            assigned_to_contains=assigned_to_contains,
+            resolved_by_contains=resolved_by_contains,
             assigned_to_name=assigned_to_name,
             resolved_by_name=resolved_by_name,
             assignment_group=assignment_group,
@@ -1260,11 +1304,18 @@ async def servicenow_list_tickets(
         degraded = False
         mode: str | None = None
         has_more = False
+        # Each per-status call reports its OWN total; the states are disjoint (a
+        # ticket is in exactly one state), so summing them is the true total for the
+        # whole query. Unpaged rows dropped by the merge below (duplicates,
+        # wrong-state backstop) are not subtracted — the total answers "how many
+        # match", not "how many were shown".
+        total_count = 0
         groups: list[list[Mapping[str, Any]]] = []
         for envelope in envelopes:
             degraded = degraded or bool(envelope.get("degraded"))
             mode = mode or envelope.get("mode")
             has_more = has_more or bool(envelope.get("has_more"))
+            total_count += envelope.get("total_count") or 0
             groups.append(list(envelope.get("incidents", [])))
 
         # STATE BACKSTOP set: drop any row whose state was not requested. The
@@ -1334,6 +1385,7 @@ async def servicenow_list_tickets(
             next_cursor=next_cursor,
             filters=field_filters,
             detail=detail,
+            total_count=total_count,
         )
     except ServiceNowToolInputError as exc:
         return _error_payload(exc, kind="invalid_input")

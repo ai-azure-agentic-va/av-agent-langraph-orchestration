@@ -299,6 +299,97 @@ def test_env_helpers(monkeypatch=None) -> None:
     os.environ.pop("SN_TEST_FLOAT", None)
 
 
+# -- SNCLIENT-TOTALCI: total_count, *_contains people filters, cmdb_ci ---------
+
+
+def test_total_count_contains_filters_and_ci() -> None:
+    """The three 2026-07-27 live-instance additions, end to end.
+
+    total_count is the ONLY honest source for "how many match" (result_count is
+    just the page), the ``*_contains`` people filters must match a first OR last
+    name alone, and CI must be read from the live ``cmdb_ci`` field as well as the
+    mock fixture's ``configuration_item``.
+    """
+
+    from v1.core.tools.servicenow.tools import _ticket_base, normalize_ticket_list
+
+    real_payload = {
+        "result": {
+            "total_count": 356.0,  # float on the wire
+            "result_count": 2.0,  # PAGE count only
+            "next_offset": 2.0,
+            "has_more": True,
+            "incidents": [
+                {
+                    "sys_id": "a1",
+                    "number": "INC0000001",
+                    "cmdb_ci": {"value": "x", "display_value": "PL-500-COPY_SESSION_REQUEST"},
+                },
+                {"sys_id": "a2", "number": "INC0000002"},
+            ],
+        }
+    }
+    real = ServiceNowClient(ServiceNowConfig(mode="real"))._envelope_from_real_payload(
+        real_payload, limit=2, offset=0
+    )
+    assert real["total_count"] == 356
+    assert real["result_count"] == 2  # page count, unchanged
+
+    # Mock: the matched set IS the total, so a short page still reports the total.
+    fixture = [
+        {
+            "sys_id": str(i),
+            "number": f"INC000000{i}",
+            "state": {"value": "1", "display_value": "New"},
+            "assigned_to": {"value": "sid", "display_value": "Dion Okafor (F4678)"},
+            "configuration_item": {"value": "ci", "display_value": "ASL"},
+        }
+        for i in range(7)
+    ]
+    client = ServiceNowClient(ServiceNowConfig(mode="mock"), incidents=fixture)
+    page = asyncio.run(
+        client.list_incidents(filters={"assigned_to_contains": "okafor"}, limit=3)
+    )
+    assert page["total_count"] == 7 and len(page["incidents"]) == 3
+
+    # First name alone matches; the filter stays scoped to its own people field.
+    assert (
+        asyncio.run(client.list_incidents(filters={"assigned_to_contains": "Dion"}))[
+            "total_count"
+        ]
+        == 7
+    )
+    assert (
+        asyncio.run(client.list_incidents(filters={"resolved_by_contains": "Dion"}))[
+            "total_count"
+        ]
+        == 0
+    )
+
+    # CI: live cmdb_ci and mock configuration_item both surface.
+    assert (
+        _ticket_base(real_payload["result"]["incidents"][0])["configuration_item"]
+        == "PL-500-COPY_SESSION_REQUEST"
+    )
+    assert _ticket_base(fixture[0])["configuration_item"] == "ASL"
+
+    # total_count survives to the tool payload and is distinct from the page count.
+    out = normalize_ticket_list([], statuses=("new",), limit=10, total_count=356)
+    assert out["total_count"] == 356 and out["count"] == 0
+
+    # ci is NOT a filter: it must be dropped rather than forwarded to the live API.
+    from v1.utils.clients.servicenow import SUPPORTED_FILTERS
+
+    assert "ci" not in SUPPORTED_FILTERS
+
+    # *_contains is an ADDITION, not a replacement: all four people forms stay wired,
+    # with different match semantics (substring vs exact 'Name (CODE)').
+    for key in ("assigned_to_contains", "resolved_by_contains", "assigned_to_name", "resolved_by_name"):
+        assert key in SUPPORTED_FILTERS, key
+    assert SUPPORTED_FILTERS["assigned_to_contains"].kind == "contains"
+    assert SUPPORTED_FILTERS["assigned_to_name"].kind == "passthrough"
+
+
 def _main() -> int:
     checks = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

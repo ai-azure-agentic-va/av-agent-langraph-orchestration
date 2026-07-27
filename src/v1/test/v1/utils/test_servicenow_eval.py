@@ -186,8 +186,8 @@ PLANS: dict[str, Plan] = {
     # historical, so all statuses.
     "TC-035": Plan(
         [
-            Step({"statuses": _ALL, "assigned_to_name": "Priya Nair"}),
-            Step({"statuses": _ALL, "resolved_by_name": "Priya Nair"}),
+            Step({"statuses": _ALL, "assigned_to_contains": "Priya Nair"}),
+            Step({"statuses": _ALL, "resolved_by_contains": "Priya Nair"}),
         ]
     ),
     # "who is WORKING on" => open only (excludes the closed Customer Ent. ticket).
