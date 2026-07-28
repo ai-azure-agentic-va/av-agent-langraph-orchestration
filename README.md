@@ -79,7 +79,8 @@ Five tools: `list_pipelines`, `list_pipeline_runs`, `get_pipeline_run_details`,
 The run tree is the interesting one: from **any** run in a family it climbs
 `invoked_by.pipeline_run_id` to the root, then walks the whole family back down,
 so a failed grandchild still yields the full picture with the root-cause
-activity named. See [docs/architecture/ADFTools.md](docs/architecture/ADFTools.md).
+activity named. See
+[docs/architecture/ADF_HIERARCHY_FIX.md](docs/architecture/ADF_HIERARCHY_FIX.md).
 
 ### `adls-agent` — Azure Data Lake Storage
 
@@ -120,7 +121,8 @@ drive two things at **run time**, not build time:
 
 Every Azure capability authenticates with `DefaultAzureCredential` — `az login`
 locally, managed identity when deployed. ADF and ADLS store no keys and hold
-read-only roles (*Data Factory Reader*, *Storage Blob Data Reader*).
+read-only roles (*Data Factory Reader*, *Storage Blob Data Reader*, and
+*Storage Table Data Reader* when the DQ rules table is configured).
 
 ---
 
@@ -164,12 +166,39 @@ make test    # deterministic offline suites — mock ServiceNow, faked Azure cli
 
 | Suite | Covers |
 |---|---|
-| `test_adf_tools.py` | factory resolution, run-tree walk, recursion budget |
-| `test_adls_tools.py` | account resolution, manifest loading, all four ADLS tools |
+| `test_adf_tools.py` | factory resolution, run listing (filters, date windows, paging), run-tree walk, recursion budget, pipeline structure |
+| `test_adls_tools.py` | account resolution, manifest loading, DQ table rows, all five ADLS tools |
 | `test_subagent_access.py` | per-group gating for all three subagents |
 | `test_servicenow*.py` | ServiceNow client, intents, evaluation |
 | `test_agent_recursion.py` | `AGENT_MAX_STEPS` is the authoritative step ceiling |
 | `test_graph_groups.py` | Entra group resolution + caching |
+
+### Where the ADLS agent's expectations come from
+
+Storage knows only what physically landed. The **expectations** come from two
+read-only configuration sources, each entered from a different starting point:
+
+- **Per-dataset JSON manifests** at `<config_path>/<dataset>.json` in the lake,
+  keyed by dataset name — expected path template, arrival SLA (time, timezone,
+  grace), file name pattern, source system, ingestion frequency, and
+  dataset-level quality rules. Read by `get_dataset_config` and
+  `get_data_quality_rules`.
+- **A `dq_rules_config` Azure Table** (`ADLS_TABLE_ENDPOINT` + `ADLS_DQ_TABLE`),
+  keyed by the dataset/table name — the only thing a ServiceNow DQ ticket
+  carries. One row per rule per ETL stage (`LND-TLE`, `PCUR-TLE` timeliness,
+  `INT-CLE` completeness) with thresholds, plus a `dq_parameters` JSON holding
+  the time target and the expected file path. Read by `get_dq_config`.
+
+Neither supersedes the other and neither is a superset: the manifests carry the
+structured SLA and the date-token path template, the Table carries the per-stage
+rule rows and the failure/queue routing. `list_dataset_files` reports what
+ACTUALLY landed, and the agent presents expected against actual as fact without
+pronouncing an on-time/late verdict.
+
+Reading the Table needs *Storage Table Data Reader* on that account, alongside
+the existing *Storage Blob Data Reader*. Leave `ADLS_TABLE_ENDPOINT` unset and
+`get_dq_config` reports itself as not configured; the manifest-backed tools are
+unaffected.
 
 ### Deploying
 
@@ -195,6 +224,7 @@ is the template.
 | `TENANT_GROUP_INDEX_MAPPING` | Entra group → AI Search index |
 | `ADF_FACTORY_MAPPING` | alias → factory coordinates; **empty disables `adf-agent`** |
 | `ADLS_ACCOUNT_MAPPING` | alias → `{account_url, filesystem, config_path}`; **empty disables `adls-agent`** |
+| `ADLS_TABLE_ENDPOINT` / `ADLS_DQ_TABLE` | the `dq_rules_config` Azure Table; unset leaves `get_dq_config` inactive |
 | `SERVICENOW_MODE` | `mock` for offline development |
 | `*_DISABLED_GROUPS` | per-subagent access gating |
 
@@ -203,7 +233,7 @@ is the template.
 ## Docs
 
 - [docs/architecture/ORCHESTRATION_FLOW.md](docs/architecture/ORCHESTRATION_FLOW.md) — end-to-end request flow
-- [docs/architecture/ADFTools.md](docs/architecture/ADFTools.md) — every ADF tool, line by line
 - [docs/architecture/ADLS.md](docs/architecture/ADLS.md) — the ADLS agent design + requirement traceability
+- [docs/ADLS_ACTION_PLAN.md](docs/ADLS_ACTION_PLAN.md) — the Table-based DQ-rules design
+- [docs/architecture/ADF_AGENT_REQUIREMENTS_TRACEABILITY.md](docs/architecture/ADF_AGENT_REQUIREMENTS_TRACEABILITY.md) — every ADF requirement mapped to a tool
 - [docs/architecture/ADF_HIERARCHY_FIX.md](docs/architecture/ADF_HIERARCHY_FIX.md) — how the run tree finds the real root cause
-- [docs/meeting_notes.md](docs/meeting_notes.md) — daily log and open action items

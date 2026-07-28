@@ -80,5 +80,6 @@ _sn_cases_dump.json
 docs/learning/
 docs/learning/00_MASTER_PLAN.md
 
-# Local docs (notes, designs, scratch) — not shipped project code
-docs/
+# One-off seeding / simulation scripts: they carry environment and organisation
+# specifics and they WRITE to shared dev resources, so they stay local
+scripts/

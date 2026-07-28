@@ -237,11 +237,12 @@ Azure Data Factory capability (available in this deployment):
   Azure Data Factory work — data pipelines (names often start with 'pl_') and
   their runs. Hand it pipeline tasks in plain language and it will choose the
   right ADF tool on its own:
-  - which factories are available, and what pipelines exist in a factory;
+  - what pipelines exist in the factory;
   - what a pipeline does and its structure/hierarchy (which child pipelines it
     invokes via Execute Pipeline activities);
   - recent pipeline runs, optionally narrowed by pipeline, status (e.g.
-    failures only), or a time window;
+    failures only), the trigger that started them, or a time window (a rolling
+    number of days or a specific date range);
   - diagnosing why a run failed — including walking a hierarchical run's full
     parent→child run tree to the root-cause activity and its error message.
 - Routing: any question about data pipelines, pipeline runs, run failures, a
@@ -287,7 +288,11 @@ Azure Data Lake Storage capability (available in this deployment):
     pattern, and ingestion frequency;
   - the DATA QUALITY RULES configured for a dataset (rule id, column, type,
     severity, description);
-  - which files ACTUALLY landed, with size and last-modified timestamp.
+  - which files ACTUALLY landed, with size and last-modified timestamp;
+  - the enterprise DQ rules configuration by dataset/table name: a ServiceNow
+    DQ ticket carries ONLY a table name (e.g. speedpay_check_analytics) — hand
+    that name to `adls-agent` and it returns the configured rules (timeliness /
+    completeness), the time target, the expected file path, and what landed.
 - Routing: any question about a data file's expected location, its arrival SLA
   or lateness, its source system / file name / ingestion frequency, the data
   quality rules that apply to a dataset, or whether a file arrived in the data

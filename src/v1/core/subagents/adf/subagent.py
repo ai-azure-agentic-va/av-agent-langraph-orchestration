@@ -1,13 +1,7 @@
 from __future__ import annotations
 
 from v1.core.prompts import ADF_SUBAGENT_PROMPT
-from v1.core.tools import (
-    get_pipeline_run_details,
-    get_pipeline_run_tree,
-    get_pipeline_structure,
-    list_pipeline_runs,
-    list_pipelines,
-)
+from v1.core.tools import ADF_TOOLS
 
 
 ADF_SUBAGENT = {
@@ -21,11 +15,5 @@ ADF_SUBAGENT = {
         "root cause."
     ),
     "system_prompt": ADF_SUBAGENT_PROMPT,
-    "tools": [
-        list_pipelines,
-        list_pipeline_runs,
-        get_pipeline_run_details,
-        get_pipeline_run_tree,
-        get_pipeline_structure,
-    ],
+    "tools": ADF_TOOLS,
 }

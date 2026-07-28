@@ -1,11 +1,11 @@
 """Offline tests for the ADLS subagent tools.
 
-The Azure blob client is replaced with an in-memory fake, so the tests cover the
-tool-facing behavior: account alias resolution (default / named / unknown /
-unset / misconfigured), endpoint normalization, dataset manifest loading
-(including the case-insensitive fallback and malformed JSON), the four tools'
-rendered output, and the expected-path prefix logic behind file listing. No
-network, no credentials.
+The Azure blob and table clients are replaced with in-memory fakes, so the tests
+cover the tool-facing behavior: account alias resolution (default / named /
+unknown / unset / misconfigured), endpoint normalization, dataset manifest
+loading (including the case-insensitive fallback and malformed JSON), every
+tool's rendered output, and the expected-path prefix logic behind file listing.
+No network, no credentials.
 
 Runs standalone (``python test_adls_tools.py``) or under pytest.
 """
@@ -23,9 +23,17 @@ import v1.core.tools.adls.tools as adls
 
 
 class _Settings:
-    def __init__(self, mapping: dict, default: str | None = None) -> None:
+    def __init__(
+        self,
+        mapping: dict,
+        default: str | None = None,
+        table_endpoint: str | None = None,
+        dq_table: str = "dqrulesconfig",
+    ) -> None:
         self.adls_account_mapping = mapping
         self.adls_default_account = default
+        self.adls_table_endpoint = table_endpoint
+        self.adls_dq_table = dq_table
 
 
 _FIN = {
@@ -38,7 +46,24 @@ _RISK = {
     "filesystem": "raw",
 }
 
-NOW = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+# Anchored to the run's clock, not a fixed date: the tools filter by
+# `last_n_days` against the real current time, so a hard-coded NOW makes these
+# fixtures fall out of the window as the calendar moves on.
+NOW = datetime.now(timezone.utc)
+YESTERDAY = NOW - timedelta(days=1)
+LONG_AGO = NOW - timedelta(days=200)
+
+_ALPHA_BASE_PATH = "raw/alpha/cur_alpha"
+
+
+def _dated_name(moment: datetime) -> str:
+    """The file name a daily cur_alpha drop carries for that date."""
+    return f"cur_alpha_{moment:%Y%m%d}.csv"
+
+
+def _dated_path(moment: datetime) -> str:
+    """The dated folder plus file name a daily cur_alpha drop lands under."""
+    return f"{_ALPHA_BASE_PATH}/{moment:%Y/%m/%d}/{_dated_name(moment)}"
 
 _ALPHA_MANIFEST = {
     "dataset": "cur_alpha_daily",
@@ -101,9 +126,15 @@ class _FakeContainer:
     metadata carries ``hdi_isfolder=true``. Verified against a live Gen2 account.
     """
 
-    def __init__(self, blobs: dict[str, bytes], meta: dict[str, tuple[int, datetime]]) -> None:
+    def __init__(
+        self,
+        blobs: dict[str, bytes],
+        meta: dict[str, tuple[int, datetime]],
+        list_error: str = "",
+    ) -> None:
         self._blobs = blobs
         self._meta = meta
+        self._list_error = list_error
 
     def _directories(self) -> set[str]:
         dirs: set[str] = set()
@@ -117,6 +148,8 @@ class _FakeContainer:
         want_metadata = bool(include and "metadata" in include)
 
         async def _gen():
+            if self._list_error:
+                raise RuntimeError(self._list_error)
             entries = [(name, False) for name in self._blobs]
             entries += [(name, True) for name in self._directories()]
             for name, is_dir in sorted(entries):
@@ -190,19 +223,100 @@ def _patch(settings: _Settings, container: _FakeContainer | None = None):
 
 def _alpha_container(**overrides) -> _FakeContainer:
     manifest = {**_ALPHA_MANIFEST, **overrides}
-    base = "raw/alpha/cur_alpha"
     blobs, meta = _blobs(
         manifests={
             "cur_alpha_daily": manifest,
             "cur_bravo_hourly": {"dataset": "cur_bravo_hourly"},
         },
         files={
-            f"{base}/2026/07/21/cur_alpha_20260721.csv": (2048, NOW),
-            f"{base}/2026/07/20/cur_alpha_20260720.csv": (2040, NOW - timedelta(days=1)),
-            f"{base}/2026/01/02/cur_alpha_20260102.csv": (1900, NOW - timedelta(days=200)),
+            _dated_path(NOW): (2048, NOW),
+            _dated_path(YESTERDAY): (2040, YESTERDAY),
+            _dated_path(LONG_AGO): (1900, LONG_AGO),
         },
     )
     return _FakeContainer(blobs, meta)
+
+
+class _FakeTableClient:
+    """Mimics the aio TableClient surface get_dq_config touches."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def query_entities(self, query_filter: str):
+        # "PartitionKey eq 'name'" — undo the OData ''-escaping.
+        name = query_filter.split(" eq ", 1)[1].strip("'").replace("''", "'")
+
+        async def _gen():
+            for row in self._rows:
+                if row["PartitionKey"] == name:
+                    yield row
+
+        return _gen()
+
+    def list_entities(self, select: list[str] | None = None):
+        async def _gen():
+            for row in self._rows:
+                yield {"PartitionKey": row["PartitionKey"]} if select else row
+
+        return _gen()
+
+
+_SPEEDPAY_DQ_PARAMS = {
+    "file_name": "speedpay_check_analytics",
+    "source_base_path": "lnd/speedpay-check/archive/",
+    "source_system_name": "Speedpaycheck",
+    "int_table_name": "speedpay_check_analytics",
+    "ingestion_cadence": "Daily",
+    "ingestion_days": ["Monday", "Friday"],
+    "time_target": ["09:33"],
+}
+
+_SPEEDPAY_OPRL = {"PublishSnow": "True", "SnowQueue": "EDL DQ MONITORING"}
+
+
+def _speedpay_rows() -> list[dict]:
+    def row(row_key: str, stage: str, rule: str, order: int, **extra) -> dict:
+        params = dict(_SPEEDPAY_DQ_PARAMS)
+        if rule != "TLE":
+            params.pop("time_target")
+        return {
+            "PartitionKey": "speedpay_check_analytics",
+            "RowKey": row_key,
+            "etl_stage": stage,
+            "dq_rule_id": rule,
+            "active_flag": "Y",
+            "sort_order": order,
+            "notes": f"{rule} check for {stage}",
+            "dq_parameters": json.dumps(params),
+            "oprl_configs": json.dumps(_SPEEDPAY_OPRL),
+            **extra,
+        }
+
+    return [
+        row("INT-CLE", "INT", "CLE", 3, threshold_cnt=1, threshold_pct=95),
+        row("LND-TLE", "LND", "TLE", 1),
+        row("PCUR-TLE", "PCUR", "TLE", 2),
+    ]
+
+
+def _patch_dq(settings: _Settings, rows: list[dict] | None = None):
+    """Patch settings + table client factory on the tools module; restore."""
+    saved_settings = adls.settings
+    saved_factory = adls._dq_table
+    adls.settings = settings
+    fake = _FakeTableClient(rows or [])
+
+    async def _fake_table(endpoint: str, table_name: str) -> _FakeTableClient:
+        return fake
+
+    adls._dq_table = _fake_table
+
+    def restore() -> None:
+        adls.settings = saved_settings
+        adls._dq_table = saved_factory
+
+    return restore
 
 
 def _run(coro):
@@ -303,6 +417,32 @@ def test_list_datasets_reports_empty_config_folder() -> None:
         restore()
 
 
+def test_list_datasets_discloses_a_truncated_listing() -> None:
+    """A capped listing must not report its cap as the exact dataset count."""
+    blobs, meta = _blobs(manifests={f"cur_{i}": {"dataset": f"cur_{i}"} for i in range(3)})
+    restore = _patch(_Settings({"fin": _FIN}), _FakeContainer(blobs, meta))
+    saved = adls._MAX_DATASETS
+    adls._MAX_DATASETS = 2
+    try:
+        result = _run(adls.list_datasets.ainvoke({}))
+        assert "has more than 2 configured dataset(s) (showing the first 2)" in result
+        assert result.count("  - cur_") == 2
+    finally:
+        adls._MAX_DATASETS = saved
+        restore()
+
+
+def test_list_datasets_error_is_returned_as_text() -> None:
+    container = _FakeContainer({}, {}, list_error="(403) AuthorizationPermissionMismatch")
+    restore = _patch(_Settings({"fin": _FIN}), container)
+    try:
+        result = _run(adls.list_datasets.ainvoke({}))
+        assert "ERROR listing datasets in account 'fin'" in result
+        assert "AuthorizationPermissionMismatch" in result
+    finally:
+        restore()
+
+
 # --- get_dataset_config (expected path + SLA + file metadata) ------------------
 
 
@@ -389,6 +529,27 @@ def test_non_object_manifest_is_reported() -> None:
         restore()
 
 
+def test_listed_but_unreadable_manifest_is_reported_without_recursing() -> None:
+    """A manifest that lists but will not download must not retry itself forever.
+
+    The case-insensitive fallback resolves to the SAME name here, so re-loading
+    it would recurse until the stack blows; the read error is reported instead.
+    """
+
+    class _UnreadableContainer(_FakeContainer):
+        async def download_blob(self, path: str, offset: int = 0, length: int | None = None):
+            raise RuntimeError("AuthorizationPermissionMismatch")
+
+    blobs, meta = _blobs(manifests={"cur_alpha_daily": _ALPHA_MANIFEST})
+    restore = _patch(_Settings({"fin": _FIN}), _UnreadableContainer(blobs, meta))
+    try:
+        result = _run(adls.get_dataset_config.ainvoke({"dataset": "cur_alpha_daily"}))
+    finally:
+        restore()
+    assert "ERROR reading dataset config for 'cur_alpha_daily'" in result
+    assert "AuthorizationPermissionMismatch" in result
+
+
 # --- get_data_quality_rules ---------------------------------------------------
 
 
@@ -422,6 +583,16 @@ def test_malformed_rules_entry_is_reported() -> None:
         restore()
 
 
+def test_config_summary_flags_malformed_rules_instead_of_counting_zero() -> None:
+    """"0 configured" would read as "no DQ rules exist" for a broken rules block."""
+    restore = _patch(_Settings({"fin": _FIN}), _alpha_container(data_quality_rules={"a": 1}))
+    try:
+        result = _run(adls.get_dataset_config.ainvoke({"dataset": "cur_alpha_daily"}))
+        assert "data quality rules  : malformed (expected a list)" in result
+    finally:
+        restore()
+
+
 # --- list_dataset_files (what actually landed) --------------------------------
 
 
@@ -432,10 +603,10 @@ def test_list_files_uses_the_expected_path_prefix_and_sorts_newest_first() -> No
             adls.list_dataset_files.ainvoke({"dataset": "cur_alpha_daily", "last_n_days": 7})
         )
         assert "2 file(s)" in result  # the 200-day-old file is outside the window
-        assert "cur_alpha_20260721.csv" in result and "2048 bytes" in result
-        assert "cur_alpha_20260102.csv" not in result
+        assert _dated_name(NOW) in result and "2048 bytes" in result
+        assert _dated_name(LONG_AGO) not in result
         # newest first
-        assert result.index("cur_alpha_20260721.csv") < result.index("cur_alpha_20260720.csv")
+        assert result.index(_dated_name(NOW)) < result.index(_dated_name(YESTERDAY))
         assert "expected path 'raw/alpha/cur_alpha/{yyyy}/{MM}/{dd}/'" in result
     finally:
         restore()
@@ -448,7 +619,7 @@ def test_list_files_without_time_filter_includes_old_files() -> None:
             adls.list_dataset_files.ainvoke({"dataset": "cur_alpha_daily", "last_n_days": 0})
         )
         assert "3 file(s)" in result
-        assert "cur_alpha_20260102.csv" in result
+        assert _dated_name(LONG_AGO) in result
     finally:
         restore()
 
@@ -489,6 +660,17 @@ def test_list_files_needs_an_expected_path_on_the_manifest() -> None:
     try:
         result = _run(adls.list_dataset_files.ainvoke({"dataset": "cur_bravo_hourly"}))
         assert "no expected_path configured" in result
+    finally:
+        restore()
+
+
+def test_list_files_error_is_returned_as_text() -> None:
+    container = _FakeContainer({}, {}, list_error="(403) AuthorizationPermissionMismatch")
+    restore = _patch(_Settings({"fin": _FIN}), container)
+    try:
+        result = _run(adls.list_dataset_files.ainvoke({"path": "raw/alpha/"}))
+        assert "ERROR listing files in account 'fin'" in result
+        assert "AuthorizationPermissionMismatch" in result
     finally:
         restore()
 
@@ -556,12 +738,183 @@ def test_render_value_flattens_nested_structures() -> None:
     assert adls._render_value({"a": 1, "b": [2, 3]}) == "a=1, b=2, 3"
 
 
+# --- get_dq_config (dq_rules_config Azure Table) --------------------------------
+
+
+def test_dq_config_reports_unset_endpoint() -> None:
+    restore = _patch_dq(_Settings({"fin": _FIN}, table_endpoint=None))
+    try:
+        out = _run(adls.get_dq_config.ainvoke({"table_name": "speedpay_check_analytics"}))
+    finally:
+        restore()
+    assert "ADLS_TABLE_ENDPOINT is unset" in out
+
+
+def test_dq_config_requires_a_table_name() -> None:
+    restore = _patch_dq(
+        _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net")
+    )
+    try:
+        out = _run(adls.get_dq_config.ainvoke({"table_name": "  "}))
+    finally:
+        restore()
+    assert "provide the dataset/table name" in out
+
+
+def test_dq_config_renders_rules_path_and_metadata() -> None:
+    restore = _patch_dq(
+        _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net"),
+        rows=_speedpay_rows(),
+    )
+    try:
+        out = _run(adls.get_dq_config.ainvoke({"table_name": "speedpay_check_analytics"}))
+    finally:
+        restore()
+    assert "3 DQ rule row(s)" in out
+    assert "expected file path  : lnd/speedpay-check/archive/" in out
+    assert "source system       : Speedpaycheck" in out
+    assert "ingestion frequency : Daily" in out
+    # sort_order drives display order: LND-TLE, PCUR-TLE, INT-CLE
+    assert out.index("LND-TLE") < out.index("PCUR-TLE") < out.index("INT-CLE")
+    assert "LND-TLE (timeliness)" in out
+    assert "INT-CLE (completeness)" in out
+    assert "time target : 09:33" in out
+    assert "threshold_pct: 95" in out
+    assert "SnowQueue=EDL DQ MONITORING" in out
+
+
+def test_dq_config_unknown_table_lists_available_ones() -> None:
+    restore = _patch_dq(
+        _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net"),
+        rows=_speedpay_rows(),
+    )
+    try:
+        out = _run(adls.get_dq_config.ainvoke({"table_name": "no_such_table"}))
+    finally:
+        restore()
+    assert "No DQ rules for table 'no_such_table'" in out
+    assert "speedpay_check_analytics" in out
+
+
+def test_dq_config_resolves_case_insensitively() -> None:
+    restore = _patch_dq(
+        _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net"),
+        rows=_speedpay_rows(),
+    )
+    try:
+        out = _run(adls.get_dq_config.ainvoke({"table_name": "SPEEDPAY_CHECK_ANALYTICS"}))
+    finally:
+        restore()
+    assert "Table 'speedpay_check_analytics' has 3 DQ rule row(s)" in out
+
+
+def test_dq_metadata_is_merged_across_the_rule_rows() -> None:
+    """dq_parameters is per-rule, so the file metadata can sit on any row.
+
+    Reading it off the first row alone reported "(not configured)" for a path or
+    time target that a sibling rule does configure.
+    """
+    rows = [
+        {
+            "PartitionKey": "tbl_x",
+            "RowKey": "LND-TLE",
+            "dq_rule_id": "TLE",
+            "sort_order": 1,
+            "dq_parameters": json.dumps({"time_target": ["09:33"]}),
+        },
+        {
+            "PartitionKey": "tbl_x",
+            "RowKey": "INT-CLE",
+            "dq_rule_id": "CLE",
+            "sort_order": 2,
+            "dq_parameters": json.dumps(
+                {"source_base_path": "lnd/tbl-x/archive/", "source_system_name": "Xsys"}
+            ),
+            "oprl_configs": json.dumps({"SnowQueue": "EDL DQ MONITORING"}),
+        },
+    ]
+    restore = _patch_dq(
+        _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net"), rows=rows
+    )
+    try:
+        out = _run(adls.get_dq_config.ainvoke({"table_name": "tbl_x"}))
+    finally:
+        restore()
+    assert "expected file path  : lnd/tbl-x/archive/" in out
+    assert "source system       : Xsys" in out
+    assert "time target : 09:33" in out  # still rendered on its own rule row
+    assert "SnowQueue=EDL DQ MONITORING" in out  # found on a row other than the first
+
+
+def test_dq_config_reports_rules_despite_malformed_parameters() -> None:
+    rows = [
+        {
+            "PartitionKey": "tbl_x",
+            "RowKey": "LND-TLE",
+            "dq_rule_id": "TLE",
+            "etl_stage": "LND",
+            "dq_parameters": "{not-json",
+        }
+    ]
+    restore = _patch_dq(
+        _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net"), rows=rows
+    )
+    try:
+        out = _run(adls.get_dq_config.ainvoke({"table_name": "tbl_x"}))
+    finally:
+        restore()
+    assert "1 DQ rule row(s)" in out
+    assert "LND-TLE (timeliness)" in out  # the rule itself still renders
+    assert f"expected file path  : {adls._NOT_CONFIGURED}" in out  # not invented
+
+
+def test_dq_config_path_can_be_handed_straight_to_list_dataset_files() -> None:
+    """The two-step DQ recipe in the subagent prompt must actually connect.
+
+    Step 1 reports the expected file path; step 2 lists what landed there. If the
+    rendered path were not a usable prefix, the agent would report "nothing
+    landed" for a file that is present.
+    """
+    settings = _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net")
+    landed = f"lnd/speedpay-check/archive/{_dated_name(NOW)}"
+    blobs, meta = _blobs(files={landed: (4096, NOW)})
+    restore_blobs = _patch(settings, _FakeContainer(blobs, meta))
+    restore_table = _patch_dq(settings, rows=_speedpay_rows())
+    try:
+        config = _run(adls.get_dq_config.ainvoke({"table_name": "speedpay_check_analytics"}))
+        expected_path = config.split(adls._EXPECTED_PATH_LABEL, 1)[1].splitlines()[0]
+        files = _run(adls.list_dataset_files.ainvoke({"path": expected_path, "last_n_days": 0}))
+    finally:
+        restore_table()
+        restore_blobs()
+    assert expected_path == "lnd/speedpay-check/archive/"
+    assert landed in files and "4096 bytes" in files
+
+
+def test_dq_config_surfaces_read_errors_as_text() -> None:
+    settings = _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net")
+    restore = _patch_dq(settings)
+    saved = adls._dq_table
+
+    async def _boom(endpoint: str, table_name: str):
+        raise RuntimeError("AuthorizationPermissionMismatch")
+
+    adls._dq_table = _boom
+    try:
+        out = _run(adls.get_dq_config.ainvoke({"table_name": "speedpay_check_analytics"}))
+    finally:
+        adls._dq_table = saved
+        restore()
+    assert "ERROR reading DQ rules table" in out
+    assert "AuthorizationPermissionMismatch" in out
+
+
 # --- wiring -------------------------------------------------------------------
 
 
 def test_subagent_exposes_every_tool_under_the_gated_name() -> None:
     """The subagent's name must match the access gate's, or the gate silently
-    stops protecting it; its tool list must cover all four capabilities."""
+    stops protecting it; its tool list must cover all five capabilities."""
     from v1.core.middlewares.subagent_access import ADLS_SUBAGENT_NAME
     from v1.core.subagents import ADLS_SUBAGENT
 
@@ -571,6 +924,7 @@ def test_subagent_exposes_every_tool_under_the_gated_name() -> None:
         "get_dataset_config",
         "get_data_quality_rules",
         "list_dataset_files",
+        "get_dq_config",
     }
     assert ADLS_SUBAGENT["system_prompt"].startswith("You are the adls-agent.")
 

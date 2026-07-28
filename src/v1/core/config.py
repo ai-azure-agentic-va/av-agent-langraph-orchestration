@@ -127,6 +127,27 @@ class Settings(BaseSettings):
             "accounts and no default the tools ask the model to pass account=<alias>."
         ),
     )
+    adls_table_endpoint: str | None = Field(
+        default=None,
+        alias="ADLS_TABLE_ENDPOINT",
+        description=(
+            "Table-service endpoint of the storage account holding the DQ rules "
+            "configuration, e.g. https://<account>.table.core.windows.net. The "
+            "enterprise `dq_rules_config` lives in an Azure Table (a ServiceNow DQ "
+            "ticket carries only a table name; the adls-agent's get_dq_config reads "
+            "that partition's rule rows). Unset (default) leaves the tool returning "
+            "a not-configured message; the manifest-based tools are unaffected."
+        ),
+    )
+    adls_dq_table: str = Field(
+        default="dqrulesconfig",
+        alias="ADLS_DQ_TABLE",
+        description=(
+            "Name of the Azure Table holding the DQ rules configuration rows "
+            "(PartitionKey = dataset/table name, RowKey = <etl_stage>-<dq_rule_id>, "
+            "dq_parameters / oprl_configs as JSON strings)."
+        ),
+    )
     adls_disabled_groups: StringList = Field(
         default_factory=list,
         alias="ADLS_DISABLED_GROUPS",
