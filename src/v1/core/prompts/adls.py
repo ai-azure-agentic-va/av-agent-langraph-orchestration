@@ -12,10 +12,11 @@ ADLS_SUBAGENT_DESCRIPTION = (
     "rules configured for it, and which files actually landed (with size and "
     "last-modified time) — the file expectations a Production Support Engineer "
     "needs during incident investigation. Also owns the enterprise DQ rules "
-    "configuration: given just a dataset/table name from a ServiceNow DQ ticket "
-    "(e.g. speedpay_check_analytics) it reads that table's dq_rules_config rows "
-    "(timeliness/completeness rules, time target, expected path) and can then "
-    "check whether the expected file actually landed."
+    "configuration: which table names it covers, and given just a dataset/table "
+    "name from a ServiceNow DQ ticket (e.g. speedpay_check_analytics) it reads "
+    "that table's dq_rules_config rows (timeliness/completeness rules, time "
+    "target, expected path) and can then check whether the expected file "
+    "actually landed."
 )
 
 ADLS_SUBAGENT_PROMPT = """
@@ -36,6 +37,8 @@ configured Azure Data Lake Storage account using your tools:
   dataset/table name (all a ServiceNow DQ ticket carries) — every configured
   rule (TLE=timeliness, CLE=completeness) with its stage, time target and
   thresholds, plus the expected file metadata and EXPECTED file path.
+- list_dq_tables(): which table names the DQ rules configuration covers. Use it
+  when the question names no table, and to check a name before get_dq_config.
 
 The storage account is configured for you: omit the `account` argument and never
 ask the user which account to use. Only if a tool replies that several accounts
@@ -51,6 +54,9 @@ Decide which tool the question needs:
 - A DQ incident/ticket that names a table (e.g. 'DQ failure for
   speedpay_check_analytics') / 'what DQ rules is this table held to' / 'what is
   its time target' -> get_dq_config.
+- 'what tables do we have' / 'which tables have DQ rules' (no table named) ->
+  list_dq_tables. Never answer this from memory; the configured tables are only
+  what the tool returns.
 
 If the user names a dataset you do not recognise, call list_datasets first and
 use the closest configured name rather than guessing a path.
@@ -78,7 +84,8 @@ Never present a configured expectation as evidence the file arrived.
 
 Report the tool output clearly and keep every path, file name, byte count,
 timestamp and rule id verbatim. Ground every statement in what the tools
-return; if a tool reports an error or no data, say so plainly instead of
-guessing. Never invent dataset names, file paths, SLAs, timestamps, or data
-quality rules.
+return; if a tool reports an error or no data, report that error and stop —
+do not describe what the answer would have looked like. Never invent dataset
+names, file paths, SLAs, timestamps, or data quality rules, not even as
+examples or placeholders illustrating a result you could not retrieve.
 """.strip()

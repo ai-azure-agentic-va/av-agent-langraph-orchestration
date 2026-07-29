@@ -125,6 +125,11 @@ so the concrete file is e.g. `20260724_WU_to_NFCU_speedpay_check_analytics`.
 
 Placeholders: `ACCT=stnfcuadlssim`, `RG=rg-nfcu-adf-wiki`, `LOC=eastus2`.
 
+> **The account actually in use is `stfunccustprocdev`** (resource group
+> `rg-nfcu-ingestion-dev`), filesystem `lnd-sourcing2`, config prefix
+> `config/datasets` — see `.env`. The names below are the original sim
+> placeholders; substitute the real ones when running these commands.
+
 ### 3a. Create the account (v2, **HNS off** so it can host a Table)
 
 ```bash
@@ -180,14 +185,19 @@ az role assignment create --role "Storage Blob Data Reader"  --assignee <you-or-
 az role assignment create --role "Storage Table Data Reader" --assignee <you-or-app-oid> --scope $SCOPE
 ```
 
+Both roles are required and neither is implied by `Contributor`, which is
+management-plane only: without them every tool returns
+`AuthorizationPermissionMismatch`. Assigning them needs Owner, User Access
+Administrator, or RBAC Administrator on the scope.
+
 ### 3e. Wire `.env`
 
 ```dotenv
 # blob side (unchanged shape)
-ADLS_ACCOUNT_MAPPING={"nfcu-adls":{"account_url":"https://stnfcuadlssim.blob.core.windows.net","filesystem":"lnd"}}
+ADLS_ACCOUNT_MAPPING={"nfcu-adls":{"account_url":"https://stfunccustprocdev.blob.core.windows.net","filesystem":"lnd-sourcing2","config_path":"config/datasets"}}
 ADLS_DEFAULT_ACCOUNT=nfcu-adls
 # table side (new)
-ADLS_TABLE_ENDPOINT=https://stnfcuadlssim.table.core.windows.net
+ADLS_TABLE_ENDPOINT=https://stfunccustprocdev.table.core.windows.net
 ADLS_DQ_TABLE=dqrulesconfig
 ```
 

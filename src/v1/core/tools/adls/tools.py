@@ -570,23 +570,43 @@ async def _dq_rule_rows(client: TableClient, name: str) -> list[dict]:
     return rows
 
 
+def _dq_endpoint() -> str:
+    """The configured DQ table endpoint; raises when no table is set up."""
+    endpoint = (settings.adls_table_endpoint or "").strip().rstrip("/")
+    if not endpoint:
+        raise _InputError(
+            "[adls-agent] No DQ rules table is configured (ADLS_TABLE_ENDPOINT is unset)."
+        )
+    return endpoint
+
+
+async def _dq_table_names(client: TableClient, cap: int = _MAX_DATASETS) -> list[str]:
+    """Up to ``cap`` dataset/table names — the distinct PartitionKeys, sorted.
+
+    Table storage has no DISTINCT, so the rows are scanned with only the key
+    projected and collapsed here.
+    """
+    names: set[str] = set()
+    async for row in client.list_entities(select=["PartitionKey"]):
+        names.add(row["PartitionKey"])
+        if len(names) >= cap:
+            break
+    return sorted(names)
+
+
 async def _resolve_dq_rows(client: TableClient, name: str, dq_table: str) -> tuple[str, list[dict]]:
     """The rule rows for ``name``, resolving its casing against the table's keys."""
     rows = await _dq_rule_rows(client, name)
     if rows:
         return name, rows
     # Tickets and users echo arbitrary casing, so retry a case-insensitive match.
-    known: set[str] = set()
-    async for row in client.list_entities(select=["PartitionKey"]):
-        known.add(row["PartitionKey"])
-        if len(known) >= _MAX_DATASETS:
-            break
+    known = await _dq_table_names(client)
     match = next((key for key in known if key.lower() == name.lower()), None)
     if match is not None and match != name:
         name = match
         rows = await _dq_rule_rows(client, name)
     if not rows:
-        available = ", ".join(sorted(known)) if known else "(none configured)"
+        available = ", ".join(known) if known else "(none configured)"
         raise _InputError(
             f"[adls-agent] No DQ rules for table '{name}' in '{dq_table}'. "
             f"Available tables: {available}"
@@ -606,6 +626,20 @@ def _merged_dq_params(rows: list[dict]) -> dict:
             if value not in (None, "") and key not in merged:
                 merged[key] = value
     return merged
+
+
+def _rule_sort_key(row: dict) -> tuple[int, float, str]:
+    """Display order for a rule row: ``sort_order``, then RowKey.
+
+    The column reaches the table as a string from some writers and as a number
+    from others, so it is coerced instead of compared across types — an
+    uncomparable mix would otherwise raise out of the tool. Rows without a usable
+    value sort last.
+    """
+    try:
+        return 0, float(row.get("sort_order")), str(row.get("RowKey", ""))
+    except (TypeError, ValueError):
+        return 1, 0.0, str(row.get("RowKey", ""))
 
 
 def _render_dq_rule(index: int, row: dict) -> list[str]:
@@ -657,20 +691,16 @@ async def get_dq_config(table_name: str) -> str:
     if not name:
         return "[adls-agent] Please provide the dataset/table name from the ticket."
 
-    endpoint = (settings.adls_table_endpoint or "").strip().rstrip("/")
-    if not endpoint:
-        return "[adls-agent] No DQ rules table is configured (ADLS_TABLE_ENDPOINT is unset)."
     dq_table = settings.adls_dq_table
-
     try:
-        client = await _dq_table(endpoint, dq_table)
+        client = await _dq_table(_dq_endpoint(), dq_table)
         name, rows = await _resolve_dq_rows(client, name, dq_table)
     except _InputError as exc:  # before Exception: this carries model-facing text
         return str(exc)
     except Exception as exc:  # surface auth/permission errors to the model
         return f"[adls-agent] ERROR reading DQ rules table '{dq_table}': {_truncate(exc)}"
 
-    rows.sort(key=lambda r: (r.get("sort_order") is None, r.get("sort_order"), r.get("RowKey", "")))
+    rows.sort(key=_rule_sort_key)
     params = _merged_dq_params(rows)
     out = [
         f"[adls-agent] Table '{name}' has {len(rows)} DQ rule row(s) (from '{dq_table}'):",
@@ -689,12 +719,45 @@ async def get_dq_config(table_name: str) -> str:
     return "\n".join(out)
 
 
+@tool
+async def list_dq_tables() -> str:
+    """List the dataset/table names that have DQ rules configured.
+
+    Use this when the user asks which tables the data quality configuration
+    covers and names none — "what tables do we have", "which tables have DQ
+    rules". Pass any name it returns to get_dq_config for that table's rules,
+    time target and expected file path.
+    """
+    dq_table = settings.adls_dq_table
+    try:
+        client = await _dq_table(_dq_endpoint(), dq_table)
+        # One past the cap, so a truncated listing is never reported as an exact count.
+        names = await _dq_table_names(client, _MAX_DATASETS + 1)
+    except _InputError as exc:
+        return str(exc)
+    except Exception as exc:  # surface auth/permission errors to the model
+        return f"[adls-agent] ERROR reading DQ rules table '{dq_table}': {_truncate(exc)}"
+
+    if not names:
+        return f"[adls-agent] The DQ rules table '{dq_table}' has no rules configured."
+    truncated = len(names) > _MAX_DATASETS
+    names = names[:_MAX_DATASETS]
+    count = f"more than {_MAX_DATASETS}" if truncated else str(len(names))
+    shown = f" (showing the first {_MAX_DATASETS})" if truncated else ""
+    listing = "\n".join(f"  - {name}" for name in names)
+    return (
+        f"[adls-agent] The DQ rules table '{dq_table}' has rules for {count} "
+        f"table(s){shown}:\n{listing}"
+    )
+
+
 ADLS_TOOLS = [
     list_datasets,
     get_dataset_config,
     get_data_quality_rules,
     list_dataset_files,
     get_dq_config,
+    list_dq_tables,
 ]
 
 __all__ = ["ADLS_TOOLS", "close_adls_resources"]

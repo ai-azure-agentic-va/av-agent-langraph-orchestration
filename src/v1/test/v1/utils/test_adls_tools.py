@@ -870,6 +870,42 @@ def test_dq_config_reports_rules_despite_malformed_parameters() -> None:
     assert f"expected file path  : {adls._NOT_CONFIGURED}" in out  # not invented
 
 
+def test_dq_rows_order_whatever_type_sort_order_arrives_as() -> None:
+    """Table writers disagree on sort_order's type; ordering must survive the mix.
+
+    Comparing a string against a number raises, and the sort runs after the
+    tool's try block, so an uncomparable mix escaped as an exception instead of
+    the [adls-agent] text every tool promises to return.
+    """
+    test_cases = [
+        {"name": "all numbers", "orders": [3, 1, 2]},
+        {"name": "all strings", "orders": ["3", "1", "2"]},
+        {"name": "mixed string and number", "orders": ["3", 1, 2.0]},
+        {"name": "missing and unparseable values", "orders": [None, 1, "not-a-number"]},
+    ]
+    for test_data in test_cases:
+        rows = [
+            {
+                "PartitionKey": "tbl_x",
+                "RowKey": key,
+                "dq_rule_id": "TLE",
+                "sort_order": order,
+            }
+            for key, order in zip(("INT-CLE", "LND-TLE", "PCUR-TLE"), test_data["orders"])
+        ]
+        restore = _patch_dq(
+            _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net"),
+            rows=rows,
+        )
+        try:
+            out = _run(adls.get_dq_config.ainvoke({"table_name": "tbl_x"}))
+        finally:
+            restore()
+        assert "3 DQ rule row(s)" in out, test_data["name"]
+        # sort_order 1 wins wherever it is parseable; unusable values sort last.
+        assert out.index("LND-TLE") < out.index("PCUR-TLE"), test_data["name"]
+
+
 def test_dq_config_path_can_be_handed_straight_to_list_dataset_files() -> None:
     """The two-step DQ recipe in the subagent prompt must actually connect.
 
@@ -914,9 +950,74 @@ def test_dq_config_surfaces_read_errors_as_text() -> None:
 # --- wiring -------------------------------------------------------------------
 
 
+def test_list_dq_tables_reports_each_configured_table_once() -> None:
+    """'What tables do we have' has to be answerable without naming one first.
+
+    Every rule row repeats its PartitionKey, so the listing must collapse them
+    rather than repeating a table once per rule.
+    """
+    rows = _speedpay_rows() + [
+        {"PartitionKey": "tbl_other", "RowKey": "LND-TLE", "dq_rule_id": "TLE"}
+    ]
+    restore = _patch_dq(
+        _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net"), rows=rows
+    )
+    try:
+        out = _run(adls.list_dq_tables.ainvoke({}))
+    finally:
+        restore()
+    assert "rules for 2 table(s)" in out  # 4 rows, 2 distinct tables
+    assert "  - speedpay_check_analytics" in out
+    assert "  - tbl_other" in out
+
+
+def test_list_dq_tables_edge_cases() -> None:
+    test_cases = [
+        {
+            "name": "table not configured at all",
+            "endpoint": None,
+            "rows": [],
+            "expected": "No DQ rules table is configured",
+        },
+        {
+            "name": "configured but empty",
+            "endpoint": "https://acct.table.core.windows.net",
+            "rows": [],
+            "expected": "has no rules configured",
+        },
+    ]
+    for test_data in test_cases:
+        restore = _patch_dq(
+            _Settings({"fin": _FIN}, table_endpoint=test_data["endpoint"]),
+            rows=test_data["rows"],
+        )
+        try:
+            out = _run(adls.list_dq_tables.ainvoke({}))
+        finally:
+            restore()
+        assert test_data["expected"] in out, test_data["name"]
+
+
+def test_list_dq_tables_surfaces_read_errors_as_text() -> None:
+    """A 403 on the table must read back as text, not raise out of the tool."""
+    settings = _Settings({"fin": _FIN}, table_endpoint="https://acct.table.core.windows.net")
+    restore = _patch_dq(settings)
+
+    async def _boom(endpoint: str, table_name: str):
+        raise RuntimeError("AuthorizationPermissionMismatch")
+
+    adls._dq_table = _boom
+    try:
+        out = _run(adls.list_dq_tables.ainvoke({}))
+    finally:
+        restore()
+    assert out.startswith("[adls-agent] ERROR reading DQ rules table")
+    assert "AuthorizationPermissionMismatch" in out
+
+
 def test_subagent_exposes_every_tool_under_the_gated_name() -> None:
     """The subagent's name must match the access gate's, or the gate silently
-    stops protecting it; its tool list must cover all five capabilities."""
+    stops protecting it; its tool list must cover every capability."""
     from v1.core.middlewares.subagent_access import ADLS_SUBAGENT_NAME
     from v1.core.subagents import ADLS_SUBAGENT
 
@@ -927,6 +1028,7 @@ def test_subagent_exposes_every_tool_under_the_gated_name() -> None:
         "get_data_quality_rules",
         "list_dataset_files",
         "get_dq_config",
+        "list_dq_tables",
     }
     assert ADLS_SUBAGENT["system_prompt"].startswith("You are the adls-agent.")
 

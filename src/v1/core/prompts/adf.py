@@ -6,11 +6,10 @@ from __future__ import annotations
 # it is what routing decisions are made from, not part of the subagent's prompt.
 ADF_SUBAGENT_DESCRIPTION = (
     "Azure Data Factory agent. Use for anything about data pipelines (names often "
-    "start with 'pl_') and their runs: listing the configured factories, listing "
-    "pipelines, describing what a pipeline does and its structure/hierarchy (which "
-    "child pipelines it invokes), listing recent runs, and diagnosing failures — "
-    "including walking a hierarchical run's full parent→child run tree to find the "
-    "root cause."
+    "start with 'pl_') and their runs: listing pipelines, describing what a pipeline "
+    "does and its structure/hierarchy (which child pipelines it invokes), listing "
+    "recent runs, and diagnosing failures — including walking a hierarchical run's "
+    "full parent→child run tree to find the root cause."
 )
 
 ADF_SUBAGENT_PROMPT = """

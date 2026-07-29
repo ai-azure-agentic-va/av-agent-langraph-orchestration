@@ -186,9 +186,16 @@ gave them.
 adapter the ADF client uses — the native async credential blocks the event loop
 during acquisition, which `langgraph dev`'s blocking-call detector rejects). No
 keys or secrets: locally it uses `az login`, deployed it uses the managed
-identity. The identity needs **Storage Blob Data Reader**; the tools call only
-`list_blobs` and `download_blob`, so the capability is read-only by
-construction.
+identity. The identity needs **two data-plane roles** on the storage account:
+**Storage Blob Data Reader** for the file/config tools, and **Storage Table Data
+Reader** for `get_dq_config` and `list_dq_tables`. The tools call only
+`list_blobs`, `download_blob` and `query_entities`, so the capability is
+read-only by construction.
+
+A management-plane role is **not** enough. `Contributor` can create the account
+and list its containers and tables but grants no access to blob content or table
+rows, so every tool returns `AuthorizationPermissionMismatch` until both data
+roles above are assigned.
 
 **Why `azure-storage-blob`, not `azure-storage-file-datalake`.** A Gen2
 filesystem *is* a blob container, and these tools only list and download whole
