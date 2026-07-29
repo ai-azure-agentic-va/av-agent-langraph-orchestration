@@ -16,8 +16,8 @@ same conditional wiring. If you know one, you know the other.
 
 ## The 10-second summary
 
-Four `@tool`-decorated async functions in `src/v1/core/tools/adls/tools.py` are
-what the LLM calls. Each one: **resolve account → call the Azure blob SDK →
+Five `@tool`-decorated async functions in `src/v1/core/tools/adls/tools.py` are
+what the LLM calls. Each one: **resolve the target → call the Azure SDK →
 format the result into an `[adls-agent] …` string**. Errors are never raised to
 the agent — they come back as text.
 
@@ -25,7 +25,7 @@ The agent answers two different kinds of question and never confuses them:
 
 | | Question | Source of truth |
 |---|---|---|
-| **EXPECTED** | Where *should* the file land? By when? What columns must pass which rules? | a per-dataset JSON manifest in ADLS |
+| **EXPECTED** | Where *should* the file land? By when? What columns must pass which rules? | a per-dataset JSON manifest in ADLS, or the enterprise `dq_rules_config` Azure Table (see [../ADLS_ACTION_PLAN.md](../ADLS_ACTION_PLAN.md)) |
 | **ACTUAL** | What *did* land, how big, and when? | ADLS blob listing |
 
 ---
@@ -151,9 +151,20 @@ dataset's configured `expected_path`; given a `path` it lists that folder.
 **Prefix listing.** Expected paths are templates
 (`raw/alpha/cur_alpha/{yyyy}/{MM}/{dd}/`). `_literal_prefix` takes the fixed head
 up to the first `{` and lists from there, so date folders are discovered rather
-than computed. Marked in the source with a `ponytail:` comment: a template whose
-token comes *early* (`raw/{yyyy}/alpha/`) would list a wider subtree; render the
-tokens for a concrete business date if that layout appears.
+than computed. A template whose token comes *early* (`raw/{yyyy}/alpha/`) would
+list a wider subtree; render the tokens for a concrete business date if that
+layout appears.
+
+### `get_dq_config(table_name)`
+The enterprise EXPECTED source: reads the `dq_rules_config` **Azure Table**
+(configured via `ADLS_TABLE_ENDPOINT` / `ADLS_DQ_TABLE`), where PartitionKey is
+the dataset/table name a ServiceNow DQ ticket carries and each row is one DQ
+rule (`RowKey` = `<etl_stage>-<dq_rule_id>`, e.g. `LND-TLE`). Returns every rule
+with its stage, time target and thresholds, plus the expected file metadata and
+expected path from the rows' `dq_parameters` JSON — the agent then checks what
+actually landed with `list_dataset_files(path=<expected path>)`. Table names
+resolve case-insensitively; unknown names come back with the configured
+alternatives. Design and seeding: [../ADLS_ACTION_PLAN.md](../ADLS_ACTION_PLAN.md).
 
 ---
 
@@ -164,6 +175,8 @@ tokens for a concrete business date if that layout appears.
 | `ADLS_ACCOUNT_MAPPING` | JSON: alias → `{account_url, filesystem, config_path?}`. **Empty disables the whole subagent.** |
 | `ADLS_DEFAULT_ACCOUNT` | Which alias to use when the caller names none (implicit when only one is mapped) |
 | `ADLS_DISABLED_GROUPS` | Entra groups that lose the subagent (same matching as `SERVICENOW_DISABLED_GROUPS`) |
+| `ADLS_TABLE_ENDPOINT` | Table-service endpoint holding the DQ rules table (e.g. `https://<account>.table.core.windows.net`); unset leaves `get_dq_config` reporting itself unconfigured |
+| `ADLS_DQ_TABLE` | Name of the DQ rules table (default `dqrulesconfig`) |
 
 `account_url` accepts either the `.dfs.` or the `.blob.` endpoint —
 `_blob_endpoint` normalizes it, so an operator can paste whichever the portal
@@ -195,7 +208,7 @@ only directory/ACL semantics we never touch.
 | Per-group access gate | `ADLS_RESTRICTION_NOTE` + gate in `src/v1/core/middlewares/subagent_access.py` |
 | Registration + shutdown | `src/v1/core/agent.py` |
 | Settings | `src/v1/core/config.py` |
-| Tests | `src/v1/test/v1/utils/test_adls_tools.py` (31), `test_subagent_access.py` (16) |
+| Tests | `src/v1/test/v1/utils/test_adls_tools.py` (46), `test_subagent_access.py` (16) |
 
 **Conditional registration.** `_build_agent_sync` wires ADF and ADLS from one
 table: a subagent is registered *and* its routing block appended only when its
@@ -258,12 +271,14 @@ make test                                             # whole suite
 .venv/bin/python src/v1/test/v1/utils/test_adls_tools.py   # standalone
 ```
 
-32 offline tests replace the blob client with an in-memory fake — no network, no
-credentials. They cover account resolution (default / named / unknown / unset /
-misconfigured), endpoint normalization, manifest loading including the
-case-insensitive fallback and malformed JSON, all four tools' rendered output,
-the expected-path prefix logic, Gen2 directory placeholders, the display cap,
-and the subagent-name ↔ access-gate match.
+46 offline tests replace the blob and table clients with in-memory fakes — no
+network, no credentials. They cover account resolution (default / named /
+unknown / unset / misconfigured), endpoint normalization, manifest loading
+including the case-insensitive fallback and malformed JSON, all five tools'
+rendered output, the expected-path prefix logic, Gen2 directory placeholders,
+the display caps, the DQ table lookup (unset endpoint, unknown table,
+case-insensitive resolution, JSON columns, read errors surfaced as text), and
+the subagent-name ↔ access-gate match.
 
 ### Live sandbox
 

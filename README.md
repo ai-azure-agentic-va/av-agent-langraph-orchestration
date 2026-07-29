@@ -84,15 +84,17 @@ activity named. See
 
 ### `adls-agent` — Azure Data Lake Storage
 
-Four tools: `list_datasets`, `get_dataset_config`, `get_data_quality_rules`,
-`list_dataset_files`.
+Five tools: `list_datasets`, `get_dataset_config`, `get_data_quality_rules`,
+`list_dataset_files`, `get_dq_config`.
 
 It answers two kinds of question and never confuses them — **EXPECTED** (where a
 file should land, by when, under which DQ rules; from a per-dataset JSON
-manifest in the lake) versus **ACTUAL** (what landed, how big, when; from the
-blob listing). It reports both and leaves the late/on-time verdict to the
+manifest in the lake, or from the enterprise `dq_rules_config` Azure Table via
+`get_dq_config(table_name)`) versus **ACTUAL** (what landed, how big, when; from
+the blob listing). It reports both and leaves the late/on-time verdict to the
 orchestrator and the downstream timeliness capability. See
-[docs/architecture/ADLS.md](docs/architecture/ADLS.md).
+[docs/architecture/ADLS.md](docs/architecture/ADLS.md) and
+[docs/ADLS_ACTION_PLAN.md](docs/ADLS_ACTION_PLAN.md).
 
 ```mermaid
 flowchart LR
@@ -199,6 +201,15 @@ Reading the Table needs *Storage Table Data Reader* on that account, alongside
 the existing *Storage Blob Data Reader*. Leave `ADLS_TABLE_ENDPOINT` unset and
 `get_dq_config` reports itself as not configured; the manifest-backed tools are
 unaffected.
+
+`scripts/seed_dq_rules_sim.sh` (idempotent, rerunnable) seeds the dev
+simulation in the existing `stfunccustprocdev` account: one
+`speedpay_check_analytics` file per zone (`lnd/`, `pcur/`, `int/`) and the three
+matching rule rows, each carrying its own zone's full path. Time targets are
+computed from the real upload times — LND lands **on time**, PCUR **10 minutes
+late**, and the INT file holds 20 records against the completeness thresholds —
+and carry an explicit `America/New_York` timezone. See
+[docs/ADLS_ACTION_PLAN.md](docs/ADLS_ACTION_PLAN.md).
 
 ### Deploying
 

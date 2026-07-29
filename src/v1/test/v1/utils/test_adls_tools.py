@@ -270,6 +270,7 @@ _SPEEDPAY_DQ_PARAMS = {
     "ingestion_cadence": "Daily",
     "ingestion_days": ["Monday", "Friday"],
     "time_target": ["09:33"],
+    "time_target_timezone": "America/New_York",
 }
 
 _SPEEDPAY_OPRL = {"PublishSnow": "True", "SnowQueue": "EDL DQ MONITORING"}
@@ -772,13 +773,14 @@ def test_dq_config_renders_rules_path_and_metadata() -> None:
         restore()
     assert "3 DQ rule row(s)" in out
     assert "expected file path  : lnd/speedpay-check/archive/" in out
+    assert "zone path   : lnd/speedpay-check/archive/" in out
     assert "source system       : Speedpaycheck" in out
     assert "ingestion frequency : Daily" in out
     # sort_order drives display order: LND-TLE, PCUR-TLE, INT-CLE
     assert out.index("LND-TLE") < out.index("PCUR-TLE") < out.index("INT-CLE")
     assert "LND-TLE (timeliness)" in out
     assert "INT-CLE (completeness)" in out
-    assert "time target : 09:33" in out
+    assert "time target : 09:33 (America/New_York)" in out
     assert "threshold_pct: 95" in out
     assert "SnowQueue=EDL DQ MONITORING" in out
 
