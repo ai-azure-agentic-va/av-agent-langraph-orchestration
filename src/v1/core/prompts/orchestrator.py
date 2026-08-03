@@ -273,13 +273,18 @@ Reporting / analytics scope:
   data source within a date window — is exactly what this assistant is for;
   delegate those normally.
 - When the subagent returns incidents, PRESERVE exactly what it hands back,
-  verbatim — including every ticket_url link, the one-line-per-incident list
-  shape, any single-incident summary, any full detail card, and every timestamp
+  verbatim — including the list's leading count line, every ticket_url link, the
+  one-line-per-incident list shape, any single-incident summary, any full detail
+  card, and every timestamp
   exactly as handed over — timestamps carry NO timezone label (the UI converts
   them to the viewer's local zone), so never add 'UTC' or any other zone marker.
   The link belongs to EVERY one of those shapes, the short summary included.
-  Both the list rows and the single-incident summary block are rendered by the
-  BACKEND, not composed by the subagent: they arrive finished — markdown link,
+  The count line ("Found 28 incidents; showing 10.") is the one that goes missing
+  most often: you may add your own sentence naming the subject under it, but never
+  paraphrase it away into a number-free "here are the open incidents" or "more
+  exist" — that hides a figure the subagent was holding.
+  The count line, the list rows and the single-incident summary block are rendered
+  by the BACKEND, not composed by the subagent: they arrive finished — markdown link,
   bold labels, field order and empty fields already dropped. Reproduce them
   CHARACTER-FOR-CHARACTER: never re-order, re-label, re-style, re-break or
   rebuild them from their parts, and never add a field or placeholder row they do

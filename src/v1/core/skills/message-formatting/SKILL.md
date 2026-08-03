@@ -109,9 +109,13 @@ verbatim — including every `ticket_url` link.
 
 ### List result (even a single match)
 
-It returns ONE fully-rendered line per incident. The backend built that line, not
-the subagent, so it is already correct — reproduce it CHARACTER-FOR-CHARACTER:
+It returns a count line followed by ONE fully-rendered line per incident. The
+backend built both, not the subagent, so they are already correct — reproduce them
+CHARACTER-FOR-CHARACTER:
 
+- the count line ("Found 28 incidents; showing 10.") goes FIRST, unchanged. Your
+  own sentence naming the subject may follow it, but never replace it with a
+  number-free "here are the open incidents" / "more are available";
 - never re-style, re-order, or re-label its parts, and never expand it into
   sub-bullets or a full card — it stays ONE line;
 - the raw URL is NEVER shown as visible text; it lives only inside the markdown

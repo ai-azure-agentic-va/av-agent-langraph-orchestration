@@ -808,6 +808,39 @@ def normalize_ticket_detail(
     }
 
 
+def _list_header(total_count: int | None, shown: int, has_more: bool) -> str:
+    """Render the count line the agent prints verbatim above a list.
+
+    Third and last of the backend-rendered shapes, for the same reason as
+    ``_list_row`` and ``_summary_card``: it lived as an English recipe in the
+    subagent prompt and drifted exactly like the other two did. The subagent
+    composed "Found 28 open incidents mentioning TSYS; showing the first 10."
+    from the raw total, then the parent re-synthesized it into a number-free
+    "Here are open incidents currently related to TSYS:" — hiding a figure we
+    were holding. One writer, one shape, no re-derivation per answer.
+
+    Carries NO subject clause on purpose. The subject never drifted (the parent
+    kept "related to TSYS" and dropped the numbers), and the backend does not
+    know how the user phrased the ask. This owns the numbers; the model's own
+    sentence underneath still names the subject.
+    """
+
+    # No total from the source is NOT the same as "the page is everything" — say
+    # the count is unknown rather than letting ``shown`` pose as the total.
+    if total_count is None:
+        noun = "incident" if shown == 1 else "incidents"
+        return (
+            f"Showing {shown} {noun}; more are available (exact count unavailable)."
+            if has_more
+            else f"Showing {shown} {noun}."
+        )
+    noun = "incident" if total_count == 1 else "incidents"
+    # "showing N" implies more exist, so it is only honest when more actually do.
+    if total_count <= shown and not has_more:
+        return f"Found {total_count} {noun}."
+    return f"Found {total_count} {noun}; showing {shown}."
+
+
 def normalize_ticket_list(
     incidents: Iterable[Mapping[str, Any]],
     *,
@@ -864,6 +897,9 @@ def normalize_ticket_list(
         # the source reported no total: the agent must SAY the count is unavailable,
         # never substitute count (which would claim the page IS the whole result set).
         "total_count": total_count,
+        # The finished COUNT LINE, same contract as each row's ``row``: the agent
+        # prints it instead of composing one from the two integers above.
+        "header": _list_header(total_count, len(tickets), has_more),
         "limit": limit,
         "offset": offset,
         "next_offset": next_offset,
@@ -1456,6 +1492,60 @@ async def servicenow_list_tickets(
         )
         client = await get_servicenow_client()
 
+        # LOST-CURSOR RECOVERY. The caller sent only the "already shown" half
+        # ("0|INC001,INC002,…") because the real cursor did not survive the
+        # delegation, so every state restarts at offset 0 over rows the earlier
+        # pages already showed. One window per state is then NOT enough: with a
+        # skewed spread (16 New / 6 In Progress / 6 On Hold) the 20 rows shown so
+        # far leave the New window 0-9 with just 2 unseen rows, and New rows 10-15
+        # are never requested at all — 6 incidents become permanently unreachable
+        # and the page returns 2 where 8 were due. Read forward through the state
+        # instead, one known-good ``normalized_limit`` window at a time, until the
+        # page can be filled. Only on this path: real cursors already start each
+        # state past its shown rows, so they still take exactly one call.
+        lost_cursor = bool(carried_seen) and int_offset == 0 and offset_cursor is None
+
+        def _unseen(rows: Iterable[Mapping[str, Any]]) -> int:
+            return sum(
+                1
+                for row in rows
+                if _reference_value(row.get("number")).upper() not in carried_seen
+            )
+
+        async def _list_state(
+            filters: Mapping[str, Any] | None, start: int
+        ) -> Mapping[str, Any]:
+            envelope = await client.list_incidents(
+                filters=filters, limit=normalized_limit, offset=start
+            )
+            if not lost_cursor:
+                return envelope
+            # The FIRST response owns the total: it answers "how many match", which
+            # reading further windows must not change (and a later degraded reply
+            # reporting None would poison the sum for every state).
+            total = envelope.get("total_count")
+            rows = list(envelope.get("incidents", []))
+            unseen = _unseen(rows)
+            while unseen < normalized_limit and envelope.get("has_more"):
+                nxt = envelope.get("next_offset")
+                # Never trust the cursor to move: a repeated or backwards offset
+                # would re-read the same window forever.
+                if not isinstance(nxt, int) or nxt <= start:
+                    break
+                start = nxt
+                envelope = await client.list_incidents(
+                    filters=filters, limit=normalized_limit, offset=nxt
+                )
+                page = list(envelope.get("incidents", []))
+                if not page:
+                    # The wrapper does sometimes claim has_more and then serve an
+                    # empty page (real_empty_incidents). Stop, and stop advertising.
+                    envelope = {**envelope, "has_more": False}
+                    break
+                rows.extend(page)
+                unseen += _unseen(page)
+            return {**envelope, "incidents": rows, "total_count": total}
+
         # The wrapper API (incident_list_api_prefix) accepts ONE state value per
         # call — it is not ServiceNow's native sysparm_query, so there is no
         # multi-value state / stateIN form to collapse this into. Hence we query
@@ -1464,19 +1554,12 @@ async def servicenow_list_tickets(
         # bug: the gather() below makes wall-clock = the slowest single call, not
         # the sum. Field filters apply to every per-status query (AND semantics).
         if normalized_statuses is None:
-            envelopes = [
-                await client.list_incidents(
-                    filters=field_filters or None,
-                    limit=normalized_limit,
-                    offset=int_offset,
-                )
-            ]
+            envelopes = [await _list_state(field_filters or None, int_offset)]
         elif len(normalized_statuses) == 1:
             envelopes = [
-                await client.list_incidents(
-                    filters={**field_filters, **_status_filters(normalized_statuses[0])},
-                    limit=normalized_limit,
-                    offset=int_offset,
+                await _list_state(
+                    {**field_filters, **_status_filters(normalized_statuses[0])},
+                    int_offset,
                 )
             ]
         else:
@@ -1487,10 +1570,9 @@ async def servicenow_list_tickets(
             envelopes = list(
                 await asyncio.gather(
                     *(
-                        client.list_incidents(
-                            filters={**field_filters, **_status_filters(status)},
-                            limit=normalized_limit,
-                            offset=(offset_cursor or {}).get(status, 0),
+                        _list_state(
+                            {**field_filters, **_status_filters(status)},
+                            (offset_cursor or {}).get(status, 0),
                         )
                         for status in normalized_statuses
                     )

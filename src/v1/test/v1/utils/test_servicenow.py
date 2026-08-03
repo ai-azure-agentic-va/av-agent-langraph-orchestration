@@ -601,7 +601,13 @@ def test_lost_cursor_resumes_instead_of_restarting() -> None:
 
     states = ("new", "in_progress", "on_hold")
     by_code = {str(_STATUS_TO_STATE[s]): s for s in states}
-    rows = {s: [f"INC{s[:2].upper()}{i:03d}" for i in range(30)] for s in states}
+    # SKEWED on purpose (16/6/6 = the live spread that broke this). An even split
+    # hides the second failure below: with 30 rows each, every state's window 0-9
+    # still holds enough unseen rows to fill a page however many were shown before,
+    # so the recovery looks fine while the populous state's later rows are being
+    # dropped. Keep the counts lopsided.
+    counts = {"new": 16, "in_progress": 6, "on_hold": 6}
+    rows = {s: [f"INC{s[:2].upper()}{i:03d}" for i in range(counts[s])] for s in states}
 
     class _Stub:
         async def list_incidents(self, *, filters=None, limit=10, offset=0):
@@ -658,6 +664,19 @@ def test_lost_cursor_resumes_instead_of_restarting() -> None:
             page(statuses=list(states), limit=10, offset="0|" + ",".join(sorted(both)))
         )
         assert not (both & _numbers(deep)), _numbers(deep)
+
+        # …and it must return every row that is LEFT, not just the unseen ones that
+        # happen to sit in each state's first window. 28 rows, 20 shown, so 8 are
+        # due. Recovery restarts each state at offset 0, and by now New has 8 of its
+        # 16 rows spent — its window 0-9 holds only 2 unseen, and New 10-15 are
+        # never requested unless the recovery reads FORWARD. That shortfall is
+        # silent: the rows are not duplicated, they are simply gone, and paging then
+        # ends early while the count line still promises 28.
+        assert len(_numbers(deep)) == 8, (
+            f"lost-cursor recovery returned {len(_numbers(deep))} of the 8 remaining "
+            f"rows: {sorted(_numbers(deep))}"
+        )
+        assert both | _numbers(deep) == {n for state in rows.values() for n in state}
     finally:
         tools_module.get_servicenow_client = original_client
 
@@ -832,6 +851,57 @@ def test_list_row_is_rendered_by_the_backend_not_the_prompt() -> None:
     assert "`row` field VERBATIM" in subagent
     for stale in ("**State:** <state>", "P<n> - <label>"):
         assert stale not in subagent and stale not in skill, stale
+
+
+def test_list_header_is_rendered_by_the_backend_not_the_prompt() -> None:
+    """The COUNT LINE is code too, for the same reason as the row and the card.
+
+    It was the last English recipe in a list answer: the subagent composed
+    "Found 28 open incidents mentioning TSYS; showing the first 10." from the raw
+    total, and the parent re-synthesized it into a number-free "Here are open
+    incidents currently related to TSYS:" — the total was retrieved correctly and
+    then lost in prose. It now ships finished on the payload; the prompts only
+    say 'print it'.
+    """
+
+    from pathlib import Path
+
+    from v1.core.tools.servicenow.tools import normalize_ticket_list
+
+    page = normalize_ticket_list(
+        [{"number": f"INC{i}"} for i in range(10)],
+        statuses=("new",),
+        limit=10,
+        total_count=28,
+        has_more=True,
+    )
+    assert page["header"] == "Found 28 incidents; showing 10."
+
+    # "showing N" implies a next page, so it must vanish once there isn't one.
+    whole = normalize_ticket_list(
+        [{"number": "INC1"}], statuses=("new",), limit=10, total_count=1
+    )
+    assert whole["header"] == "Found 1 incident."
+
+    # A total equal to the page size still says "showing" while has_more holds:
+    # the source's total can lag its own paging, and silence would claim finality.
+    assert "showing" in normalize_ticket_list(
+        [{"number": "INC1"}], statuses=("new",), limit=1, total_count=1, has_more=True
+    )["header"]
+
+    # ...and the prompt copies must stay recipe-free, or the drift comes back.
+    core = Path(__file__).resolve().parents[3] / "core"
+    subagent = (core / "prompts" / "servicenow.py").read_text(encoding="utf-8")
+    skill = (core / "skills" / "message-formatting" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    orchestrator = (core / "prompts" / "orchestrator.py").read_text(encoding="utf-8")
+    for stale in ('"Found 356 incidents for <subject>', "showing 11-20 of 28"):
+        assert stale not in subagent, stale
+    # All three layers must name the count line as backend-rendered, or the parent
+    # is free to paraphrase it away again.
+    assert "rendered `header`" in subagent
+    assert "count line" in skill and "count line" in orchestrator
 
 
 def test_raw_uris_are_fenced_so_nothing_half_linkifies() -> None:
@@ -1064,10 +1134,21 @@ def test_missing_total_is_reported_as_unknown_not_faked() -> None:
         "tool re-introduced the row-count fallback for total_count"
     )
 
+    # An absent total is now WORDED by the renderer, not by the model: the header
+    # admits the unknown instead of letting the page count pose as the total.
+    from v1.core.tools.servicenow.tools import _list_header
+
+    assert _list_header(None, 10, True) == (
+        "Showing 10 incidents; more are available (exact count unavailable)."
+    )
+    # "Found N" is the TOTAL's word. With no total, the page count may only be
+    # reported as what it is ("Showing 28"), never promoted to a match count.
+    assert not _list_header(None, 28, False).startswith("Found")
+
     prompt = (root / "v1/core/prompts/servicenow.py").read_text(encoding="utf-8")
     for required in (
-        "total_count = null",  # the model must know what an absent total means
-        "exact count unavailable",
+        "PRINT IT",  # the header is reproduced, never re-derived
+        "count is unavailable",
         "NO query type is exempt",  # person/engineer searches lead with it too
     ):
         assert required in prompt, f"total-count rule lost: {required!r}"

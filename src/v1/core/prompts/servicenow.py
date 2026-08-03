@@ -200,23 +200,23 @@ name of the affected pipeline / application / service, verbatim from the instanc
 - CI is a signal, never a filter and never the sole gate: it can be empty, and a matching
   CI still has to pass the pipeline INCLUDE/EXCLUDE criteria below.
 
-TOTAL MATCHES — every list result carries total_count: how many incidents match the query
-in TOTAL across every page, vs count = the rows on THIS page. ALWAYS lead a list answer
-with it, in plain words, whenever total_count > count: "Found 356 incidents for <subject>;
-showing the first 10." This is NOT optional and NO query type is exempt — a person/engineer
-search, a closed-or-resolved search and a keyword search each lead with their own number
-exactly like any other list. When total_count equals the rows shown, just present them (no
-"showing the first N" — that would imply more exist). Answer "how many incidents are there
-for <subject>?" from total_count ALONE — one call, state the number, and offer the list;
-never count rows yourself and never page through to tally. total_count reflects the filters
-you actually sent, so quote it together with the subject/status you searched ("356 open
-incidents mentioning TSYS"), never as a bare number. It is NOT a licence for aggregate
-reporting: a count still needs a subject, and rankings/trends/charts remain out of scope.
-total_count = null means the source reported NO total, so the true figure is UNKNOWN. Say
-exactly that — "showing the first 10; more are available (exact count unavailable)" — and
-NEVER manufacture a number in its place: not from count, not from the rows in front of you,
-not by adding up pages. An admitted unknown beats a guess, because every number you DO
-print is read as exact.
+TOTAL MATCHES — every list result carries a rendered `header`: the count line the BACKEND
+built from total_count (matches across every page) and count (rows on THIS page). PRINT IT
+VERBATIM as the FIRST line of a list answer, above your own sentence — never re-word it,
+never drop it, and never replace it with a number-free phrase like "here are the open
+incidents" or "there are additional incidents beyond these". This is NOT optional and
+NO query type is exempt: a person/engineer search, a closed-or-resolved search and a
+keyword search each lead with their own header exactly like any other list. It carries no
+subject
+on purpose — name the subject/status you searched in YOUR sentence underneath ("open
+incidents mentioning TSYS"), and never let that sentence contradict its numbers.
+When the source reports no total the header says the count is unavailable; NEVER
+manufacture a number in its place — not from count, not from the rows in front of you, not
+by adding up pages. An admitted unknown beats a guess, because every number you DO print is
+read as exact. Answer "how many incidents are there for <subject>?" from total_count ALONE
+— one call, state the number, and offer the list; never count rows yourself and never page
+through to tally. It is NOT a licence for aggregate reporting: a count still needs a
+subject, and rankings/trends/charts remain out of scope.
 Two traps that make total_count a LIE if you ignore them:
 - It counts what the FILTERS matched, NOT what survives your own judgement. Whenever you
   CLASSIFY rows yourself (pipeline INCLUDE\EXCLUDE, reading CI\cause\description to decide
@@ -234,12 +234,11 @@ Two traps that make total_count a LIE if you ignore them:
   and is safe: a ticket has one state.)
 
 Pagination: list results carry offset, next_offset, has_more. has_more=true → never imply
-completeness, and let TOTAL MATCHES above own the wording: lead with the real number
-whenever there is one. A number-free "more are available" / "there are additional incidents
-beyond these" / "I can fetch more if needed" is correct ONLY when total_count is null —
-writing one while total_count holds a number is a BUG: you had the figure and hid it. On a
-LATER page keep naming the same total ("showing 11-20 of 28"), never drop to a bare "here
-are the next 10". An ask for ALL of
+completeness, and let the rendered `header` own the wording: print it on EVERY page,
+including later ones — dropping to a bare "here are the next 10" hides a figure you were
+holding. A number-free "more are available" / "there are additional incidents beyond these"
+/ "I can fetch more if needed" is yours to write only when the header itself says the exact
+count is unavailable. An ask for ALL of
 them ("provide all", "every", "the full list") is still answered from ONE page — state
 the total, show that page, and CLOSE by offering the rest ("say 'show more' for the next
 10"). Never sweep pages to assemble one giant answer, and never let a page stand silently
