@@ -240,6 +240,25 @@ def test_misconfigured_entry_names_missing_keys() -> None:
 # --- list_pipelines ----------------------------------------------------------
 
 
+def test_list_factories_marks_default() -> None:
+    restore = _patch(_Settings({"fin": _FIN, "risk": _RISK}, default="fin"))
+    try:
+        result = _run(adf.list_factories.ainvoke({}))
+        assert "fin: factory 'adf-fin'  (default)" in result
+        assert "risk: factory 'adf-risk'" in result
+    finally:
+        restore()
+
+
+def test_list_factories_reports_empty_mapping() -> None:
+    restore = _patch(_Settings({}))
+    try:
+        result = _run(adf.list_factories.ainvoke({}))
+        assert "No Data Factory is configured" in result
+    finally:
+        restore()
+
+
 def test_list_pipelines_names_factory_alias() -> None:
     client = _FakeClient(pipelines=["pl_orchestrator", "pl_load"])
     restore = _patch(_Settings({"fin": _FIN}), client)
@@ -810,6 +829,7 @@ def test_subagent_exposes_every_tool_under_the_gated_name() -> None:
 
     assert ADF_SUBAGENT["name"] == ADF_SUBAGENT_NAME
     assert {tool.name for tool in ADF_SUBAGENT["tools"]} == {
+        "list_factories",
         "list_pipelines",
         "list_pipeline_runs",
         "get_pipeline_run_details",

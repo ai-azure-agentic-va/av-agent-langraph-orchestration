@@ -16,7 +16,10 @@ dependencies = [
   "langchain-core>=1.0.0",
   "langchain-openai>=0.3.0",
   "langgraph>=1.0.0",
-  "deepagents>=0.0.6",
+  # Exact pin: the Docker build installs from pyproject (not uv.lock), and the
+  # agent.py middleware exclusions are validated against this version's stack —
+  # an unpinned newer deepagents crash-loops at startup (TodoListMiddleware).
+  "deepagents==0.6.12",
   "copilotkit>=0.1.0",
   "ag-ui-langgraph[fastapi]>=0.0.36,<0.1.0",
   "langgraph-checkpoint-postgres>=2.0.0",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import threading
@@ -26,6 +27,8 @@ from v1.core.subagents import (
     close_servicenow_resources,
 )
 from v1.core.middlewares.citations import CitationFilterMiddleware
+from v1.core.middlewares.content_filter import ContentFilterRefusalMiddleware
+from v1.core.middlewares.verdict_guard import VerdictGuardMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
 from v1.core.middlewares.subagent_access import SubagentAccessMiddleware
 from v1.core.prompts import ADF_ROUTING_BLOCK, ADLS_ROUTING_BLOCK, SYSTEM_PROMPT
@@ -152,31 +155,62 @@ def _build_agent_sync(checkpointer: Any) -> Any:
     system_prompt = "\n\n".join(
         [SYSTEM_PROMPT] + [block for _, block, on in optional if on]
     )
-    agent = create_deep_agent(
-        model=model,
-        tools=[
-            ai_search_tool,
-        ],
-        subagents=subagents,
-        middleware=[
-            SafetyGateMiddleware(),
-            # Per-request gate: for callers in SERVICENOW_DISABLED_GROUPS /
-            # ADF_DISABLED_GROUPS (e.g. external users) appends restriction
-            # notes, hard-blocks delegation to the disabled subagents, and drops
-            # the `task` tool entirely when every subagent is disabled. Sits
-            # inner of deepagents' SubAgentMiddleware so it sees the assembled
-            # request.
-            SubagentAccessMiddleware(),
-            # Runs after the answer to emit a `sources_final` event holding only
-            # the sources the model cited inline (the streamed `search_complete`
-            # chips include every retrieved doc, cited or not).
-            CitationFilterMiddleware(),
-        ],
-        system_prompt=system_prompt,
-        backend=build_backend(),
-        skills=SKILLS_SOURCES,
-        checkpointer=checkpointer,
+    # A skipped subagent is otherwise invisible from the outside (the model just
+    # routes its questions to ai_search_tool), so state the roster — and what
+    # would re-enable a missing member — once at build time.
+    logger.info(
+        "Registered subagents: %s", ", ".join(sub["name"] for sub in subagents)
     )
+    for sub, _, on in optional:
+        if not on:
+            logger.warning(
+                "Subagent %r NOT registered: %s is empty; its questions will fall "
+                "through to ai_search_tool.",
+                sub["name"],
+                "ADF_FACTORY_MAPPING" if sub is ADF_SUBAGENT else "ADLS_ACCOUNT_MAPPING",
+            )
+
+    def _create() -> Any:
+        return create_deep_agent(
+            model=model,
+            tools=[
+                ai_search_tool,
+            ],
+            subagents=subagents,
+            middleware=[
+                SafetyGateMiddleware(),
+                # Converts an Azure content-filter 400 on the model call into a
+                # normal refusal message instead of letting it kill the run (the
+                # caller would otherwise get a run-level error and no message).
+                ContentFilterRefusalMiddleware(),
+                # Per-request gate: for callers in SERVICENOW_DISABLED_GROUPS /
+                # ADF_DISABLED_GROUPS (e.g. external users) appends restriction
+                # notes, hard-blocks delegation to the disabled subagents, and drops
+                # the `task` tool entirely when every subagent is disabled. Sits
+                # inner of deepagents' SubAgentMiddleware so it sees the assembled
+                # request.
+                SubagentAccessMiddleware(),
+                # Runs after the answer to emit a `sources_final` event holding only
+                # the sources the model cited inline (the streamed `search_complete`
+                # chips include every retrieved doc, cited or not).
+                CitationFilterMiddleware(),
+                # Deterministic backstop for the no-verdict contract: replaces a
+                # bare yes/no answer to a timeliness/completeness question with the
+                # facts-plus-deferral format (prompts alone hold only per-sample).
+                VerdictGuardMiddleware(),
+            ],
+            system_prompt=system_prompt,
+            backend=build_backend(),
+            skills=SKILLS_SOURCES,
+            checkpointer=checkpointer,
+        )
+
+    try:
+        agent = _create()
+    except ValueError as exc:
+        if _drop_stale_middleware_exclusions(exc) is None:
+            raise
+        agent = _create()
     # Enforce a hard step ceiling. Without a configured recursion_limit the
     # parent loop runs at the LangGraph default (25); wiring agent_max_steps here
     # makes AGENT_MAX_STEPS the single authoritative knob (and stops a runaway
@@ -230,6 +264,50 @@ def _ensure_harness_profiles_registered() -> None:
         for key in _HARNESS_PROFILE_KEYS:
             register_harness_profile(key, profile)
         _harness_profiles_registered = True
+
+
+def _drop_stale_middleware_exclusions(exc: ValueError) -> frozenset[str] | None:
+    """Re-register the harness profile without stale exclusions, or return None.
+
+    ``create_deep_agent`` raises ``ValueError`` when an ``excluded_middleware``
+    entry matches nothing in the assembled stack. That guard turned a deepagents
+    version drift into a startup crash-loop (the 2026-08-02 outage: an image
+    whose deepagents no longer built ``TodoListMiddleware``). Running with a
+    stale exclusion's middleware back in the stack is degraded but working;
+    refusing to boot is not — so parse the offenders out of the message, shrink
+    the registered profile, and let the caller rebuild once. Returns the
+    surviving exclusion set, or None when ``exc`` is some other ``ValueError``
+    (the caller re-raises).
+    """
+
+    message = str(exc)
+    if "matched no middleware" not in message:
+        return None
+    stale = set(re.findall(r"'([^']+)' \(string\)", message)) & _EXCLUDED_MIDDLEWARE
+    # An unparseable or unrecognized message still means coverage failed; fail
+    # open by dropping every exclusion rather than crash-looping.
+    surviving = frozenset(_EXCLUDED_MIDDLEWARE - stale) if stale else frozenset()
+    logger.warning(
+        "excluded_middleware is stale for the installed deepagents (%s); "
+        "rebuilding with exclusions %s. The dropped middleware is back in the "
+        "stack — re-pin deepagents or update _EXCLUDED_MIDDLEWARE.",
+        message,
+        sorted(surviving) if surviving else "disabled entirely",
+    )
+    # Registration is union-merge, so shrinking requires clearing our keys from
+    # the (private) registry first. If its shape ever changes, surface the
+    # original error rather than a confusing secondary one.
+    try:
+        from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
+        for key in _HARNESS_PROFILE_KEYS:
+            _HARNESS_PROFILES.pop(key, None)
+    except Exception:
+        raise exc
+    if surviving:
+        profile = HarnessProfile(excluded_middleware=surviving)
+        for key in _HARNESS_PROFILE_KEYS:
+            register_harness_profile(key, profile)
+    return surviving
 
 async def close_agent_resources() -> None:
     from v1.utils.azure_credentials import aclose_async_azure_credential

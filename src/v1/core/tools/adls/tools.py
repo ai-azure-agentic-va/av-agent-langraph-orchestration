@@ -450,9 +450,11 @@ async def list_dataset_files(
         account:     Optional storage account alias. Leave empty to use the
                      default account.
 
-    Returns each file's full path, size in bytes, and last-modified timestamp
-    (UTC). Use this to check whether an expected file arrived, and to compare
-    what landed against the expected path/SLA from get_dataset_config.
+    Returns each file's full path, size in bytes, and its creation and
+    last-modified timestamps (UTC). The two differ when a blob is overwritten
+    in place — report BOTH and never present one as the other. Use this to
+    check whether an expected file arrived, and to compare what landed against
+    the expected path/SLA from get_dataset_config.
     """
     scope = ""
     prefix = (path or "").strip().strip("/")  # match _literal_prefix's stripping
@@ -486,7 +488,7 @@ async def list_dataset_files(
             modified = blob.last_modified
             if cutoff is not None and modified is not None and modified < cutoff:
                 continue
-            files.append((modified, blob.name, blob.size))
+            files.append((modified, blob.name, blob.size, getattr(blob, "creation_time", None)))
     except Exception as exc:
         return f"[adls-agent] ERROR listing files in account '{alias}': {_truncate(exc)}"
 
@@ -500,8 +502,9 @@ async def list_dataset_files(
     # (is not None, value) sorts missing timestamps last instead of raising.
     files.sort(key=lambda item: (item[0] is not None, item[0]), reverse=True)
     lines = [
-        f"  - {name} | {size if size is not None else '?'} bytes | lastModified={modified}"
-        for modified, name, size in files[:_MAX_FILES]
+        f"  - {name} | {size if size is not None else '?'} bytes | "
+        f"created={created if created is not None else '?'} | lastModified={modified}"
+        for modified, name, size, created in files[:_MAX_FILES]
     ]
     header = (
         f"[adls-agent] {len(files)} file(s){scope} under '{prefix}/' in account '{alias}' "

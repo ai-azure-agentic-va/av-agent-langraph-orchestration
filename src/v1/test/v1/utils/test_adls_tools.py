@@ -103,11 +103,15 @@ class _FakeBlobProps:
         size: int,
         last_modified: datetime | None,
         metadata: dict | None = None,
+        creation_time: datetime | None = None,
     ) -> None:
         self.name = name
         self.size = size
         self.last_modified = last_modified
         self.metadata = metadata
+        # A freshly uploaded blob has creation == modified; they diverge only
+        # when a blob is overwritten in place.
+        self.creation_time = creation_time if creation_time is not None else last_modified
 
 
 class _FakeDownloader:
@@ -636,6 +640,28 @@ def test_list_files_accepts_an_explicit_path() -> None:
         assert "//" not in result
     finally:
         restore()
+
+
+def test_list_files_reports_creation_and_modified_timestamps() -> None:
+    """Both timestamps are surfaced, labeled. They diverge when a blob is
+    overwritten in place — reporting only lastModified made the agent's
+    'file metadata' disagree with the portal's Creation time property."""
+    created = NOW - timedelta(days=2)
+
+    class _DivergedContainer:
+        def list_blobs(self, name_starts_with: str = "", include: list | None = None):
+            async def _gen():
+                yield _FakeBlobProps("raw/x/f.csv", 10, NOW, {}, creation_time=created)
+
+            return _gen()
+
+    restore = _patch(_Settings({"fin": _FIN}), _DivergedContainer())
+    try:
+        out = _run(adls.list_dataset_files.ainvoke({"path": "raw/x/", "last_n_days": 0}))
+    finally:
+        restore()
+    assert f"created={created}" in out
+    assert f"lastModified={NOW}" in out
 
 
 def test_list_files_reports_an_empty_folder() -> None:

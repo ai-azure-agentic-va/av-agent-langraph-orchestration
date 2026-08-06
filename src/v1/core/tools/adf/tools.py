@@ -324,6 +324,26 @@ def _render_runs(runs: list, alias: str, pipeline_name: str, complete: bool) -> 
 
 
 @tool
+async def list_factories() -> str:
+    """List the Azure Data Factories this agent can query, marking the default.
+
+    Use this when the user asks which factories/environments are available, or
+    when a factory alias is needed and the user has not named one. Takes no
+    arguments. Pass a returned alias as the `factory` argument of other tools.
+    """
+    mapping = settings.adf_factory_mapping
+    if not mapping:
+        return "[adf-agent] No Data Factory is configured (ADF_FACTORY_MAPPING is empty)."
+    default = _default_alias()
+    lines = [
+        f"  - {alias}: factory '{mapping[alias].get('factory_name', '?')}'"
+        + ("  (default)" if alias == default else "")
+        for alias in _factory_aliases()
+    ]
+    return f"[adf-agent] {len(mapping)} configured factory(ies):\n" + "\n".join(lines)
+
+
+@tool
 async def list_pipelines(factory: str = "") -> str:
     """List every pipeline defined in an Azure Data Factory.
 
@@ -700,6 +720,7 @@ async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
 
 # The adf-agent's tool set (see v1.core.subagents.adf).
 ADF_TOOLS = [
+    list_factories,
     list_pipelines,
     list_pipeline_runs,
     get_pipeline_run_details,

@@ -25,6 +25,23 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# GUARD: every default below is a SANITIZED fin-* placeholder, and the Bicep
+# path RESETS the app's env from infra/.env.deploy (also sanitized). Running
+# this against a real app without explicit overrides wipes its runtime env —
+# that exact incident is documented in ai-agent-eval-framework/
+# EVAL_DECISIONS.md. Deploys to the real dev app use az acr build +
+# `az containerapp update --image` (image-swap preserves env) instead.
+# ---------------------------------------------------------------------------
+if [[ -z "${SUBSCRIPTION:-}" || -z "${RESOURCE_GROUP:-}" || -z "${ACR_NAME:-}" ]]; then
+  echo "✋ REFUSING to run with placeholder defaults."
+  echo "   This script's built-in values (fin-*, 2222...) are sanitized samples,"
+  echo "   and its Bicep path RESETS the target app's env from infra/.env.deploy."
+  echo "   Set SUBSCRIPTION, RESOURCE_GROUP and ACR_NAME explicitly to proceed,"
+  echo "   or use the image-swap deploy: az acr build + az containerapp update --image."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # Configuration (override via env vars)
 # ---------------------------------------------------------------------------
 SUBSCRIPTION="${SUBSCRIPTION:-22222222-2222-2222-2222-222222222222}"
