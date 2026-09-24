@@ -1,0 +1,103 @@
+[project]
+name = "deepagent-copilotkit-agui-backend"
+version = "2.4.0"
+description = "FastAPI + LangGraph DeepAgent + CopilotKit AG-UI + Postgres checkpointer demo"
+requires-python = ">=3.11"
+dependencies = [
+  # NOTE: versions are EXACT-PINNED (==), not floating ranges. The deploy image
+  # installs the app from THIS file (`uv pip install -c /api/constraints.txt -e .`)
+  # — it does NOT read uv.lock — so `>=` ranges let each rebuild float to whatever
+  # PyPI ships that day (that is how prod drifted from local/CI). Exact pins make
+  # the build reproducible. Bump deliberately, then run `uv lock` to keep this list
+  # in sync with uv.lock. langgraph-api / langgraph-runtime-inmem / grpcio / protobuf
+  # are supplied by the `langchain/langgraph-api` base image (the Dockerfile pins that
+  # image BY DIGEST — that digest IS the effective langgraph-api lock, currently
+  # 0.14.2), NOT pinned here. Do NOT re-add langgraph-api as a dependency below:
+  # listing it forces `uv pip install -c /api/constraints.txt -e .` to re-resolve it
+  # against the base constraints, which is unsatisfiable (langgraph-api's grpcio
+  # requirement vs the base image's grpcio pin) and breaks the ACR build. Lock the
+  # minor via the base-image digest, not here. (This resolves fine locally only
+  # because there is no /api/constraints.txt outside the image.)
+  #
+  # Pin <0.137: FastAPI 0.137 made include_router() insert a lazy `_IncludedRouter`
+  # (a BaseRoute with no `.app`). langgraph_api's apply_middleware() walks app.routes
+  # and wraps route.app, so with enable_custom_route_auth it raises "route ... has no
+  # app". Still unfixed as of the pinned langgraph-api 0.14.2 (verified against
+  # /api/langgraph_api/server.pyc in the image) — KEEP this cap; re-check on each bump.
+  "fastapi==0.136.3",
+  "uvicorn[standard]==0.52.1",
+  "pydantic-settings==2.15.0",
+  "python-dotenv==1.2.2",
+  "langchain==1.4.2",
+  "langchain-core==1.6.4",
+  "langchain-openai==1.4.3",
+  "langgraph==1.2.11",
+  # deepagents 0.6.10 was pinned in #37 after the 2026-08-02 TodoListMiddleware
+  # startup crash-loop (an exclusion for a middleware absent from the newer stack).
+  # That root cause is already removed from agent.py (_EXCLUDED_MIDDLEWARE no longer
+  # lists TodoListMiddleware), and 0.7.5 was boot- + full-suite-verified on this
+  # code 2026-08-11 (build_agent() compiles with the ServiceNow/ADF subagents;
+  # its harness-profile exclusions still match). 0.7.18 requires langchain>=1.4.2 /
+  # langchain-core>=1.6.4 / langsmith>=0.14.0 — the floors of all three are their
+  # newest releases, so those pins move in lockstep with this one. 0.7.18 was boot-
+  # and full-suite-verified 2026-09-23; it adds a `_summarization_session_id` state
+  # channel and names offloaded history `/conversation_history/session_<uuid>.md`
+  # (was `{thread_id}.md`) — our recall prompt reads the path from the summary
+  # message, so nothing here depends on the file name.
+  "deepagents==0.7.18",
+  # Backs the app's own AsyncPostgresSaver (src/v1/utils/checkpointer.py), used on the
+  # local/CLI path. NOTE: in the deployed container this is NOT what serves
+  # /threads/{id}/state or /history — the platform uses its own compiled checkpointer
+  # from the base image (/storage/langgraph_runtime_postgres/). Bumping this package
+  # alone therefore cannot fix a delta-replay read bug; the base-image digest can.
+  "langgraph-checkpoint-postgres==3.1.2",
+  "psycopg[binary]==3.3.4",
+  "psycopg-pool==3.3.1",
+  "rich==15.0.0",
+  "httpx==0.28.1",
+  "azure-identity==1.25.3",
+  "azure-keyvault-secrets==4.11.0",
+  "azure-search-documents==12.0.0",
+  # Pinned to 9.2.0 deliberately — do NOT bump to 10.x without reading this.
+  # 10.0.0 is a regenerated SDK: its models are typespec MutableMappings that keep
+  # the raw camelCase wire shape, while 9.2.0's are msrest plain objects. Three
+  # places in the ADF tools are written against the 9.2.0 shape and break on 10.x:
+  # _run_filters' RunQueryFilter(values=...) kwarg (10.x renamed it to
+  # values_property), _walk_definition's attribute reads over typed Activity
+  # models (10.x nests them under a camelCase 'typeProperties' mapping), and
+  # _matched_sections' flat as_dict() (10.x nests it all under 'properties').
+  # The ARM api-version is 2018-06-01 in both, so this is purely a client-side
+  # codegen difference. 9.2.0 adds azure-common, which 10.0.0 had dropped.
+  "azure-mgmt-datafactory==9.2.0",
+  # Required by azure-core's aio transport, which backs every async Azure SDK
+  # client we use (azure.mgmt.datafactory.aio in the ADF tools, the async Key
+  # Vault client). Nothing imports it directly, but without it those clients
+  # fail at call time with "No module named 'aiohttp'".
+  "aiohttp==3.14.3",
+  "langsmith==0.14.0",
+  "pydantic==2.13.4",
+  "pyjwt[crypto]==2.13.0",
+  # Cap <8.0: the `langchain/langgraph-api` base image's constraints.txt pins
+  # redis>=6.4.0,<8.0 (its worker uses redis-py 7.x), and the Docker install is
+  # constrained by it — so an 8.x pin makes the ACR build unsatisfiable. Local
+  # uv.lock floats to 8.x because it ignores the base constraints; pin within range.
+  "redis==7.4.1",
+  "tenacity==9.1.4",
+  "langgraph-cli[inmem]==0.4.31",
+  # HTML -> Markdown for the read_url tool. beautifulsoup4 is markdownify's parser
+  # dependency; pinned explicitly since the deploy image installs from pyproject
+  # (not uv.lock), so a floating transitive would drift the build.
+  "markdownify==1.2.3",
+  "beautifulsoup4==4.15.0",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["v1*"]
+
+[tool.ruff]
+line-length = 100
