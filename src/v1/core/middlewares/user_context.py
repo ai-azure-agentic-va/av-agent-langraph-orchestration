@@ -2,8 +2,9 @@
 
 Auth stamps the caller's principal on the run config as ``langgraph_auth_user``
 (see :meth:`v1.utils.auth.AuthenticatedPrincipal.to_langgraph_user`): the name and
-email from the JWT, plus the Entra group memberships (object-ids *and* display
-names when Graph resolution is on). On every model call this middleware appends a
+email from the JWT, plus the app-MAPPED Entra groups only (both object-ids and
+display names of each mapped group; unmapped memberships are dropped at auth
+time — see ``v1.utils.auth._mapped_groups``). On every model call this middleware appends a
 short "signed-in user" block to the system message so the model can address the
 user by name and resolve first-person asks ("my incidents", "which groups am I
 in?"). The subagents carry their own instance (with ``SUBAGENT_GUIDANCE``): a
@@ -16,10 +17,10 @@ Deliberate choices:
   stays a byte-identical prefix across users, so Azure OpenAI prompt caching still
   applies to it. The ADF restriction note (``SubagentAccessMiddleware``, inner of
   this one) still lands last.
-- Only group display names are shown. Object-ids mean nothing to the model and a
-  user can sit in hundreds of groups, so GUID-shaped entries are dropped and the
-  list is capped. Names are joined with "; " because group names can contain
-  commas.
+- Only group display names are shown. Object-ids mean nothing to the model, so
+  GUID-shaped entries are dropped and the list is capped — defense in depth on
+  top of auth already exporting only the app-mapped groups. Names are joined
+  with "; " because group names can contain commas.
 - Every value is flattened to a single line and length-capped. They come from the
   identity provider (or ``x-dev-*`` headers on auth-off stacks), and the block
   frames them as data, so a crafted display name cannot smuggle instructions.

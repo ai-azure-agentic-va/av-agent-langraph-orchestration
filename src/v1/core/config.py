@@ -73,8 +73,9 @@ class Settings(BaseSettings):
         description=(
             "Comma-separated Entra group object-ids or display names for which the "
             "ServiceNow INCIDENT tools are DISABLED, matched the same way as "
-            "TENANT_GROUP_INDEX_MAPPING keys. Once set, a caller whose groups cannot "
-            "be read is refused too. Knowledge articles stay available to everyone. "
+            "TENANT_GROUP_INDEX_MAPPING keys. Once set, a caller with no exported "
+            "groups (unreadable, or in none of the mapped groups) is refused too. "
+            "Knowledge articles stay available to everyone. "
             "Empty (default) leaves incidents enabled for everyone."
         ),
     )
@@ -475,6 +476,32 @@ class Settings(BaseSettings):
     # read the flags below, so the two cannot drift and the model is never told
     # about a capability whose backing resource is unconfigured (which would
     # surface as a delegation that fails at tool-call time).
+
+    @property
+    def mapped_group_keys(self) -> frozenset[str]:
+        """Every Entra group object-id or display name this deployment maps to behavior.
+
+        Union of the group-keyed knobs: ``tenant_group_index_mapping``,
+        ``tenant_group_starter_prompts_mapping``, ``adf_disabled_groups``, and
+        ``servicenow_disabled_groups``. Auth exports ONLY a caller's intersection
+        with this set (both forms of a matched group) into ``langgraph_auth_user``
+        — the platform persists run configs and returns them through its
+        threads/runs read APIs, so the caller's full AD inventory must never ride
+        along (see ``v1.utils.auth._mapped_groups``).
+
+        Every setting that gates on groups MUST be listed here. A deny list left
+        out would have its groups stripped before the gate reads them, so a
+        caller who also sits in any other mapped group would slip past it.
+        """
+
+        return frozenset(
+            (
+                *self.tenant_group_index_mapping,
+                *self.tenant_group_starter_prompts_mapping,
+                *self.adf_disabled_groups,
+                *self.servicenow_disabled_groups,
+            )
+        )
 
     @property
     def adf_enabled(self) -> bool:

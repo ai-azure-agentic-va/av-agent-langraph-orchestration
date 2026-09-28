@@ -2,7 +2,10 @@
 
 Covers signature verification (RS256/ES256 accept; alg=none / disallowed-alg /
 wrong-kid / tampered-payload / wrong-key reject), claim validation
-(exp/nbf/iss/aud/tid), the non-dev environment hard-guards, and the JWKS cache.
+(exp/nbf/iss/aud/tid), the non-dev environment hard-guards, the JWKS cache, and
+the mapped-groups-only export (only groups keyed in the TENANT_GROUP_* /
+ADF_DISABLED_GROUPS / SERVICENOW_DISABLED_GROUPS settings reach the langgraph
+user).
 
 Keys are generated in-process with ``cryptography``; tokens and JWKs are built
 with ``PyJWT``. No network is touched (the one JWKS-URL test stubs ``urlopen``).
@@ -97,6 +100,30 @@ def _env(**overrides):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+@contextlib.contextmanager
+def _group_mappings(index="{}", prompts="{}", adf="", snow=""):
+    """Pin the group-keyed settings that gate the group export, hermetically.
+
+    Auth exports only groups present in ``Settings.mapped_group_keys``, so tests
+    must control that set explicitly (real env vars beat any developer ``.env``
+    file) and clear the cached Settings so the override is actually read.
+    """
+
+    from v1.core.config import get_settings
+
+    with _env(
+        TENANT_GROUP_INDEX_MAPPING=index,
+        TENANT_GROUP_STARTER_PROMPTS_MAPPING=prompts,
+        ADF_DISABLED_GROUPS=adf,
+        SERVICENOW_DISABLED_GROUPS=snow,
+    ):
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            get_settings.cache_clear()
 
 
 def _decode(token: str):
@@ -471,7 +498,10 @@ def test_authenticate_end_to_end_rs256() -> None:
         "groups": ["g-1"],
     }
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"):
+    with (
+        _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"),
+        _group_mappings(index='{"g-1": "search-index"}'),
+    ):
         principal = auth.authenticate_authorization("Bearer " + token)
     assert principal.subject == "user-oid"
     assert principal.auth_mode == "jwt"
@@ -520,8 +550,8 @@ def test_authenticate_rejects_expired_token() -> None:
         )
 
 
-def test_authenticate_merges_token_groups_with_graph() -> None:
-    """Token GUID groups are supplemented with Graph ids + display names."""
+def test_authenticate_exports_only_mapped_groups_in_both_forms() -> None:
+    """Only app-mapped groups are exported; a Graph pair match keeps id AND name."""
     import v1.utils.auth as auth_module
     from v1.utils.graph_groups import GraphGroup
 
@@ -540,13 +570,129 @@ def test_authenticate_merges_token_groups_with_graph() -> None:
     try:
         auth_module.resolve_groups_via_graph = lambda oid, **kw: (
             GraphGroup(id="guid-1", display_name="APPL-DEVELOPERS"),
-            GraphGroup(id="guid-2", display_name=None),
+            GraphGroup(id="guid-2", display_name="UNRELATED-TEAM"),
         )
-        with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="true"):
+        with (
+            _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="true"),
+            _group_mappings(index='{"APPL-DEVELOPERS": "dev-index"}'),
+        ):
             principal = auth.authenticate_authorization("Bearer " + token)
     finally:
         auth_module.resolve_groups_via_graph = original
-    assert principal.groups == ("APPL-DEVELOPERS", "guid-1", "guid-2")
+    # The name-keyed mapping keeps BOTH forms of the matched group; the unmapped
+    # guid-2 / UNRELATED-TEAM membership is dropped from the export entirely.
+    assert principal.groups == ("APPL-DEVELOPERS", "guid-1")
+    user_groups = principal.to_langgraph_user()["groups"]
+    assert "guid-2" not in user_groups and "UNRELATED-TEAM" not in user_groups
+
+
+def test_authenticate_guid_keyed_mapping_exports_display_name_too() -> None:
+    """A GUID-keyed mapping still surfaces the display name (user-context needs it)."""
+    import v1.utils.auth as auth_module
+    from v1.utils.graph_groups import GraphGroup
+
+    auth = JwtAuthenticator(_e2e_config())
+    now = int(time.time())
+    claims = {
+        "iss": "https://idp/",
+        "aud": "api://app",
+        "exp": now + 3600,
+        "oid": "user-oid",
+        "scp": "api.read",
+    }
+    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
+    original = auth_module.resolve_groups_via_graph
+    try:
+        auth_module.resolve_groups_via_graph = lambda oid, **kw: (
+            GraphGroup(id="guid-1", display_name="APPL-DEVELOPERS"),
+        )
+        with (
+            _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="true"),
+            _group_mappings(index='{"guid-1": "dev-index"}'),
+        ):
+            principal = auth.authenticate_authorization("Bearer " + token)
+    finally:
+        auth_module.resolve_groups_via_graph = original
+    assert principal.groups == ("APPL-DEVELOPERS", "guid-1")
+
+
+def test_authenticate_exports_no_groups_when_nothing_is_mapped() -> None:
+    """With no group-keyed settings configured, the export is empty (fail closed)."""
+    auth = JwtAuthenticator(_e2e_config())
+    now = int(time.time())
+    claims = {
+        "iss": "https://idp/",
+        "aud": "api://app",
+        "exp": now + 3600,
+        "oid": "user-oid",
+        "scp": "api.read",
+        "groups": ["g-1", "g-2"],
+    }
+    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
+    with (
+        _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"),
+        _group_mappings(),
+    ):
+        principal = auth.authenticate_authorization("Bearer " + token)
+    assert principal.groups == ()
+    assert principal.to_langgraph_user()["groups"] == []
+
+
+def test_authenticate_adf_disabled_group_counts_as_mapped() -> None:
+    """A group listed only in ADF_DISABLED_GROUPS survives the export filter."""
+    auth = JwtAuthenticator(_e2e_config())
+    now = int(time.time())
+    claims = {
+        "iss": "https://idp/",
+        "aud": "api://app",
+        "exp": now + 3600,
+        "oid": "user-oid",
+        "scp": "api.read",
+        "groups": ["ops-team-guid", "other-guid"],
+    }
+    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
+    with (
+        _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"),
+        _group_mappings(adf="ops-team-guid"),
+    ):
+        principal = auth.authenticate_authorization("Bearer " + token)
+    assert principal.groups == ("ops-team-guid",)
+
+
+def test_authenticate_servicenow_disabled_group_survives_so_the_gate_sees_it() -> None:
+    """A SERVICENOW_DISABLED_GROUPS group is exported, so the incident gate refuses.
+
+    Were the deny list missing from the mapped set, a caller who is also in an
+    index-mapped group would export only that group and slip past the gate.
+    """
+
+    import v1.core.tools.servicenow.tools as tools_module
+
+    auth = JwtAuthenticator(_e2e_config())
+    now = int(time.time())
+    claims = {
+        "iss": "https://idp/",
+        "aud": "api://app",
+        "exp": now + 3600,
+        "oid": "user-oid",
+        "scp": "api.read",
+        "groups": ["idx-group", "snow-off-group", "other-guid"],
+    }
+    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
+    with (
+        _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"),
+        _group_mappings(index='{"idx-group": "idx"}', snow="snow-off-group"),
+    ):
+        principal = auth.authenticate_authorization("Bearer " + token)
+        assert principal.groups == ("idx-group", "snow-off-group")
+
+        previous = tools_module.groups_from_config
+        tools_module.groups_from_config = lambda: principal.groups
+        try:
+            refusal = tools_module._incidents_disabled_payload()
+        finally:
+            tools_module.groups_from_config = previous
+    assert refusal is not None and refusal["kind"] == "incidents_disabled"
 
 
 def _profile_principal(**profile_claims):
@@ -594,6 +740,16 @@ def test_dev_principal_reads_profile_headers() -> None:
     )
     assert principal.name == "Dev User"
     assert principal.email == "dev@example.com"
+
+
+def test_dev_principal_filters_groups_to_mapped_keys() -> None:
+    """Dev parity: x-dev-groups goes through the same mapped-groups export filter."""
+    auth = JwtAuthenticator(AuthConfig(mode="dev"))
+    with _group_mappings(index='{"MAPPED-GROUP": "idx"}'):
+        principal = auth.authenticate_authorization(
+            None, {"x-dev-groups": "MAPPED-GROUP,UNMAPPED-GROUP"}
+        )
+    assert principal.groups == ("MAPPED-GROUP",)
 
 
 # -- bearer / decode hardening -------------------------------------------------

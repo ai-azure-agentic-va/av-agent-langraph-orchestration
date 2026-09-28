@@ -601,9 +601,11 @@ def _incidents_disabled_payload() -> dict[str, Any] | None:
 
     Checked first in every incident tool, the only doors to the incident corpus.
     Knowledge articles are deliberately not covered. Groups match like
-    ADF_DISABLED_GROUPS keys. Unlike that gate, once the list is set a run whose
-    groups cannot be read is refused too: ServiceNow sees our one service account,
-    never the person, so an unknown caller must not fall through to incidents.
+    ADF_DISABLED_GROUPS keys. Unlike that gate, once the list is set a run with no
+    groups is refused too — auth exports only mapped groups, so that is a caller
+    whose groups cannot be read or who is in none of them: ServiceNow sees our one
+    service account, never the person, so an unknown caller must not fall through
+    to incidents.
     """
 
     disabled = get_settings().servicenow_disabled_groups

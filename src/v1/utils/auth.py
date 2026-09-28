@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - validated at runtime when signatures are
 
 from v1.utils.langsmith import public_auth_metadata
 from v1.utils.azure_key_vault import resolve_env_secret
-from v1.utils.graph_groups import graph_groups_enabled, resolve_groups_via_graph
+from v1.utils.graph_groups import GraphGroup, graph_groups_enabled, resolve_groups_via_graph
 from v1.utils.helper import hash_identifier, token_fingerprint, truthy
 
 try:  # pragma: no cover - exercised whenever langgraph_sdk is installed.
@@ -95,6 +95,8 @@ class AuthConfig:
     # Only ever read on the dev-mode auth path (AGENT_AUTH_MODE in dev/mock/local),
     # so it has no effect in a jwt-auth deploy. Lets local devs pin their group
     # (e.g. EXAMPLE-GROUP-EXT for external users) from .env instead of per-request headers.
+    # Filtered like the jwt path: only app-mapped groups are exported (see
+    # ``_mapped_groups``), so a dev group must be a mapping key to survive.
     dev_groups: tuple[str, ...] = ()
 
     @classmethod
@@ -177,6 +179,8 @@ class AuthenticatedPrincipal:
     audience: str | None = field(default=None, repr=False)
     tenant: str | None = field(default=None, repr=False)
     scopes: tuple[str, ...] = ()
+    # Only the app-MAPPED groups when built by the auth paths (see _mapped_groups):
+    # the full AD inventory never reaches ``to_langgraph_user`` / run configs.
     groups: tuple[str, ...] = ()
     permissions: tuple[str, ...] = ()
     claims: Mapping[str, Any] = field(default_factory=dict, repr=False)
@@ -257,18 +261,16 @@ class JwtAuthenticator:
             raise AuthValidationError("JWT missing subject claim")
 
         scopes = _claim_scopes(claims)
-        groups = _claim_groups(claims)
+        token_groups = _claim_groups(claims)
         groups_source = "token"
-        group_names: tuple[str, ...] = ()
-        group_pairs: list[dict[str, str | None]] = []
-        # Always supplement token groups with Microsoft Graph when enabled: Entra
-        # emits groups as GUIDs only, while TENANT_GROUP_* mappings may be keyed
-        # by display names (e.g. "APPL-DEVELOPERS"). Graph returns both
-        # object-ids and display names; we fold token GUIDs, Graph ids, and names
-        # into `groups` so mappings match on either form. Graph results are cached
-        # per OID, so the extra round-trip is paid at most once per cache window.
-        # Best-effort: a Graph failure leaves token groups as-is and never fails
-        # authentication.
+        graph_groups: tuple[GraphGroup, ...] = ()
+        # Supplement token groups with Microsoft Graph when enabled: Entra emits
+        # groups as GUIDs only, while TENANT_GROUP_* mappings may be keyed by
+        # display names (e.g. "APPL-DEVELOPERS"). Graph returns both object-ids
+        # and display names, so a mapping key matches on either form. Graph
+        # results are cached per OID, so the extra round-trip is paid at most
+        # once per cache window. Best-effort: a Graph failure leaves token
+        # groups as-is and never fails authentication.
         if graph_groups_enabled():
             oid = _claim_str(claims, "oid")
             if oid:
@@ -278,16 +280,21 @@ class JwtAuthenticator:
                 # /users/{oid} path otherwise.
                 graph_groups = resolve_groups_via_graph(oid, user_assertion=token)
                 if graph_groups:
-                    group_names = tuple(g.display_name for g in graph_groups if g.display_name)
-                    group_pairs = [
-                        {"id": g.id, "displayName": g.display_name} for g in graph_groups
-                    ]
-                    groups_source = "graph" if not groups else "token+graph"
-                    groups = tuple(
-                        sorted(set(groups) | {g.id for g in graph_groups} | set(group_names))
-                    )
-        # Diagnostic (DEBUG only): where group memberships came from plus the
-        # id<->displayName pairs — handy for configuring TENANT_GROUP_INDEX_MAPPING.
+                    groups_source = "graph" if not token_groups else "token+graph"
+        # Data minimization: export ONLY the app-mapped groups. The principal
+        # built below is stamped into every run config as ``langgraph_auth_user``,
+        # which the platform persists and returns through its threads/runs read
+        # APIs — so the caller's full AD inventory (transitiveMemberOf can be
+        # hundreds of groups) must not ride along to the UI. Routing and gating
+        # only ever intersect groups with the mapping keys, so unmapped groups
+        # carry no signal anyway. A mapped group is kept in BOTH forms (object-id
+        # and display name) when Graph resolved the pair — GUID-keyed mappings
+        # still match, and the user-context block (which drops GUIDs) still has
+        # a name to show.
+        groups = _mapped_groups(token_groups, graph_groups)
+        # Diagnostic (DEBUG only): the PRE-filter candidates (token groups plus
+        # the Graph id<->displayName pairs — handy for configuring
+        # TENANT_GROUP_INDEX_MAPPING) and the filtered set actually exported.
         # `overage` (`_claim_names`/`_claim_sources` present, no `groups`) means
         # Entra omitted the inline list and Graph is the only way to read it.
         if logger.isEnabledFor(logging.DEBUG):
@@ -298,10 +305,11 @@ class JwtAuthenticator:
                         "fingerprint": token_fingerprint(token),
                         "groups_claim_present": "groups" in claims,
                         "groups_source": groups_source,
-                        "group_count": len(groups),
-                        "groups": list(groups),
-                        "group_names": list(group_names),
-                        "group_pairs": group_pairs,
+                        "token_groups": list(token_groups),
+                        "group_pairs": [
+                            {"id": g.id, "displayName": g.display_name} for g in graph_groups
+                        ],
+                        "exported_groups": list(groups),
                         "scopes": list(scopes),
                         "overage": "_claim_names" in claims or "_claim_sources" in claims,
                     },
@@ -343,7 +351,11 @@ class JwtAuthenticator:
         subject = _header_value(headers or {}, "x-dev-subject") or self.config.dev_subject
         tenant = _header_value(headers or {}, "x-dev-tenant") or self.config.dev_tenant
         scopes = _csv(_header_value(headers or {}, "x-dev-scopes")) or self.config.dev_scopes
-        groups = _csv(_header_value(headers or {}, "x-dev-groups")) or self.config.dev_groups
+        # Same export filter as the jwt path so dev behaves like a deploy: only
+        # app-mapped groups reach ``langgraph_auth_user`` (see _mapped_groups).
+        groups = _mapped_groups(
+            _csv(_header_value(headers or {}, "x-dev-groups")) or self.config.dev_groups
+        )
         return AuthenticatedPrincipal(
             subject=subject,
             auth_mode="dev",
@@ -568,6 +580,57 @@ def _claim_groups(claims: Mapping[str, Any]) -> tuple[str, ...]:
         elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
             groups.update(str(group) for group in value if str(group).strip())
     return tuple(sorted(groups))
+
+
+def _mapped_group_keys() -> frozenset[str]:
+    """Every Entra group object-id or display name this deployment maps to behavior.
+
+    Reads ``Settings.mapped_group_keys`` (the union of TENANT_GROUP_INDEX_MAPPING,
+    TENANT_GROUP_STARTER_PROMPTS_MAPPING, ADF_DISABLED_GROUPS, and
+    SERVICENOW_DISABLED_GROUPS keys) via a lazy
+    import so ``v1.core`` never becomes an import-time dependency of this module.
+    Best-effort: an unreadable Settings (e.g. malformed mapping JSON) yields an
+    empty set — no groups are exported — rather than failing authentication.
+    """
+
+    try:
+        from v1.core.config import get_settings
+
+        return get_settings().mapped_group_keys
+    except Exception:  # noqa: BLE001 - group export must never break auth
+        logger.warning("Mapped-group keys unavailable; exporting no groups", exc_info=True)
+        return frozenset()
+
+
+def _mapped_groups(
+    claim_groups: Sequence[str],
+    graph_groups: Sequence[GraphGroup] = (),
+) -> tuple[str, ...]:
+    """Filter a caller's groups down to the app-MAPPED ones, in both known forms.
+
+    ``langgraph_auth_user`` (and with it every run config, the platform's
+    threads/runs read APIs, and the chat UI) must not carry the caller's full AD
+    inventory. A group is kept only when the deployment maps it to behavior —
+    i.e. it is in :func:`_mapped_group_keys`. A Graph-resolved group that matches
+    on either its object-id or its display name keeps BOTH forms, so GUID-keyed
+    mappings still match downstream (``resolve_for_groups``) and the
+    user-context block (which drops GUIDs) still has a name to show. Token-only
+    entries (no Graph pair) are kept solely when they are mapping keys
+    themselves.
+    """
+
+    mapped = _mapped_group_keys()
+    if not mapped:
+        return ()
+    keep = {group for group in claim_groups if group in mapped}
+    for graph_group in graph_groups:
+        if graph_group.id in mapped or (
+            graph_group.display_name and graph_group.display_name in mapped
+        ):
+            keep.add(graph_group.id)
+            if graph_group.display_name:
+                keep.add(graph_group.display_name)
+    return tuple(sorted(keep))
 
 
 def _claim_email(claims: Mapping[str, Any]) -> str | None:

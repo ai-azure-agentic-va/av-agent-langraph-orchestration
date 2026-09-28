@@ -4,8 +4,10 @@ Map an authenticated caller's Entra groups to a per-group value — a search
 index, a starter-prompt set, etc. — via a ``{group-id-or-name: value}`` mapping.
 
 The caller's groups come from the principal that auth stamps as
-``langgraph_auth_user`` (object-ids *and* display names; see
-``v1.utils.auth`` / ``v1.utils.graph_groups``). Two call sites read it
+``langgraph_auth_user``. Auth exports only the app-MAPPED groups — the caller's
+intersection with the mapping keys, in both object-id and display-name form
+when Graph resolved the pair (see ``v1.utils.auth._mapped_groups``) — so the
+full AD inventory never reaches run configs or the UI. Two call sites read it
 differently, so this module exposes both extractors plus the shared first-match
 resolver:
 
