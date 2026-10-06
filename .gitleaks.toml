@@ -1,0 +1,17 @@
+# Secret-scanning config used by CI (.github/workflows/ci.yml).
+# Extends gitleaks' built-in rules and allowlists project-safe values so the
+# scan stays focused on REAL leaked credentials.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated lockfiles and sanctioned public placeholders"
+paths = [
+  '''uv\.lock''',
+]
+regexes = [
+  # Placeholder values that intentionally ship in the sanitized public config.
+  '''example-openai-resource''',
+  '''examplesearch\.search\.windows\.net''',
+  '''EXAMPLE-GROUP''',
+]
