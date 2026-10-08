@@ -522,25 +522,24 @@ def _canonical_status(state_display: str) -> str:
 
 
 def _incident_timestamp(raw: Any) -> str | None:
-    """Render a ServiceNow incident timestamp as a BARE ``YYYY-MM-DD HH:MM:SS``.
+    """Render a ServiceNow timestamp as ``YYYY-MM-DD HH:MM:SS UTC``.
 
-    ServiceNow serves incident timestamps (opened_at, closed_at, resolved_at,
-    sys_updated_on, ...) in UTC. We deliberately emit NO timezone label: the UI
-    converts the value to the viewer's own local zone, so a 'UTC' suffix riding
-    the string is simply WRONG next to a converted clock value — and it survives
-    conversion, because it is literal text inside the model's prose rather than a
-    parsed field. This function is the single place that decides, so any marker a
-    record happens to carry is stripped here rather than in three prompt layers.
-    Filtering/date math reads the raw incident fields, never this display value.
-    Returns ``None`` for an empty/missing timestamp ('Not available' downstream).
+    ServiceNow serves timestamps (opened_at, closed_at, resolved_at,
+    sys_updated_on, ...) in UTC. The web UI shows a time in the viewer's own zone
+    ONLY when it reads exactly ``<date> <time> UTC`` (agent-web-ui
+    ``localize-timestamps.ts``, the same rule since it shipped): a bare value is
+    left as raw UTC. ADF times carry the label and convert; ServiceNow times
+    dropped it in July and stopped converting, so the label is back. This function
+    is the single place that decides, so a record that already carries a marker
+    gets exactly one. Filtering/date math reads the raw incident fields, never
+    this display value. Returns ``None`` for an empty/missing timestamp
+    ('Not available' downstream).
     """
 
     text = _reference_value(raw).strip()
-    if not text:
-        return None
     if text.upper().endswith("UTC"):
         text = text[:-3].strip()
-    return text or None
+    return f"{text} UTC" if text else None
 
 
 def _created_sort_key(incident: Mapping[str, Any]) -> str:
@@ -710,8 +709,8 @@ def _ticket_base(incident: Mapping[str, Any]) -> dict[str, Any]:
         # reference fields whose raw value is a sys_id, which must never leak to the
         # user; an empty display falls through to '' (rendered 'Not available').
         "engineer": resolver or assignee,
-        # Bare date+time, NO zone label — the UI converts to the viewer's local zone,
-        # so a 'UTC' suffix would survive the conversion and mislabel the result.
+        # Labelled '<date> <time> UTC' so the UI shows it in the viewer's own zone
+        # (see _incident_timestamp).
         # opened_at rides the compact row too (it is on every record anyway) so
         # "when was it opened" never renders 'Not available' off a detail=False row.
         # Live QA records can OMIT opened_at while carrying sys_created_on (same
@@ -759,7 +758,7 @@ def _ticket_detail_fields(incident: Mapping[str, Any]) -> dict[str, Any]:
         "caller": _reference_display(incident.get("caller_id")),
         "assigned_to": _reference_display(incident.get("assigned_to")),
         "resolved_by": _reference_display(incident.get("resolved_by")),
-        # Bare date+time, NO zone label (see _incident_timestamp — the UI localizes).
+        # Labelled UTC so the UI localizes it (see _incident_timestamp).
         # (opened_at already rides the compact _ticket_base row.)
         "resolved_at": _incident_timestamp(incident.get("resolved_at")),
         "closed_at": _incident_timestamp(incident.get("closed_at")),

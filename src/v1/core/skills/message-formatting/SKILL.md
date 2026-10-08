@@ -194,11 +194,12 @@ the same way every time.
 
 ### Timestamps
 
-Timestamps come back as a bare date+time (e.g. `2026-05-10 17:00:00`) with NO
-timezone label. That is intentional — the UI converts each one into the viewer's
-own local zone. Reproduce the value exactly: keep the time component, and NEVER
-append a zone marker of any kind (`UTC`, `GMT`, `Z`, `+00:00`, "local time").
-Labelling an already-converted clock value with a zone makes it wrong.
+Timestamps come back as `2026-05-10 17:00:00 UTC`. Reproduce each one in exactly
+that form, ` UTC` right after the time, with no bold, code span or other
+formatting around it: the UI finds that exact form and shows it in the viewer's
+own local zone. Never drop the ` UTC`, never add another zone marker (`GMT`, `Z`,
+`+00:00`, "local time"), and never convert a time yourself. This applies to
+incident and change-request times alike.
 
 ### Narrow questions about ONE incident
 
@@ -215,6 +216,21 @@ however narrowly the question was phrased.
 For "who opened/reported/raised this incident?", use the ticket's `caller` /
 Reported by value. Caller is distinct from Assigned to, Resolved by, and
 Engineer; never substitute one of those fields when caller is available.
+
+## ServiceNow change requests — reproduce verbatim
+
+The subagent hands back ONE finished block, built by the backend in the client's
+change template: a `### Recent <subject> Changes` heading (`### Open <subject>
+Changes` when open ones were asked for), the count line ("Found 8 closed change
+requests related to '<subject>', most recent first by Actual End Date."), then the
+numbered changes, each opening `**Change Number:** [CHG…](<url>) — <title>` with
+indented Assigned To / Assignment Group / Actual End Date / Closure Code / Closure
+Notes lines (an open change shows State and its planned dates instead). A
+CHG-number lookup is one such block with more lines and no heading. Reproduce it
+CHARACTER-FOR-CHARACTER: heading, count line, numbering and indented lines
+included. Add NO sentence of your own above or in place of it, never drop or
+re-level the heading, and keep every `Not available` line: here those are the
+template's fixed fields, not placeholders.
 
 ## ServiceNow KB articles — fixed shell, formattable body
 

@@ -51,6 +51,9 @@ _BUNDLED_KNOWLEDGE_FIXTURE = (
 # The knowledge endpoint's own default page size (the incident endpoint uses 25).
 _DEFAULT_KNOWLEDGE_LIMIT = 100
 
+# Change requests are a third endpoint with their own URL, and their own page size.
+_DEFAULT_CHANGE_REQUEST_LIMIT = 50
+
 # Origin used to build incident deep links when running in mock mode with no
 # SERVICENOW_INSTANCE_URL configured. Lets local/mock testing render links in the
 # correct ``?sys_id=`` format without forcing the user to set an instance URL.
@@ -233,6 +236,7 @@ class ServiceNowConfig:
     mulesoft_client_secret: str | None = None
     mulesoft_snow_instance: str | None = None
     mulesoft_knowledge_api_url: str | None = None
+    mulesoft_change_request_api_url: str | None = None
 
     @classmethod
     def from_env(cls) -> ServiceNowConfig:
@@ -296,6 +300,7 @@ class ServiceNowConfig:
             transport=_normalize_transport(os.getenv("SERVICENOW_TRANSPORT")),
             mulesoft_api_url=os.getenv("MULESOFT_API_URL"),
             mulesoft_knowledge_api_url=os.getenv("MULESOFT_KNOWLEDGE_API_URL"),
+            mulesoft_change_request_api_url=os.getenv("MULESOFT_CHANGE_REQUEST_API_URL"),
             mulesoft_client_id=mulesoft_client_id,
             mulesoft_client_secret=mulesoft_client_secret,
             mulesoft_snow_instance=os.getenv("MULESOFT_SNOW_INSTANCE", default="example-instance"),
@@ -430,6 +435,12 @@ def build_knowledge_url(origin: str, sys_id: str) -> str:
 
     query = quote(f"sys_id={sys_id}", safe="")
     return f"{origin}/kb_knowledge_list.do?sysparm_query={query}&sysparm_view="
+
+
+def build_change_request_url(origin: str, sys_id: str) -> str:
+    """Construct a change-request deep link, the same sys_id form as incidents."""
+
+    return f"{origin}/nav_to.do?uri=change_requests.do?sys_id={sys_id}"
 
 
 def _article_matches(article: Mapping[str, Any], key: str, value: Any) -> bool:
@@ -691,6 +702,23 @@ KNOWLEDGE_FILTERS: dict[str, _FilterSpec] = {
 }
 
 
+# Allow-table for the ``/change_requests`` endpoint, from the team's change-request
+# filter sheet (every filter returned 200 on DEV, 2026-10-05). Only the ones the
+# change tool sends are wired. State codes: -5 New, -4 Assess, -3 Authorize,
+# -2 Scheduled, -1 Implement, 0 Review, 3 Closed, 4 Cancelled.
+CHANGE_REQUEST_FILTERS: dict[str, _FilterSpec] = {
+    "number": _FilterSpec("number", "passthrough"),
+    "state": _FilterSpec("state", "passthrough"),
+    "assignment_group": _FilterSpec("assignment_group", "passthrough"),
+    # A name or employee ID inside the assignee's display value.
+    "assigned_to": _FilterSpec("assigned_to", "contains"),
+    # Title AND description together, like the knowledge keyword.
+    "keyword": _FilterSpec("keyword", "contains"),
+    # The Actual End Date (``work_end``): when the change was implemented.
+    "actual_end_time_after": _FilterSpec("actual_end_time_after", "date"),
+}
+
+
 def _leading_int(value: Any) -> str:
     """Reduce a priority like ``'1 - Critical'`` to its leading integer ``'1'``.
 
@@ -942,6 +970,63 @@ class ServiceNowClient:
             return self._list_knowledge_mock(
                 filters=filters, limit=limit, offset=offset, mode="real", degraded=True
             )
+
+    async def list_change_requests(
+        self,
+        *,
+        filters: Mapping[str, Any] | None = None,
+        limit: int = _DEFAULT_CHANGE_REQUEST_LIMIT,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List change requests (``CHG…``) through the MuleSoft gateway.
+
+        Records come back as the gateway sends them: every field a
+        ``{value, display_value}`` pair, empty fields left out, newest-UPDATED
+        first. Each gains a ``change_url`` deep link. There is no mock fallback:
+        a failure raises rather than posing as "no changes".
+        """
+
+        # ponytail: MuleSoft only, no bundled fixture; the mock server serves change
+        # requests. Add the snow path + a fixture if a deployment ever needs them.
+        api_url = self.config.mulesoft_change_request_api_url
+        if not (self.config.is_real and self.config.is_mulesoft and api_url):
+            raise ServiceNowError(
+                "Change requests need SERVICENOW_MODE=real, SERVICENOW_TRANSPORT=mulesoft "
+                "and MULESOFT_CHANGE_REQUEST_API_URL."
+            )
+        try:
+            payload = await self._fetch_mulesoft(
+                api_url=api_url,
+                filters=filters,
+                limit=limit,
+                offset=offset,
+                filter_table=CHANGE_REQUEST_FILTERS,
+                records_key="change_requests",
+                operation="servicenow.mulesoft_change_requests",
+            )
+        except httpx.HTTPError as exc:
+            raise ServiceNowError("ServiceNow change request call failed") from exc
+
+        body = payload.get("result", payload) if isinstance(payload, Mapping) else None
+        records = body.get("change_requests") if isinstance(body, Mapping) else None
+        if not isinstance(records, list):
+            raise ServiceNowError("ServiceNow change request response had an unexpected shape")
+        origin = self.config.origin or _DEFAULT_MOCK_ORIGIN
+        changes = []
+        for record in records:
+            if not isinstance(record, Mapping):
+                continue
+            change = dict(record)
+            sys_id = _reference_value(change.get("sys_id")).strip()
+            if sys_id:
+                change["change_url"] = build_change_request_url(origin, sys_id)
+            changes.append(change)
+        return {
+            "change_requests": changes,
+            "total_count": _coerce_int(body.get("total_count")),
+            "has_more": body.get("has_more") is True,
+            "next_offset": _coerce_int(body.get("next_offset")),
+        }
 
     async def aclose(self) -> None:
         if self._http_client is not None and not self._http_client_injected:

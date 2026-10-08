@@ -4492,9 +4492,9 @@ def test_orchestrator_relays_the_factory_resource_name_and_the_utc_label() -> No
 
     assert "Repeat that name verbatim" in ADF_ROUTING_BLOCK
     assert "ADF times arrive labelled '... UTC'. Keep the label." in ADF_ROUTING_BLOCK
-    # The ServiceNow block forbids a zone marker outright. Left unqualified, that
-    # reads as a global rule and takes the ADF label down with it.
-    assert "is about SERVICENOW timestamps" in ADF_ROUTING_BLOCK
+    # ServiceNow and ADF times now share one rule (keep the ' UTC' label: the UI
+    # localizes that form), so neither block may forbid the label.
+    assert "Same rule as for\n    ServiceNow times" in ADF_ROUTING_BLOCK
 
 
 def test_both_prompts_carry_the_adf_link_and_the_24_hour_caveat() -> None:

@@ -8,6 +8,7 @@ from v1.core.tools import (
     get_current_datetime,
     servicenow_find_similar_resolutions,
     servicenow_get_ticket_detail,
+    servicenow_list_change_requests,
     servicenow_list_tickets,
     servicenow_search_knowledge,
 )
@@ -23,7 +24,9 @@ SERVICENOW_SUBAGENT = {
         "scope. It also searches ServiceNow's own knowledge articles "
         "(KB…) whenever the task is a PROCEDURE ask — the steps to do something, "
         "how to run or perform it, the process for it, or a KB number — whether "
-        "or not the task text names an article."
+        "or not the task text names an article. And it searches CHANGE REQUESTS "
+        "(CHG…): \"any recent changes related to <app>?\", \"recent change "
+        "requests for <app>\", \"open change requests for <app>\", or a CHG number."
     ),
     "system_prompt": SERVICENOW_SUBAGENT_PROMPT,
     "tools": [
@@ -31,6 +34,7 @@ SERVICENOW_SUBAGENT = {
         servicenow_list_tickets,
         servicenow_find_similar_resolutions,
         servicenow_search_knowledge,
+        servicenow_list_change_requests,
         ai_search_tool,
         get_current_datetime,
         calculator,

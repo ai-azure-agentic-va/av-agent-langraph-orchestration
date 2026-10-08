@@ -1,6 +1,6 @@
 [project]
 name = "deepagent-copilotkit-agui-backend"
-version = "3.0.0"
+version = "3.0.1"
 description = "FastAPI + LangGraph DeepAgent + CopilotKit AG-UI + Postgres checkpointer demo"
 requires-python = ">=3.11"
 dependencies = [
