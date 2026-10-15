@@ -15,6 +15,7 @@ Runs standalone (``python test_adf_tools.py``) or under pytest.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -90,7 +91,16 @@ class _Activity:
 
 @dataclass
 class _Named:
+    """What list_by_factory yields: the name plus the folder/description metadata.
+
+    ``folder`` mirrors the SDK's PipelineFolder (an object with ``.name``, None
+    at the factory root), which is all the tools read from it.
+    """
+
     name: str
+    folder: SimpleNamespace | None = None
+    description: str = ""
+    annotations: list | None = None
 
 
 @dataclass
@@ -112,11 +122,14 @@ class _Definition:
     parameters: dict | None = None
     variables: dict | None = None
     annotations: list | None = None
+    folder: str = ""  # ADF Studio folder path; '' = the factory root
 
     def as_dict(self) -> dict:
         props: dict[str, Any] = {"activities": self.activities}
         if self.description:
             props["description"] = self.description
+        if self.folder:
+            props["folder"] = {"name": self.folder}
         if self.parameters:
             props["parameters"] = self.parameters
         if self.variables:
@@ -217,9 +230,12 @@ class _FakeClient:
         triggers: dict[str, str] | None = None,
         fail_on: str = "",
         created_run_id: str = "rerun-1",
+        folders: dict[str, str] | None = None,
     ) -> None:
         outer = self
         self._pipelines = pipelines or []
+        # Folder per NAME-ONLY pipeline; a _Definition carries its own.
+        self._folders = folders or {}
         self._runs = runs or {}
         self._activities = activities or {}
         self._definitions = definitions or {}
@@ -245,25 +261,43 @@ class _FakeClient:
             def list_by_factory(self, rg: str, factory: str):
                 async def _gen():
                     _maybe_fail("list_by_factory")
-                    for name in outer._pipelines:
-                        yield _Named(name)
+                    # Every pipeline the factory holds — a definition IS a
+                    # pipeline, so it is listed even when the test did not also
+                    # name it in ``pipelines`` — each with its folder metadata.
+                    for name in dict.fromkeys([*outer._pipelines, *outer._definitions]):
+                        definition = outer._definitions.get(name)
+                        folder = outer._folders.get(name) or (
+                            definition.folder if definition else ""
+                        )
+                        yield _Named(
+                            name,
+                            folder=SimpleNamespace(name=folder) if folder else None,
+                            description=definition.description if definition else "",
+                            annotations=definition.annotations if definition else None,
+                        )
 
                 return _gen()
 
             async def get(self, rg: str, factory: str, pipeline_name: str, cls=None):
                 _maybe_fail("pipelines.get")
                 outer.definition_cls.append(cls)
-                try:
-                    definition = outer._definitions[pipeline_name]
-                except KeyError as missing:
+                # Case-insensitive, like ADF: a pipeline name is unique per
+                # factory ignoring case, and GET answers any casing of it.
+                definition = next(
+                    (
+                        d
+                        for key, d in outer._definitions.items()
+                        if key.casefold() == pipeline_name.casefold()
+                    ),
+                    None,
+                )
+                if definition is None:
                     # ResourceNotFoundError, NOT a bare RuntimeError: that is what
                     # the real SDK raises, and the tools branch on it to tell
                     # "missing" apart from "the lookup failed". While this fake
                     # raised RuntimeError, every not-found path fell through to the
                     # generic error handler and went untested.
-                    raise ResourceNotFoundError(
-                        f"pipeline {pipeline_name} not found"
-                    ) from missing
+                    raise ResourceNotFoundError(f"pipeline {pipeline_name} not found")
                 if cls is None:
                     return definition
                 # Mirror the real operation, which ends in
@@ -676,9 +710,10 @@ def test_list_pipelines_fails_open_when_the_activity_check_breaks() -> None:
 
 
 def test_list_pipelines_flags_a_truncated_activity_window() -> None:
-    """If the history was cut short, 'inactive' is a maybe, and must say so."""
-    saved = adf._ANALYTICS_MAX_PAGES
-    adf._ANALYTICS_MAX_PAGES = 1
+    """If the history was cut short and the unseen pipelines could not all be
+    checked one by one, 'inactive' is a maybe, and must say so."""
+    saved = adf._INVENTORY_SWEEP_PAGES, adf._INVENTORY_PROBE_MAX
+    adf._INVENTORY_SWEEP_PAGES, adf._INVENTORY_PROBE_MAX = 1, 0
     page = _Value([_Run("r", "pl_live", "Succeeded", run_start=_ago(1), last_updated=_ago(1))])
     page.continuation_token = "more"
     client = _FakeClient(pipelines=["pl_live", "pl_other"], run_pages=[page])
@@ -687,7 +722,56 @@ def test_list_pipelines_flags_a_truncated_activity_window() -> None:
         result = _run(adf.list_pipelines.ainvoke({}))
         assert "truncated" in result
     finally:
-        adf._ANALYTICS_MAX_PAGES = saved
+        adf._INVENTORY_SWEEP_PAGES, adf._INVENTORY_PROBE_MAX = saved
+        restore()
+
+
+def test_list_pipelines_checks_pipelines_a_truncated_sweep_did_not_reach() -> None:
+    """An every-minute pipeline fills the sweep's page cap within hours; a
+    pipeline that ran days ago must still be found (one page of its own), not
+    hidden as inactive."""
+    busy = [
+        _Run(f"b{i}", "pl_every_minute", "Succeeded", run_start=_ago(hours=i / 60))
+        for i in range(5)
+    ]
+    sweep = _Value(busy, continuation_token="more")
+    older = _Value([_Run("o1", "pl_daily", "Succeeded", run_start=_ago(3))])
+    client = _FakeClient(
+        pipelines=["pl_every_minute", "pl_daily", "pl_dormant"],
+        # Query 1 is the sweep; the per-pipeline checks after it get `older`,
+        # which the tool filters by name, so only pl_daily finds a run there.
+        run_pages=[sweep, older],
+    )
+    saved = adf._INVENTORY_SWEEP_PAGES
+    adf._INVENTORY_SWEEP_PAGES = 1
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(adf.list_pipelines.ainvoke({}))
+        assert "pl_daily" in result.split("Hidden")[0]
+        assert "Hidden: 1 pipeline(s)" in result and "pl_dormant" in result
+        assert "truncated" not in result
+        # The sweep, then one check per pipeline the sweep never saw.
+        assert len(client.run_queries) == 3
+    finally:
+        adf._INVENTORY_SWEEP_PAGES = saved
+        restore()
+
+
+def test_list_pipelines_shows_each_pipelines_folder() -> None:
+    client = _FakeClient(
+        pipelines=["pl_root", "pl_nested"],
+        folders={"pl_nested": "ingestion/surveyco"},
+        runs={
+            "r1": _Run("r1", "pl_root", "Succeeded", run_start=_ago(1)),
+            "r2": _Run("r2", "pl_nested", "Succeeded", run_start=_ago(2)),
+        },
+    )
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(adf.list_pipelines.ainvoke({}))
+        assert "pl_nested [folder: ingestion/surveyco]" in result
+        assert "pl_root [folder" not in result
+    finally:
         restore()
 
 
@@ -1395,7 +1479,7 @@ def test_a_correlated_incident_row_links_the_factory_the_run_ran_in() -> None:
     """
     fin_client = _FakeClient(
         pipelines=["pl_load"],
-        runs={"fin-run": _failed_at("fin-run", "pl_load", _TICKET_AT - timedelta(hours=3))},
+        runs={"fin-run": _failed_at("fin-run", "pl_load", _TICKET_AT - timedelta(minutes=25))},
     )
     risk_client = _FakeClient(
         pipelines=["pl_load"],
@@ -2537,20 +2621,40 @@ def test_discover_keeps_going_when_a_definition_fails() -> None:
         restore()
 
 
-def test_discover_flags_incomplete_pagination() -> None:
+def test_discover_reads_one_page_per_match_and_never_calls_it_incomplete() -> None:
+    """'Did it run in 30 days, and when last' is the first page of a newest-first
+    query. Paging a busy pipeline's whole history only made discovery slow and
+    labelled the answer incomplete when nothing was missing."""
     definitions = {"pl_loansys": _Definition(name="pl_loansys", description="LOANSYS", activities=[])}
     pages = [_Value([_Run("r", "pl_loansys", "Succeeded", run_start=_ago(1))], continuation_token="more")]
-    client = _FakeClient(pipelines=list(definitions), definitions=definitions, run_pages=pages)
+    client = _FakeClient(definitions=definitions, run_pages=pages)
     restore = _patch(_Settings({"fin": _FIN}), client)
-    saved = adf._ANALYTICS_MAX_PAGES
-    adf._ANALYTICS_MAX_PAGES = 1
     try:
         result = _run(
             adf.discover_pipelines_by_source_system.ainvoke({"source_system_name": "LOANSYS"})
         )
-        assert "could not be fully paged" in result
+        assert "1 active candidate pipeline(s)" in result and "runId=r" in result
+        assert "could not be fully paged" not in result
+        assert len(client.run_queries) == 1
     finally:
-        adf._ANALYTICS_MAX_PAGES = saved
+        restore()
+
+
+def test_discover_cites_a_folder_match_as_folder_evidence() -> None:
+    definitions = {
+        "pl-101-00-ex-survey-outbound-export_data": _Definition(
+            activities=[], description="Exports survey results", folder="SurveyCo Outbound"
+        )
+    }
+    runs = {"r": _Run("r", "pl-101-00-ex-survey-outbound-export_data", "Succeeded", run_start=_ago(1))}
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(definitions=definitions, runs=runs))
+    try:
+        result = _run(
+            adf.discover_pipelines_by_source_system.ainvoke({"source_system_name": "surveyco"})
+        )
+        assert "1 active candidate pipeline(s)" in result
+        assert "folder" in result.split("matched: ")[1]
+    finally:
         restore()
 
 
@@ -3978,13 +4082,13 @@ def test_incident_ranks_failed_runs_by_distance_from_the_ticket() -> None:
     """Closest failure first, and the DIRECTION is on every row.
 
     A run that ended eight minutes BEFORE the ticket is a candidate cause; one
-    that started two hours AFTER it cannot be. A bare '8m' reads identically for
-    both, which is how a correlation turns into a wrong conclusion.
+    that failed twelve minutes AFTER it cannot be. A bare '8m' reads identically
+    for both, which is how a correlation turns into a wrong conclusion.
     """
     runs = {
-        "far": _failed_at("far", "pl_load", _TICKET_AT - timedelta(hours=9)),
+        "far": _failed_at("far", "pl_load", _TICKET_AT - timedelta(minutes=27)),
         "near": _failed_at("near", "pl_load", _TICKET_AT - timedelta(minutes=8)),
-        "later": _failed_at("later", "pl_load", _TICKET_AT + timedelta(hours=2)),
+        "later": _failed_at("later", "pl_load", _TICKET_AT + timedelta(minutes=12)),
     }
     client = _FakeClient(pipelines=["pl_load"], runs=runs)
     restore = _patch(_Settings({"fin": _FIN}), client)
@@ -4007,17 +4111,53 @@ def test_incident_window_is_anchored_on_the_ticket_not_on_now() -> None:
     client = _FakeClient(pipelines=["pl_load"], runs={})
     restore = _patch(_Settings({"fin": _FIN}), client)
     try:
-        _correlate(
+        result = _correlate(
             incident_text="pl_load failed",
             opened_at=_TICKET_TIME,
-            hours_before=6,
-            hours_after=1,
+            minutes_before=360,
+            minutes_after=90,
         )
         params = client.run_queries[0]
-        assert params.last_updated_after == _TICKET_AT - timedelta(hours=6)
-        assert params.last_updated_before == _TICKET_AT + timedelta(hours=1)
+        assert params.last_updated_after == _TICKET_AT - timedelta(minutes=360)
+        assert params.last_updated_before == _TICKET_AT + timedelta(minutes=90)
+        assert "(6h before / 1h 30 min after the ticket)" in result
     finally:
         restore()
+
+
+def test_incident_window_defaults_to_30_minutes_either_side_of_the_ticket() -> None:
+    """The incident use case searches +/- 30 minutes around the opened time.
+
+    The old default looked 24 hours back and 4 hours forward, which pulled a
+    day of unrelated failures into an answer about one ticket. A run that
+    failed two hours before the ticket is outside the default window and must
+    not be reported as related to it.
+    """
+    runs = {
+        "inside": _failed_at("inside", "pl_load", _TICKET_AT - timedelta(minutes=20)),
+        "outside": _failed_at("outside", "pl_load", _TICKET_AT - timedelta(hours=2)),
+    }
+    client = _FakeClient(pipelines=["pl_load"], runs=runs)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _correlate(incident_text="pl_load failed", opened_at=_TICKET_TIME)
+        params = client.run_queries[0]
+        assert params.last_updated_after == _TICKET_AT - timedelta(minutes=30)
+        assert params.last_updated_before == _TICKET_AT + timedelta(minutes=30)
+        assert "(30 min before / 30 min after the ticket)" in result
+        assert "runId=inside" in result
+        assert "outside" not in result
+    finally:
+        restore()
+
+
+def test_incident_window_size_is_clamped() -> None:
+    """A garbled size falls back to 30 minutes, never to 'all history', and an
+    oversized one stops at what ADF still keeps."""
+    assert adf._incident_span("half an hour", None) == (30, 30)
+    assert adf._incident_span(0, -5) == (1, 0)
+    cap = adf._INCIDENT_MAX_SPAN_MINUTES
+    assert adf._incident_span(10**9, 10**9) == (cap, cap)
 
 
 def test_incident_refuses_to_invent_the_ticket_timestamp() -> None:
@@ -4086,7 +4226,8 @@ def test_incident_with_no_failures_in_the_window_blames_the_window() -> None:
         result = _correlate(incident_text="pl_load failed", opened_at=_TICKET_TIME)
         assert "failed runs   : NONE" in result
         assert "not in the window searched" in result
-        assert "widen it via hours_before" in result
+        assert "offer a wider window (minutes_before / minutes_after)" in result
+        assert "rather than widening it on your own" in result
     finally:
         restore()
 
@@ -4297,6 +4438,481 @@ def test_incident_accepts_explicit_pipeline_names_and_still_validates_them() -> 
         restore()
 
 
+# --- pipeline name resolution: case, folders, separators, other factories ----
+# The run-query API matches PipelineName case-sensitively and answers a name it
+# cannot match with an empty page, so every one of these used to come back as
+# "No runs" or "DOES NOT EXIST" for a pipeline that is plainly there.
+
+
+def _two_factories(fin: _FakeClient, risk: _FakeClient, default: str | None = "fin"):
+    settings = _Settings({"fin": _FIN, "risk": _RISK}, default=default)
+    return _patch(settings, clients_by_subscription={"sub-1": fin, "sub-2": risk})
+
+
+def _pipeline_filter(query) -> list[str]:
+    return [v for f in query.filters or [] if f.operand == "PipelineName" for v in f.values]
+
+
+def test_runs_for_a_wrongly_cased_name_are_fetched_under_the_real_name() -> None:
+    client = _FakeClient(
+        pipelines=["pl_Load"],
+        runs={"r1": _Run("r1", "pl_Load", "Succeeded", run_start=_ago(1))},
+    )
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "PL_LOAD"}))
+        assert "NOTE: 'PL_LOAD' matched pipeline 'pl_Load' (case-insensitive)" in result
+        assert "runId=r1" in result
+        assert "No runs" not in result and "DOES NOT EXIST" not in result
+        assert [_pipeline_filter(q) for q in client.run_queries] == [["PL_LOAD"], ["pl_Load"]]
+    finally:
+        restore()
+
+
+def test_a_folder_qualified_name_is_queried_as_the_bare_name() -> None:
+    client = _FakeClient(
+        pipelines=["pl_load"],
+        folders={"pl_load": "ingestion/surveyco"},
+        runs={"r1": _Run("r1", "pl_load", "Succeeded", run_start=_ago(1))},
+    )
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(
+            adf.list_pipeline_runs.ainvoke({"pipeline_name": "ingestion/surveyco/pl_load"})
+        )
+        assert "runId=r1" in result
+        assert _pipeline_filter(_sole_query(client)) == ["pl_load"]
+    finally:
+        restore()
+
+
+def test_bare_pipeline_name_strips_paths_files_and_quotes() -> None:
+    assert adf._bare_pipeline_name("ingestion/surveyco/pl-1") == "pl-1"
+    assert adf._bare_pipeline_name(r"a\b\pl-1") == "pl-1"
+    assert adf._bare_pipeline_name("pipeline/pl-1.json") == "pl-1"
+    assert adf._bare_pipeline_name("SurveyCo Outbound > pl-1") == "pl-1"
+    assert adf._bare_pipeline_name(" `pl-1` ") == "pl-1"
+    assert adf._bare_pipeline_name("pl_plain") == "pl_plain"
+
+
+def test_a_pipeline_in_another_factory_is_found_when_no_factory_is_named() -> None:
+    fin = _FakeClient(pipelines=["pl_local"])
+    risk = _FakeClient(
+        pipelines=["pl_remote"],
+        folders={"pl_remote": "ingestion/surveyco"},
+        runs={"rr": _Run("rr", "pl_remote", "Succeeded", run_start=_ago(1))},
+    )
+    restore = _two_factories(fin, risk)
+    try:
+        result = _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl_remote"}))
+        assert "it is in factory 'adf-risk', not 'adf-fin'" in result
+        assert "ADF Studio folder: ingestion/surveyco" in result
+        assert "factory='adf-risk'" in result
+        assert "runId=rr" in result
+    finally:
+        restore()
+
+
+def test_an_explicitly_named_factory_is_never_silently_swapped() -> None:
+    fin = _FakeClient(pipelines=["pl_local"])
+    risk = _FakeClient(
+        pipelines=["pl_remote"],
+        runs={"rr": _Run("rr", "pl_remote", "Succeeded", run_start=_ago(1))},
+    )
+    restore = _two_factories(fin, risk)
+    try:
+        result = _run(
+            adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl_remote", "factory": "fin"})
+        )
+        assert "DOES NOT EXIST in factory 'adf-fin', the factory that was named" in result
+        assert "adf-risk | (root) | pl_remote" in result
+        assert "runId=rr" not in result
+    finally:
+        restore()
+
+
+def test_a_name_retyped_with_other_separators_resolves() -> None:
+    name = "pl-100-01-ex-surveyco-raw_to_int-transform_data"
+    client = _FakeClient(
+        pipelines=[name], runs={"r1": _Run("r1", name, "Succeeded", run_start=_ago(1))}
+    )
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(
+            adf.list_pipeline_runs.ainvoke(
+                {"pipeline_name": "pl_100_01_ex_surveyco_raw_to_int_transform_data"}
+            )
+        )
+        assert f"matched pipeline '{name}' (separator-insensitive)" in result
+        assert "runId=r1" in result
+    finally:
+        restore()
+
+
+def test_a_separator_variant_matching_two_pipelines_asks_which_one() -> None:
+    client = _FakeClient(pipelines=["pl-a_b", "pl_a-b"])
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl a b"}))
+        assert "matches 2 pipelines" in result
+        assert "adf-fin | (root) | pl-a_b" in result and "adf-fin | (root) | pl_a-b" in result
+    finally:
+        restore()
+
+
+def test_a_missing_pipeline_names_its_closest_matches_and_the_published_caveat() -> None:
+    client = _FakeClient(
+        pipelines=["pl-100-00-ex-surveyco-daily-ingest_data", "pl_unrelated"],
+        folders={"pl-100-00-ex-surveyco-daily-ingest_data": "ingestion/surveyco"},
+    )
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(
+            adf.list_pipeline_runs.ainvoke(
+                {"pipeline_name": "pl-100-00-ex-surveyco-daily-ingest"}
+            )
+        )
+        assert "DOES NOT EXIST in factory 'adf-fin'" in result
+        assert (
+            "adf-fin | ingestion/surveyco | pl-100-00-ex-surveyco-daily-ingest_data"
+            in result
+        )
+        assert "pl_unrelated" not in result
+        assert "find_pipelines" in result
+        assert "PUBLISHED" in result
+    finally:
+        restore()
+
+
+def test_a_missing_pipeline_is_reported_against_every_factory_searched() -> None:
+    restore = _two_factories(_FakeClient(pipelines=["pl_a"]), _FakeClient(pipelines=["pl_b"]))
+    try:
+        result = _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl_ghost"}))
+        assert "DOES NOT EXIST in any configured factory (searched 'adf-fin', 'adf-risk')" in result
+        assert "missing, not idle" in result
+    finally:
+        restore()
+
+
+def test_a_factory_that_cannot_be_listed_is_named_as_not_searched() -> None:
+    restore = _two_factories(
+        _FakeClient(pipelines=["pl_a"]), _FakeClient(fail_on="list_by_factory")
+    )
+    try:
+        result = _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl_ghost"}))
+        assert "DOES NOT EXIST in factory 'adf-fin'" in result
+        assert "Could NOT search: 'adf-risk'" in result
+    finally:
+        restore()
+
+
+def test_structure_accepts_a_folder_path_and_names_the_folder() -> None:
+    definitions = {
+        "pl_x": _Definition(
+            activities=[{"name": "Wait1", "type": "Wait"}], folder="ingestion/surveyco"
+        )
+    }
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(definitions=definitions))
+    try:
+        result = _run(
+            adf.get_pipeline_structure.ainvoke({"pipeline_name": "ingestion/surveyco/pl_x"})
+        )
+        assert "Structure of 'pl_x' (factory 'adf-fin', folder 'ingestion/surveyco')" in result
+        assert "Wait1" in result
+    finally:
+        restore()
+
+
+def test_structure_finds_a_pipeline_that_lives_in_another_factory() -> None:
+    risk = _FakeClient(
+        definitions={"pl_remote": _Definition(activities=[{"name": "Copy1", "type": "Copy"}])}
+    )
+    restore = _two_factories(_FakeClient(), risk)
+    try:
+        result = _run(adf.get_pipeline_structure.ainvoke({"pipeline_name": "pl_remote"}))
+        assert "it is in factory 'adf-risk', not 'adf-fin'" in result
+        assert "Structure of 'pl_remote' (factory 'adf-risk')" in result
+    finally:
+        restore()
+
+
+def test_structure_missing_everywhere_still_points_at_the_knowledge_base() -> None:
+    restore = _two_factories(_FakeClient(), _FakeClient())
+    try:
+        result = _run(adf.get_pipeline_structure.ainvoke({"pipeline_name": "pl_nope"}))
+        assert "DOES NOT EXIST in any configured factory" in result
+        assert "definitive answer, not a lookup failure" in result
+        assert "knowledge base may" in result
+        assert "ERROR fetching" not in result
+    finally:
+        restore()
+
+
+def test_estimate_resolves_a_wrongly_cased_name() -> None:
+    client = _FakeClient(
+        pipelines=["pl_X"],
+        runs={"r1": _Run("r1", "pl_X", "Succeeded", run_start=_ago(1), run_end=_ago(1))},
+    )
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(adf.get_pipeline_runtime_estimate.ainvoke({"pipeline_name": "PL_x"}))
+        assert "Runtime estimate for 'pl_X'" in result
+        assert "no runs at all" not in result
+    finally:
+        restore()
+
+
+def test_analysis_runs_against_the_factory_the_pipeline_lives_in() -> None:
+    risk = _FakeClient(
+        pipelines=["pl_remote"],
+        runs={
+            f"r{i}": _Run(f"r{i}", "pl_remote", "Succeeded", run_start=_ago(i + 1))
+            for i in range(3)
+        },
+    )
+    restore = _two_factories(_FakeClient(), risk)
+    try:
+        result = _run(adf.analyze_pipeline_runtime.ainvoke({"pipeline_name": "pl_remote"}))
+        assert "Runtime analysis for 'pl_remote' (factory 'adf-risk')" in result
+        assert "Runs Analysed: 3" in result
+    finally:
+        restore()
+
+
+def test_recovery_finds_a_failed_run_id_in_another_factory() -> None:
+    params = {"d": "1"}
+    risk = _FakeClient(
+        runs={
+            "f": _Run("f", "pl_load", "Failed", run_start=_ago(2), invoked_by=_TRIG, parameters=params),
+            "s": _Run("s", "pl_load", "Succeeded", run_start=_ago(1), invoked_by=_TRIG, parameters=dict(params)),
+        }
+    )
+    restore = _two_factories(_FakeClient(), risk)
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke({"failed_run_id": "f"}))
+        assert "Recovery validation in factory 'adf-risk'" in result
+        assert "Recovery Decision: Recovered" in result
+    finally:
+        restore()
+
+
+def test_recovery_accepts_the_runs_pipeline_retyped_in_another_case() -> None:
+    run = _Run("f", "pl_actual", "Failed", run_start=_ago(1), invoked_by=_TRIG, parameters={"d": "1"})
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs={"f": run}))
+    try:
+        result = _run(
+            adf.validate_pipeline_recovery.ainvoke(
+                {"pipeline_name": "folder/PL-ACTUAL", "failed_run_id": "f"}
+            )
+        )
+        assert "INPUT MISMATCH" not in result
+        assert "Pipeline Name : pl_actual" in result
+    finally:
+        restore()
+
+
+def test_recovery_by_pipeline_name_resolves_the_name_before_giving_up() -> None:
+    params = {"d": "1"}
+    runs = {
+        "f": _Run("f", "pl_Load", "Failed", run_start=_ago(2), invoked_by=_TRIG, parameters=params),
+        "s": _Run("s", "pl_Load", "Succeeded", run_start=_ago(1), invoked_by=_TRIG, parameters=dict(params)),
+    }
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(pipelines=["pl_Load"], runs=runs))
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke({"pipeline_name": "pl_load"}))
+        assert "matched pipeline 'pl_Load'" in result
+        assert "Recovery Decision: Recovered" in result
+    finally:
+        restore()
+
+
+def test_a_factory_named_the_way_people_say_it_resolves() -> None:
+    shared = {
+        "subscription_id": "sub-1",
+        "resource_group": "rg-fin",
+        "factory_name": "fileShare-to-ADF",
+    }
+    for spoken in ("file share", "File Share to ADF", "file_share"):
+        restore = _patch(
+            _Settings({"fin": _FIN, "file-share": shared}, default="fin"),
+            _FakeClient(pipelines=["pl_a"]),
+        )
+        try:
+            result = _run(adf.list_pipelines.ainvoke({"factory": spoken, "include_inactive": True}))
+            assert "fileShare-to-ADF" in result, spoken
+            assert "Unknown" not in result and "not configured" not in result, spoken
+        finally:
+            restore()
+
+
+# --- find_pipelines -------------------------------------------------------------
+
+_SURVEYCO_FIN = {
+    "pl-100-00-ex-surveyco-daily-ingest_data": _Definition(
+        activities=[], description="Daily ingest of survey responses"
+    ),
+    "pl-100-01-ex-surveyco-raw_to_int-transform_data": _Definition(
+        activities=[], folder="ingestion/surveyco"
+    ),
+    "pl-102-00-ex-feedback-daily-ingest_data": _Definition(
+        activities=[],
+        description="Ingests SurveyCo feedback",
+        folder="ingestion/surveyco/feedback/daily",
+    ),
+    "pl-101-00-ex-survey-outbound-export_data": _Definition(
+        activities=[], folder="SurveyCo Outbound"
+    ),
+    "pl-300-00-ex-tagged_data": _Definition(activities=[], annotations=["source:surveyco"]),
+    "pl-999-unrelated": _Definition(activities=[], description="Nothing to see"),
+}
+
+
+def _find(query: str, **kwargs) -> str:
+    return _run(adf.find_pipelines.ainvoke({"query": query, **kwargs}))
+
+
+def test_find_pipelines_matches_names_folders_descriptions_and_annotations() -> None:
+    runs = {
+        "r1": _Run("r1", "pl-100-00-ex-surveyco-daily-ingest_data", "Succeeded", run_start=_ago(1))
+    }
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(definitions=_SURVEYCO_FIN, runs=runs))
+    try:
+        result = _find("surveyco")
+        assert "5 pipeline(s) match 'surveyco'" in result
+        rows = [line for line in result.splitlines() if line.startswith("  - ")]
+        by_name = {row.split(" | ")[2]: row for row in rows}
+        assert set(by_name) == set(_SURVEYCO_FIN) - {"pl-999-unrelated"}
+        assert by_name["pl-101-00-ex-survey-outbound-export_data"].split(" | ")[1] == (
+            "SurveyCo Outbound"
+        )
+        assert " | folder | " in by_name["pl-101-00-ex-survey-outbound-export_data"]
+        assert "description" in by_name["pl-102-00-ex-feedback-daily-ingest_data"]
+        assert " | annotations | " in by_name["pl-300-00-ex-tagged_data"]
+        # Name matches rank above folder/description-only ones.
+        assert rows[0].split(" | ")[2].startswith("pl-100-0")
+        assert "Succeeded" in by_name["pl-100-00-ex-surveyco-daily-ingest_data"]
+        assert "no run in the last 30 days" in by_name["pl-101-00-ex-survey-outbound-export_data"]
+    finally:
+        restore()
+
+
+def test_find_pipelines_needs_every_word_and_ranks_the_name_match_first() -> None:
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(definitions=_SURVEYCO_FIN))
+    try:
+        result = _find("SurveyCo Daily Ingest")
+        rows = [line for line in result.splitlines() if line.startswith("  - ")]
+        assert rows[0].split(" | ")[2] == "pl-100-00-ex-surveyco-daily-ingest_data"
+        assert all("raw_to_int" not in row for row in rows)
+    finally:
+        restore()
+
+
+def test_find_pipelines_searches_a_folder_path() -> None:
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(definitions=_SURVEYCO_FIN))
+    try:
+        result = _find("ingestion/surveyco")
+        names = {line.split(" | ")[2] for line in result.splitlines() if line.startswith("  - ")}
+        assert names == {
+            "pl-100-01-ex-surveyco-raw_to_int-transform_data",
+            "pl-102-00-ex-feedback-daily-ingest_data",
+        }
+    finally:
+        restore()
+
+
+def test_find_pipelines_searches_every_factory_unless_one_is_named() -> None:
+    fin = _FakeClient(definitions={"pl-surveyco-a": _Definition(activities=[])})
+    risk = _FakeClient(definitions={"pl-surveyco-b": _Definition(activities=[], folder="q")})
+    restore = _two_factories(fin, risk)
+    try:
+        everywhere = _find("surveyco")
+        assert "Factories searched: 'adf-fin', 'adf-risk'" in everywhere
+        assert "adf-fin | (root) | pl-surveyco-a" in everywhere
+        assert "adf-risk | q | pl-surveyco-b" in everywhere
+        narrowed = _find("surveyco", factory="risk")
+        assert "pl-surveyco-a" not in narrowed and "pl-surveyco-b" in narrowed
+    finally:
+        restore()
+
+
+def test_find_pipelines_without_a_match_suggests_names_and_the_published_caveat() -> None:
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(definitions=_SURVEYCO_FIN))
+    try:
+        result = _find("surveyko daily ingest")
+        assert "No pipeline matches 'surveyko daily ingest'" in result
+        assert "pl-100-00-ex-surveyco-daily-ingest_data" in result
+        assert "PUBLISHED" in result
+    finally:
+        restore()
+
+
+def test_find_pipelines_names_a_factory_it_could_not_search() -> None:
+    fin = _FakeClient(definitions={"pl-surveyco-a": _Definition(activities=[])})
+    restore = _two_factories(fin, _FakeClient(fail_on="list_by_factory"))
+    try:
+        result = _find("surveyco")
+        assert "pl-surveyco-a" in result
+        assert "Could NOT search: 'adf-risk'" in result
+    finally:
+        restore()
+
+
+def test_find_pipelines_rejects_an_empty_query() -> None:
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient())
+    try:
+        assert "Please provide words to search for" in _find("  ")
+    finally:
+        restore()
+
+
+# --- tool-call logging ----------------------------------------------------------
+
+
+class _Capture(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def test_every_tool_call_is_logged_with_its_arguments_and_outcome() -> None:
+    handler = _Capture()
+    adf.logger.addHandler(handler)
+    saved_level = adf.logger.level
+    adf.logger.setLevel(logging.DEBUG)
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(definitions=_SURVEYCO_FIN))
+    try:
+        result = _find("surveyco")
+        messages = [r.getMessage() for r in handler.records]
+        assert any(
+            m.startswith("ADF tool find_pipelines called: query='surveyco'") for m in messages
+        )
+        done = next(m for m in messages if m.startswith("ADF tool find_pipelines returned in"))
+        assert result.splitlines()[0][:100] in done
+        assert any(m.startswith("ADF tool find_pipelines output:") for m in messages)
+    finally:
+        restore()
+        adf.logger.removeHandler(handler)
+        adf.logger.setLevel(saved_level)
+
+
+def test_incident_text_is_logged_by_size_only() -> None:
+    assert adf._log_args({"incident_text": "Jane Doe jane@x.com", "factory": ""}) == (
+        "incident_text=<19 chars>, factory=''"
+    )
+
+
+def test_logging_leaves_every_tool_schema_and_signature_alone() -> None:
+    import inspect
+
+    for t in adf.ADF_TOOLS:
+        assert hasattr(t.coroutine, "__wrapped__"), t.name
+        assert inspect.signature(t.coroutine) == inspect.signature(t.coroutine.__wrapped__)
+    assert set(adf.find_pipelines.args) == {"query", "factory"}
+
+
 # --- wiring -------------------------------------------------------------------
 
 
@@ -4312,6 +4928,7 @@ def test_subagent_exposes_every_tool_under_the_gated_name() -> None:
     assert {tool.name for tool in ADF_SUBAGENT["tools"]} == {
         "list_factories",
         "list_pipelines",
+        "find_pipelines",
         "list_pipeline_runs",
         "get_pipeline_run_details",
         "get_pipeline_run_tree",
@@ -4547,6 +5164,35 @@ def test_both_prompts_report_a_write_refusal_by_its_outcome_only() -> None:
     reply = "That change can't be made from this assistant."
     assert f"word for word: '{reply}'" in subagent
     assert f"nothing else about it: '{reply}'" in routing
+
+
+def test_routing_follows_intent_and_the_named_source_not_keywords() -> None:
+    """'Search the KB for documentation on pl_x' went straight to adf-agent.
+
+    The ADF block had a 'Data Factory wording wins' tie-breaker: any question that
+    mentioned pipelines, runs or triggers went to adf-agent FIRST, even when the
+    user named the knowledge base. Routing now goes by what the user wants back,
+    and a source the user names decides over every topic rule.
+    """
+    from v1.core.middlewares.subagent_access import ADF_RESTRICTION_NOTE
+    from v1.core.prompts.adf import ADF_SUBAGENT_DESCRIPTION
+    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK, BASE_SYSTEM_PROMPT
+
+    base = " ".join(BASE_SYSTEM_PROMPT.split())
+    routing = " ".join(ADF_ROUTING_BLOCK.split())
+    assert "ROUTE BY INTENT, NEVER BY KEYWORD" in base
+    assert "A SOURCE THE USER NAMES decides, over every topic rule in this prompt" in base
+    assert "never switch to it silently" in base
+    assert "MENTIONING A PIPELINE IS NOT A REASON TO DELEGATE" in routing
+    assert "goes to `ai_search_tool` ONLY, even when it names a pipeline" in routing
+    assert "When the USER sent the question to the knowledge base, do not delegate" in routing
+    assert "wording wins" not in routing
+    assert "is it documented which pipelines exist" not in routing
+    assert "not merely because a question mentions a pipeline" in ADF_SUBAGENT_DESCRIPTION
+    # EXT callers without Data Factory still get written knowledge about pipelines.
+    assert "Mentioning a pipeline does not make a request a Data Factory request" in (
+        ADF_RESTRICTION_NOTE
+    )
 
 
 def test_rule_9_recognises_both_refusals_by_their_tool_text() -> None:

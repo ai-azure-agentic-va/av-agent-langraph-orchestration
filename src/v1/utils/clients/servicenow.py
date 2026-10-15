@@ -14,6 +14,7 @@ tokens are never logged.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -33,6 +34,49 @@ from v1.utils.helper import env_bool, env_float
 from v1.utils.retry import http_retry_async
 
 logger = logging.getLogger(__name__)
+
+def _logged_call(endpoint: str, records_key: str):
+    """Log ONE short line per ServiceNow call: how many records came back out of how
+    many matches, and how long it took — live gateway, mock server or fixtures alike.
+
+    Deliberately NOT logged: the filters, limit and offset (they are in the request the
+    gateway itself records) and the record numbers (a page of 50 would be a wall of
+    text). ``degraded=True`` is the one extra flag, and it is the loud one: the live
+    call failed and the answer came from the bundled fixtures instead.
+    """
+
+    def wrap(method):
+        @functools.wraps(method)
+        async def logged(self, *args, **kwargs):
+            started = time.monotonic()
+            try:
+                result = await method(self, *args, **kwargs)
+            except Exception as exc:
+                logger.warning(
+                    f"servicenow.call_failed {endpoint} error_type={type(exc).__name__} "
+                    f"error={str(exc)[:300]!r} elapsed_ms={int((time.monotonic() - started) * 1000)}",
+                    extra={"event": "servicenow.call_failed", "endpoint": endpoint},
+                )
+                raise
+            records = result.get(records_key) if isinstance(result, Mapping) else None
+            returned = len(records) if isinstance(records, list) else 0
+            degraded = " degraded=True" if result.get("degraded") else ""
+            logger.info(
+                f"servicenow.call {endpoint} returned={returned} "
+                f"total={result.get('total_count')} "
+                f"elapsed_ms={int((time.monotonic() - started) * 1000)}{degraded}",
+                extra={
+                    "event": "servicenow.call",
+                    "endpoint": endpoint,
+                    "returned": returned,
+                    "total_count": result.get("total_count"),
+                },
+            )
+            return result
+
+        return logged
+
+    return wrap
 
 # Placeholder path — every real environment must set the client-specific prefix
 # via SERVICENOW_INCIDENT_LIST_API_PREFIX (mock mode never hits it).
@@ -889,6 +933,7 @@ class ServiceNowClient:
 
     # -- public API ----------------------------------------------------------
 
+    @_logged_call("incidents", "incidents")
     async def list_incidents(
         self,
         *,
@@ -907,6 +952,7 @@ class ServiceNowClient:
             )
         return self._list_incidents_mock(filters=filters, limit=limit, offset=offset)
 
+    @_logged_call("knowledge", "articles")
     async def list_knowledge_articles(
         self,
         *,
@@ -971,6 +1017,7 @@ class ServiceNowClient:
                 filters=filters, limit=limit, offset=offset, mode="real", degraded=True
             )
 
+    @_logged_call("change_requests", "change_requests")
     async def list_change_requests(
         self,
         *,

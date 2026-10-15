@@ -184,8 +184,11 @@ as a card. Render that card verbatim:
 The subagent hands back ONE finished block, built by the backend:
 `## Incident summary` (the incident's one row, sometimes one Summary line), then
 `## Similar closed incidents` with its count line ("Found 3 similar closed
-incidents from the same team (…)." or "No similar closed incidents found …") and
-the numbered matches, each with indented Summary / Cause / Resolution notes lines.
+incidents from the same team (…).", "Found 3 similar closed incidents for <app>
+from the same team (…). Checked incidents 1-23 of 137, newest first." or "No
+similar closed incidents found …") and up to 10 numbered matches, each with indented
+Summary / Cause / Resolution notes lines, sometimes ending with an offer to look for
+more similar incidents.
 Reproduce it CHARACTER-FOR-CHARACTER — headings, count line, numbering and
 indented lines included. Add NO sentence of your own above, inside or in place of
 it; never re-level the headings, never expand the incident into a card, and never

@@ -89,11 +89,16 @@ ADF_RESTRICTION_NOTE = (
     "to Data Factory or to the adf subagent — that capability does not exist "
     "for this request, and you must NEVER call the `task` tool with "
     "subagent_type='adf-agent'.\n"
-    "- For any request about data pipelines, pipeline runs, run failures, or "
-    "Data Factory, reply in one or two sentences that Data Factory pipeline "
-    "lookup is not available for your access, then STOP. Do NOT append the "
-    '"Want to explore further?" section to that reply, and do NOT suggest '
-    "where else to look.\n"
+    "- For a request that needs LIVE Data Factory data or action — which "
+    "pipelines or factories exist, pipeline runs, run failures, trigger states, "
+    "or a change to any of them — reply in one or two sentences that Data "
+    "Factory pipeline lookup is not available for your access, then STOP. Do "
+    'NOT append the "Want to explore further?" section to that reply, and do '
+    "NOT suggest where else to look.\n"
+    "- Mentioning a pipeline does not make a request a Data Factory request: a "
+    "question that wants WRITTEN knowledge about pipelines (a process, policy, "
+    "standard, runbook or documentation), or that the user sends to the "
+    "knowledge base, is answered normally with `ai_search_tool`.\n"
     "- Continue to answer everything else normally with your remaining "
     "capabilities, following all other instructions above."
 )

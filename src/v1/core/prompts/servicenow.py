@@ -169,9 +169,13 @@ this prompt applies to it:
 - STATUS: CLOSED is the default, so OMIT `statuses` unless the user's own words name
   a state. "Open / pending / upcoming changes" → statuses='open'; "all changes" →
   'all'; a named state ("scheduled", "in progress", "cancelled") → that state.
-  Closed results sort by Actual End Date, open ones by Planned Start. There is no
-  paging; to see more, pass a larger `limit`. "Full details for CHG…" is a
-  `change_number` call: that view shows the whole change, plans included.
+  Closed results sort by Actual End Date, open ones by Planned Start. "Full details
+  for CHG…" is a `change_number` call: that view shows the whole change, plans
+  included.
+- PAGING ("show more", "next page", "the rest", "the remaining N"): repeat the
+  ORIGINAL call unchanged (same query, statuses, filters, limit) and pass every CHG
+  number the task text lists as already shown in `already_shown`; the tool continues
+  after them. Never raise `limit` to see more: that repeats the changes shown.
 - OUTPUT: print the result's `rendered_answer` VERBATIM as your ENTIRE response —
   the `### … Changes` heading, the count line, and every numbered change with its
   `**Change Number:**` link and its `- **Label:** value` lines, including any
@@ -661,7 +665,18 @@ USE-CASE PATTERNS (dynamic, not hardcoded flows):
          '<App>: SLA timer not starting for <type> requests' → 'SLA timer'
        Cut too far and other problems match ('Synthetic Transaction Failure' alone also
        takes the app's other synthetic checks); keep the instance and nothing matches.
-  2. failure_family='pipeline_api' (or notebook, pipeline, data_reconciliation,
+     - failure_family='application': the APPLICATION or data source name exactly as the
+       parent writes it, in its shortest form — the name before ':' in its title, or
+       the product's short name ('<App> Report Details (<AC>) Export Issue' →
+       '<App>'). When the title only routes the ticket ('Assign to <some team>'),
+       take the application the DESCRIPTION opens with ('<Long App Name> (<LAN>): …'
+       → '<Long App Name> (<LAN>)'); the tool tries its short and long forms itself.
+       Never the team name, never the symptom.
+  2. TEAM FIRST: when the parent's assignment group is EXAMPLE PROD SUPPORT, it is ALWAYS
+     failure_family='application' — that team's similar incidents are its
+     application's own closed history, and the tool judges the topic itself (the newest
+     50 per answer). No other team uses 'application'; for them:
+     failure_family='pipeline_api' (or notebook, pipeline, data_reconciliation,
      file_delivery, vendor, lag, connectivity) — pick the one evidenced by the parent's
      cause/description; the tool rejects a family that is not evidenced. Those eight are
      data-pipeline failure patterns. ANY other kind of incident (a server or disk alert,
@@ -680,8 +695,13 @@ USE-CASE PATTERNS (dynamic, not hardcoded flows):
   4. The tool exhausts the matching closed history internally in ONE call — never call it
      twice for the same incident, except ONE retry after EACH time it rejects your input,
      doing what its error says — for a rejected family, take one its error names as
-     evidenced. Never follow up with
-     servicenow_list_tickets to "see more"; the returned candidate set is already complete.
+     evidenced. Never follow up with servicenow_list_tickets to "see more".
+     The ONE exception: an answer shows at most 10 similar incidents, and when more
+     remain it says how far it got ("Checked incidents 1-23 of N") and offers to look
+     for more. A follow-up taking that offer ("show more", "yes") is a NEW ask: call
+     the tool once for the same incident with the same failure_family and
+     source_subject, and checked_before = the LAST number of the previous "Checked
+     incidents …" line (here 23) — never the "Found N similar" count.
   5. Print rendered_answer VERBATIM as the entire response — an empty result included
      ("No similar closed incidents found …" stays exactly as given). Add no
      introduction, heading, explanation, summary or recap, never reword its count line,

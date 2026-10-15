@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import os
 import re
 from collections.abc import Callable, Iterable, Mapping
@@ -25,6 +26,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 from pydantic import Field
 
+from v1.core.tools.servicenow import similar_judge
 from v1.utils.clients.servicenow import (
     SUPPORTED_FILTERS,
     ServiceNowClient,
@@ -35,6 +37,7 @@ from v1.utils.clients.servicenow import (
 )
 
 SOURCE = "servicenow"
+logger = logging.getLogger(__name__)
 
 MAX_TICKET_LIMIT = 25
 
@@ -1678,8 +1681,27 @@ _SIMILAR_RESOLUTION_FAMILIES = frozenset(
         # and disk alerts, app or config problems): no failure-pattern gate, so the
         # symptom phrase in source_subject plus the owning team decide the match.
         "general",
+        # The parent's team searches its APPLICATION's history (_APPLICATION_SIMILARITY_
+        # GROUPS): source_subject names the app or data source, and a model call picks
+        # the incidents about the parent's topic.
+        "application",
     }
 )
+
+# Teams whose stakeholders find similar incidents in the closed history of the
+# parent's application or data source, then judge which share its topic; every other
+# team matches the symptom across applications.
+_APPLICATION_SIMILARITY_GROUPS = frozenset({"EXAMPLE PROD SUPPORT"})
+# A ticket raised by the monitoring tool, not a person: '(Monitor Alert) …', '*(AutoTicket) …'.
+_MONITORING_ALERT_RE = re.compile(r"\W*\((?:monitor alert|autoticket)\)", re.IGNORECASE)
+
+
+def _alert_title_key(title: str) -> str:
+    return " ".join(re.findall(r"[a-z]+", title.lower()))
+# Incidents the model judges per call, newest first.
+_SIMILARITY_BATCH = 50
+# Similar incidents shown per answer; the answer offers to look for more.
+_SIMILAR_PAGE = 10
 
 _SIMILAR_PIPELINE_FAMILY_RE = re.compile(
     r"\b(?:azure\s+)?databricks\s+notebook\s+error\s+logging\b"
@@ -1752,7 +1774,7 @@ def matches_similar_resolution_family(incident: Mapping[str, Any], failure_famil
     """Apply a high-precision prefilter before LLM similar-incident classification."""
 
     normalized = normalize_similar_resolution_family(failure_family)
-    if normalized == "general":
+    if normalized in {"general", "application"}:
         return True
     text = _incident_search_text(incident)
     if normalized in {"pipeline", "pipeline_api", "notebook"}:
@@ -2013,6 +2035,211 @@ def _render_similar_resolution_answer(
     return "\n\n".join(parts)
 
 
+def _group_key(name: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", name.lower()))
+
+
+def _names_application(incident: Mapping[str, Any], name: str) -> bool:
+    """Whether the title, description or CI names ``name`` as one run of whole words:
+    'AB' finds 'AB Details' and 'AB14', never 'Cabin' or 'Cabin-based'."""
+
+    ci = _reference_display(incident.get("cmdb_ci")) or _reference_display(
+        incident.get("configuration_item")
+    )
+    view = {
+        "short_description": incident.get("short_description"),
+        "description": f"{_reference_value(incident.get('description'))}\n{ci}",
+    }
+    words = _subject_atom_sets(_incident_search_text(view))[0]
+    return _incident_contains_phrase(view, name) and set(
+        re.findall(r"[a-z0-9]+", name.lower())
+    ) <= words
+
+
+def _check_continue_point(checked_before: int) -> None:
+    if checked_before < 0:
+        raise ServiceNowToolInputError(
+            "checked_before is the LAST number of the previous answer's 'Checked "
+            "incidents 1-N of M' line (0 for a new question), never negative."
+        )
+
+
+def _checked_line(start: int, end: int, total: int) -> str:
+    return f"Checked incidents {start + 1}-{end} of {total}, newest first."
+
+
+def _more_offer(end: int, total: int, what: str) -> str:
+    return f"Want me to look for more similar {what} (from incident {end + 1} of {total})?"
+
+
+def _page_of_matches(picked: list[int], batch_size: int, start: int) -> tuple[list[int], int]:
+    """At most _SIMILAR_PAGE matches, newest first, and how far into the newest-first
+    history this answer got: just past its last match when the batch held more
+    matches than one answer shows (the next answer picks up from there), else the
+    whole batch."""
+
+    order = sorted(picked)
+    shown = order[:_SIMILAR_PAGE]
+    return shown, start + (shown[-1] + 1 if len(order) > _SIMILAR_PAGE else batch_size)
+
+
+def _application_search_names(name: str) -> list[str]:
+    """The names to search an application by, best first; the first that finds
+    anything is used. An app's tickets agree on its SHORT name, not the full one the
+    model copies (siblings of 'AB Report Details (ARD)' say 'AB Reports Details' or 'Ab
+    Report Database'), yet a bracketed short form may be one no ticket uses: 'Ledger
+    Service Portal (LSP)' tickets say 'Ledger', in monitoring alerts glued to the rest.
+
+    1. a short code leading the name — capitals, a digit, or at most three letters —
+       with a version right after it ('XYZ 2.0');
+    2. the short form in brackets ('LSP');
+    3. the whole name ('Acme Function App' is spelled the same on all its tickets);
+    4. its first word ('Ledger'), only if nothing above finds a ticket.
+    ponytail: a three-letter everyday word leading a name ('Web Portal') is cut at 1.
+    """
+
+    plain = " ".join(re.sub(r"\([^)]*\)", " ", name).split())
+    lead = re.match(r"([A-Za-z0-9][\w&.-]*)(?:\s+v?\d[\d.]*\b)?", plain)
+    short = re.search(r"\(\s*([^)]*\w[^)]*?)\s*\)", name)
+    code = lead.group(1) if lead else ""
+    names = []
+    if len(code) >= 2 and (code.isupper() or re.search(r"\d", code) or len(code) <= 3):
+        names.append(lead.group(0))
+    if short:
+        names.append(short.group(1))
+    names.append(plain or name)
+    if lead and len(code) >= 2:
+        names.append(code)
+    return list(dict.fromkeys(names))
+
+
+async def _similar_by_application(
+    client: ServiceNowClient,
+    incident: Mapping[str, Any],
+    number: str,
+    app: str,
+    *,
+    checked_before: int,
+    same_assignment_group: bool,
+    degraded: bool,
+) -> dict[str, Any]:
+    """The 'application' family: the app's closed history, newest first, a batch at a
+    time; the model call keeps the incidents about the parent's topic."""
+
+    group = _reference_display(incident.get("assignment_group")).strip()
+    if set(re.findall(r"[a-z0-9]+", app.lower())) <= set(_group_key(group).split()):
+        raise ServiceNowToolInputError(
+            f"source_subject '{app}' names the team, not an application. Pass the "
+            f"application or data source name {number}'s text names, e.g. the name "
+            "before ':' in its title."
+        )
+    if not _names_application(incident, app):
+        text = " ".join(_LITERAL_ESCAPE_RE.sub(" ", _incident_search_text(incident)).split())
+        raise ServiceNowToolInputError(
+            f"source_subject '{app}' is not named in {number}. Copy the application or "
+            "data source name exactly as its text writes it, in its shortest form (e.g. "
+            f"the name before ':' in its title), from: {text[:1000]}"
+        )
+    scope = {"assignment_group": group} if same_assignment_group and group else {}
+    filters = {**scope, **_status_filters(("resolved", "closed_state"))}
+    team_words = set(_group_key(group).split())
+    names = [
+        name
+        for name in _application_search_names(app)
+        # 'Example' cut from 'EXAMPLE PLATFORM SERVICES' names the team, not an application.
+        if not set(re.findall(r"[a-z0-9]+", name.lower())) <= team_words
+    ] or [app]
+    # The first name that leaves any closed ticket of the team: a name no ticket uses
+    # ('LSP', or the spaced name monitoring alerts glue together) falls through to the
+    # next ('Ledger'). The app name sits in the title of some tickets and only the
+    # description of others: both searches, merged. One URL with both would AND them.
+    mode, pool = None, []
+    for app in names:
+        pages = await asyncio.gather(
+            _exhaust_incidents(client, {"description_contains": app, **filters}),
+            _exhaust_incidents(client, {"short_description_contains": app, **filters}),
+        )
+        seen = {number}
+        for rows, page_mode, page_degraded in pages:
+            mode, degraded = mode or page_mode, degraded or page_degraded
+            for row in rows:
+                key = _reference_value(row.get("number")).upper()
+                # The wire matches any substring ('ab' in 'Cabin'): whole words here.
+                if key in seen or not _names_application(row, app):
+                    continue
+                if scope and _reference_display(row.get("assignment_group")).strip().lower() != group.lower():
+                    continue
+                seen.add(key)
+                pool.append(row)
+        if pool:
+            break
+    else:
+        app = names[0]
+    # An automated monitoring alert's twins are the SAME alert, which the monitoring
+    # tool titles identically every time.
+    # Judged by topic, a Health Check Failure took the app's Memory and Availability
+    # alerts along; by title it is exact, and needs no model call.
+    # ponytail: titles compared without digits/punctuation; an alert whose title
+    # carries a varying host or name would need that part stripped too.
+    title = _reference_value(incident.get("short_description"))
+    alert = _alert_title_key(title) if _MONITORING_ALERT_RE.match(title) else None
+    if alert:
+        pool = [
+            row for row in pool
+            if _alert_title_key(_reference_value(row.get("short_description"))) == alert
+        ]
+    pool.sort(key=_created_sort_key, reverse=True)
+    start = max(checked_before, 0)
+    batch = [
+        normalize_ticket_detail(row, mode=mode)["ticket"]
+        for row in pool[start : start + _SIMILARITY_BATCH]
+    ]
+    picked = (
+        list(range(len(batch)))
+        if alert
+        else await similar_judge.pick_similar(
+            normalize_ticket_detail(incident)["ticket"], batch, same_topic=True
+        )
+    )
+    # No keyword list to fall back on: the whole app's history is no answer.
+    if picked is None:
+        raise ServiceNowError("The similar-incident check did not finish. Please ask again.")
+    shown, end = _page_of_matches(picked, len(batch), start)
+
+    team = f"from the same team ({group})" if scope else "across all teams"
+    if not pool:
+        why = "is this same alert" if alert else f"names {app}"
+        header = f"No similar closed incidents found {team}: no other closed incident {why}."
+    elif not batch:
+        header = f"All {len(pool)} closed {app} incidents {team} have already been checked."
+    else:
+        found = (
+            f"Found {len(shown)} similar closed {'incident' if len(shown) == 1 else 'incidents'}"
+            if shown
+            else "No similar closed incidents found"
+        )
+        header = f"{found} for {app} {team}. {_checked_line(start, end, len(pool))}"
+    answer = _render_similar_resolution_answer(
+        normalize_ticket_detail(incident)["ticket"],
+        header,
+        (_similar_resolution_candidate_block(batch[index]) for index in shown),
+    )
+    if batch and end < len(pool):
+        answer += "\n\n" + _more_offer(end, len(pool), f"{app} incidents")
+    logger.info(
+        f"servicenow.similar parent={number} family=application app={app!r} "
+        f"candidates={len(pool)} checked={f'{start + 1}-{end}' if end > start else 'none'} "
+        f"matched={len(picked)} shown={len(shown)}"
+    )
+    return {
+        "ok": True,
+        "source": SOURCE,
+        "kind": "similar_resolution_search",
+        "rendered_answer": answer,
+        "degraded": degraded,
+    }
+
+
 @tool
 async def servicenow_get_ticket_detail(
     ticket_number: Annotated[
@@ -2083,18 +2310,28 @@ def _retry_group_spelling(list_tickets: Callable[..., Any]) -> Callable[..., Any
             or _SYS_ID_RE.fullmatch(group)
         ):
             return result
-        spellings = _group_spellings(group)
         try:
             client = await get_servicenow_client()
-            probes = await asyncio.gather(
-                *(
-                    client.list_incidents(filters={"assignment_group": s}, limit=1, offset=0)
-                    for s in spellings
-                )
-            )
-        except (ServiceNowError, ServiceNowConfigurationError):
+        except ServiceNowConfigurationError:
             return result
-        hit = next(((s, probe) for s, probe in zip(spellings, probes) if probe.get("incidents")), None)
+        # One spelling at a time, the TYPED one first: a real team name stops here, so
+        # no hyphenated variant ever goes out for it ('Example - Prod Support' did, for a
+        # search that was simply empty). The live API REJECTS an unknown group (400
+        # "invalid filter") where the mock returns nothing, so a rejected variant is
+        # just not the name; trouble on the typed name itself keeps the answer as is.
+        hit = None
+        for spelling in _group_spellings(group):
+            try:
+                probe = await client.list_incidents(
+                    filters={"assignment_group": spelling}, limit=1, offset=0
+                )
+            except ServiceNowError:
+                if spelling == group:
+                    return result
+                continue
+            if probe.get("incidents"):
+                hit = (spelling, probe)
+                break
         if hit is None:
             return {
                 **result,
@@ -2860,6 +3097,9 @@ async def servicenow_find_similar_resolutions(
                 "queue, dataset, job, package, request type, report or host that was hit, "
                 "then pass the shortest run left that names the problem: the step or part "
                 "that broke without its verb (other tickets word the verb their own way). "
+                "For failure_family='application': the APPLICATION or data source name "
+                "as the parent writes it, in its shortest form (e.g. the name before ':' "
+                "in its title) — never the team name or the symptom. "
                 "Placeholders are rejected, and the value must actually occur in the "
                 "parent ticket text."
             )
@@ -2873,7 +3113,10 @@ async def servicenow_find_similar_resolutions(
                 "notebook, data_reconciliation, file_delivery, vendor, lag, "
                 "connectivity — or 'general' for any other kind of incident (server "
                 "or disk alerts, app or config problems), which matches the symptom "
-                "phrase in source_subject instead of a failure pattern."
+                "phrase in source_subject instead of a failure pattern. A parent whose "
+                "assignment group searches by application "
+                f"({', '.join(sorted(_APPLICATION_SIMILARITY_GROUPS))}) is ALWAYS "
+                "'application', and no other parent is."
             )
         ),
     ],
@@ -2892,6 +3135,17 @@ async def servicenow_find_similar_resolutions(
             )
         ),
     ] = True,
+    checked_before: Annotated[
+        int,
+        Field(
+            description=(
+                "Where to continue. 0 for a new question. For 'show more' / 'yes' after "
+                "an answer that offered to look for more: the LAST number of the "
+                "previous answer's 'Checked incidents 1-23 of N' line (here 23) — never "
+                "the 'Found N similar' count."
+            )
+        ),
+    ] = 0,
 ) -> dict[str, Any]:
     """Summarize a parent incident and find its similar historical resolutions.
 
@@ -2903,17 +3157,53 @@ async def servicenow_find_similar_resolutions(
     parent, forces Resolved/Closed history (Cancelled is never surfaced),
     exhausts the matching closed history internally, and applies deterministic source/
     family filtering — so a genuine match buried past the first broad page is never
-    missed and the returned candidate set is always complete."""
+    missed and the returned candidate set is always complete. A model call then keeps
+    the matches that are really similar (up to 50 judged per call, newest first), and
+    an answer shows at most 10 of them; when more remain, it offers to look for more —
+    a NEW call with checked_before."""
 
     try:
         normalized_number = validate_ticket_number(ticket_number)
         subject = validate_content_filter("source_subject", source_subject)
         family = normalize_similar_resolution_family(failure_family)
+        _check_continue_point(checked_before)
 
         client = await get_servicenow_client()
         incident, envelope = await _fetch_incident(client, normalized_number)
         if incident is None:
             return _not_found_payload(normalized_number, degraded=bool(envelope.get("degraded")))
+
+        # The parent's TEAM decides between the application history and the symptom
+        # match, not the model.
+        parent_group = _reference_display(incident.get("assignment_group")).strip()
+        by_application = _group_key(parent_group) in {
+            _group_key(group) for group in _APPLICATION_SIMILARITY_GROUPS
+        }
+        if by_application and family != "application":
+            raise ServiceNowToolInputError(
+                f"{normalized_number} belongs to {parent_group}, whose similar incidents "
+                "are found by application: retry once with failure_family='application' "
+                "and source_subject = the application or data source name as its text "
+                "writes it, in its shortest form (e.g. the name before ':' in its title)."
+            )
+        if family == "application" and not by_application:
+            raise ServiceNowToolInputError(
+                f"failure_family 'application' is only for teams whose similar incidents "
+                f"are found by application; {normalized_number}'s team "
+                f"({parent_group or 'none'}) matches the symptom. Retry once with "
+                "'general' (or the data-pipeline family that fits) and the words that say "
+                "what went wrong."
+            )
+        if by_application:
+            return await _similar_by_application(
+                client,
+                incident,
+                normalized_number,
+                subject,
+                checked_before=checked_before,
+                same_assignment_group=same_assignment_group,
+                degraded=bool(envelope.get("degraded")),
+            )
 
         # A 'general' symptom phrase is matched as one run (see the candidate filter),
         # so words picked apart from the parent would find nothing live.
@@ -2933,8 +3223,13 @@ async def servicenow_find_similar_resolutions(
             # Name the families that DO fit: told only "not evidenced", the model guessed
             # through them, one rejected call and parent fetch per guess. It also swapped
             # an evidenced source for a phrase ('daily feed') on the retry and matched none.
+            # 'application' is the team's to decide, never the parent text's.
             evidenced = sorted(
-                (f for f in _SIMILAR_RESOLUTION_FAMILIES if matches_similar_resolution_family(incident, f)),
+                (
+                    f
+                    for f in _SIMILAR_RESOLUTION_FAMILIES - {"application"}
+                    if matches_similar_resolution_family(incident, f)
+                ),
                 key=lambda f: (f == "general", f),
             )
             raise ServiceNowToolInputError(
@@ -3004,7 +3299,6 @@ async def servicenow_find_similar_resolutions(
         # so a generic symptom does not exhaust every team's history only to discard it
         # here — and a targeted query that only other teams match now falls back to
         # the broad same-team search instead of ending empty.
-        parent_group = _reference_display(incident.get("assignment_group")).strip()
         scope_by_group = same_assignment_group and bool(parent_group)
         group_filter = {"assignment_group": parent_group} if scope_by_group else {}
 
@@ -3084,14 +3378,42 @@ async def servicenow_find_similar_resolutions(
                 "Retry once with the words that say what went wrong, leaving out which "
                 f"{thing} it was."
             )
+        # The keyword search matched shared words; the model call keeps the matches
+        # that describe the parent's problem, newest first, a batch at a time.
+        candidates.sort(key=_created_sort_key, reverse=True)
         candidate_tickets = [
             normalize_ticket_detail(row, mode=mode)["ticket"] for row in candidates
         ]
+        parent_ticket = normalize_ticket_detail(incident)["ticket"]
+        start = checked_before
+        batch = candidate_tickets[start : start + _SIMILARITY_BATCH]
+        picked = await similar_judge.pick_similar(parent_ticket, batch, same_topic=False)
+        judged = picked is not None
+        if picked is None:  # failed: the keyword matches, as before the check existed
+            picked = list(range(len(batch)))
+        shown, end = _page_of_matches(picked, len(batch), start)
+        team = parent_group if scope_by_group else ""
+        if candidates and not batch:
+            scope = f"from the same team ({team})" if team else "across all teams"
+            header = f"All {len(candidates)} matching closed incidents {scope} have already been checked."
+        else:
+            header = _similar_resolution_header(len(shown), team)
+            # Only when the answer is one page of several: small answers read as before.
+            if start or end < len(candidates):
+                header += " " + _checked_line(start, end, len(candidates))
         rendered_answer = _render_similar_resolution_answer(
-            normalize_ticket_detail(incident)["ticket"],
-            _similar_resolution_header(len(candidate_tickets), parent_group if scope_by_group else ""),
-            (_similar_resolution_candidate_block(ticket) for ticket in candidate_tickets),
+            parent_ticket,
+            header,
+            (_similar_resolution_candidate_block(batch[index]) for index in shown),
+            # Every match, not just the ones shown: it names the pipeline(s) in history.
             _historical_pipeline_ci_summary(candidate_tickets, family),
+        )
+        if batch and end < len(candidates):
+            rendered_answer += "\n\n" + _more_offer(end, len(candidates), "incidents")
+        logger.info(
+            f"servicenow.similar parent={normalized_number} family={family} "
+            f"candidates={len(candidates)} checked={f'{start + 1}-{end}' if end > start else 'none'} "
+            f"judged={judged} matched={len(picked)} shown={len(shown)}"
         )
         return {
             "ok": True,

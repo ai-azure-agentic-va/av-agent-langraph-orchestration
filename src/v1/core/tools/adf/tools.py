@@ -23,9 +23,13 @@ and the reason is logged (see ``_write_guard``).
 from __future__ import annotations
 
 import asyncio
+import difflib
+import functools
 import logging
 import re
+import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -84,8 +88,42 @@ _DISCOVERY_MAX_ROWS = 25
 _ACTIVE_RUN_DAYS = 30
 _INVENTORY_ACTIVE_DAYS = _ACTIVE_RUN_DAYS
 
-# Hidden pipelines are named while the list stays readable, counted beyond that.
-_INACTIVE_NAMES_MAX = 15
+# Hidden pipelines are named up to this many; past it the rest are counted.
+_INACTIVE_NAMES_MAX = 50
+
+# list_pipelines' factory-wide activity sweep. Newest-first, so these pages are
+# the most recent runs in the window — in a factory with an every-minute trigger
+# that is only the last few hours, and pages beyond it cost ~0.4 s each while
+# mostly re-reading the same noisy trigger. Pipelines the sweep did not reach are
+# then checked one by one (see _latest_runs), which is exact and far cheaper than
+# paging the whole window: 200 pages took 79 s live and STILL came up short.
+_INVENTORY_SWEEP_PAGES = 10
+
+# Per-pipeline "latest run" checks after a truncated sweep. A bound, not a
+# target: past it the remaining pipelines stay unverified and the output says so,
+# rather than spending ADF's monitoring-query quota on one inventory answer.
+_INVENTORY_PROBE_MAX = 200
+
+# Concurrent ADF calls one tool may have in flight (definition reads, latest-run
+# checks). Enough to turn an N-call loop into ~N/8 round trips, low enough to
+# stay well clear of ARM / ADF monitoring throttles.
+_ADF_CONCURRENCY = 8
+
+# find_pipelines rows rendered; the match COUNT in the header stays exact.
+_FIND_MAX_ROWS = 25
+
+# Closest-name suggestions offered when a pipeline name matches nothing.
+_SUGGESTIONS_MAX = 5
+
+# Said wherever the agent reports a pipeline as absent. ADF Studio in git mode
+# shows the BRANCH it is on; the management API this agent reads only sees what
+# has been PUBLISHED to the live factory. A pipeline created on a feature branch
+# is therefore visible to the user and invisible here — which, without this
+# sentence, reads as the agent missing something that is plainly on screen.
+_PUBLISHED_ONLY_NOTE = (
+    "This agent reads the PUBLISHED (live) factory only: a pipeline that exists only "
+    "on a git branch in ADF Studio and has not been published yet is not visible here."
+)
 
 # Statuses ADF reports on a pipeline run. The run-query filter is case-sensitive
 # and matches nothing on an unknown value, so a caller's status is checked
@@ -178,6 +216,31 @@ def _alias_for_resource(mapping: dict, wanted: str) -> str | None:
     return None
 
 
+def _alias_for_loose_name(mapping: dict, wanted: str) -> str | None:
+    """The alias a spoken or retyped factory name means, if exactly one fits.
+
+    Users say "file share" for 'file-share' / 'fileShare-to-ADF', and the
+    model passes that through verbatim. Compared with case and separators
+    removed — first as a whole name, then as a fragment of exactly one alias or
+    resource name. Anything that fits several factories stays unresolved, so the
+    caller still gets the list of real names to pick from.
+    """
+    squashed = _squash(wanted)
+    if not squashed:
+        return None
+    names = {
+        alias: (_squash(alias), _squash((entry or {}).get("factory_name", "")))
+        for alias, entry in mapping.items()
+    }
+    exact = [alias for alias, keys in names.items() if squashed in keys]
+    if len(exact) == 1:
+        return exact[0]
+    if len(squashed) < 4:
+        return None
+    partial = [alias for alias, keys in names.items() if any(squashed in key for key in keys)]
+    return partial[0] if len(partial) == 1 else None
+
+
 def _resolve_factory(factory: str) -> tuple[str, str, str, str]:
     """Resolve an alias to ``(alias, subscription_id, resource_group, factory_name)``."""
     mapping = settings.adf_factory_mapping
@@ -203,6 +266,12 @@ def _resolve_factory(factory: str) -> tuple[str, str, str, str]:
         # comes back here — quoting the tool's own words must not be an error,
         # and a user who only knows the Azure name has nothing else to type.
         resolved = _alias_for_resource(mapping, alias)
+        if resolved is None:
+            resolved = _alias_for_loose_name(mapping, alias)
+            if resolved is not None:
+                logger.info(
+                    "ADF factory '%s' resolved to alias '%s' (loose match)", alias, resolved
+                )
         if resolved is not None:
             alias, entry = resolved, mapping[resolved]
     if entry is None:
@@ -665,13 +734,35 @@ def _runs_params(
     )
 
 
-async def _page_runs(client, rg: str, factory_name: str, params, max_pages: int) -> tuple[list, bool]:
+def _query_text(params) -> str:
+    """A run query's filters and window as one log-friendly line."""
+    filters = " ".join(
+        f"{f.operand}={'|'.join(map(str, f.values or []))!r}"
+        for f in (getattr(params, "filters", None) or [])
+    )
+    after = getattr(params, "last_updated_after", None)
+    before = getattr(params, "last_updated_before", None)
+    window = f"{_fmt_ts(after)} → {_fmt_ts(before)}"
+    return f"{filters or 'all pipelines'} | {window}"
+
+
+async def _page_runs(
+    client, rg: str, factory_name: str, params, max_pages: int, *, quiet: bool = False
+) -> tuple[list, bool]:
     """Page a run query up to ``max_pages``; returns (runs, fully_paged).
 
     ``fully_paged`` is True only when ADF stopped handing back a continuation
     token before the cap — the signal callers use to decide whether a count is a
     total or a lower bound.
+
+    Every query is logged with what it asked for and what came back, because "no
+    runs" is the answer users most often dispute and the one that is hardest to
+    reconstruct afterwards (wrong name casing, wrong factory, too narrow a
+    window). ``quiet`` drops that to DEBUG for the one-page latest-run checks,
+    which run in batches and are summarised by their caller instead; a truncated
+    page there is the design, not a warning.
     """
+    started = time.perf_counter()
     resp = await client.pipeline_runs.query_by_factory(rg, factory_name, filter_parameters=params)
     runs = list(resp.value or [])
     token = getattr(resp, "continuation_token", None)
@@ -684,7 +775,19 @@ async def _page_runs(client, rg: str, factory_name: str, params, max_pages: int)
         runs.extend(resp.value or [])
         token = getattr(resp, "continuation_token", None)
         pages += 1
-    return runs, token is None
+    complete = token is None
+    level = logging.DEBUG if quiet else (logging.INFO if complete else logging.WARNING)
+    logger.log(
+        level,
+        "ADF run query %s [%s]: %d run(s) in %d page(s), %s, %.0f ms",
+        factory_name,
+        _query_text(params),
+        len(runs),
+        pages,
+        "complete" if complete else f"TRUNCATED at the {max_pages}-page cap",
+        (time.perf_counter() - started) * 1000,
+    )
+    return runs, complete
 
 
 async def _query_runs(client, rg: str, factory_name: str, params) -> tuple[list, bool]:
@@ -706,6 +809,440 @@ async def _query_all_runs(client, rg: str, factory_name: str, params) -> tuple[l
     result as incomplete rather than exact.
     """
     return await _page_runs(client, rg, factory_name, params, _ANALYTICS_MAX_PAGES)
+
+
+async def _latest_run(
+    client, rg: str, factory_name: str, pipeline_name: str, after: datetime, before: datetime
+):
+    """The newest run of ONE pipeline in [after, before), or None — one page, always.
+
+    "Did it run, and when last?" never needs the whole history: the query is
+    ordered RunStart DESC, so the first page already holds the newest run. Paging
+    a pipeline's full window just to keep its first row is what made discovery
+    slow on every-minute pipelines and flagged them "incomplete" for no reason.
+    The name check guards against a filter that matched nothing being read as a
+    run of something else.
+    """
+    runs, _ = await _page_runs(
+        client, rg, factory_name, _runs_params(pipeline_name, after, before), 1, quiet=True
+    )
+    runs = [r for r in runs if getattr(r, "pipeline_name", None) == pipeline_name]
+    return _sort_by_start(runs)[0] if runs else None
+
+
+async def _latest_runs(
+    sub: str, rg: str, factory_name: str, names: list[str], after: datetime, before: datetime
+) -> tuple[dict, dict]:
+    """``_latest_run`` for many pipelines of one factory, a bounded few at a time.
+
+    Returns ``(latest, errors)``: name -> newest run (None when it has no run in
+    the window), and name -> error text for the checks that failed. A failed
+    check is NOT reported as "no run" — callers say they could not tell.
+    """
+    started = time.perf_counter()
+    gate = asyncio.Semaphore(_ADF_CONCURRENCY)
+    client = await _client(sub)
+
+    async def _one(name: str):
+        async with gate:
+            try:
+                return name, await _latest_run(client, rg, factory_name, name, after, before), None
+            except Exception as exc:  # noqa: BLE001 - reported per pipeline
+                return name, None, _truncate(exc)
+
+    latest: dict = {}
+    errors: dict = {}
+    for name, run, error in await asyncio.gather(*(_one(n) for n in names)):
+        if error is not None:
+            errors[name] = error
+        else:
+            latest[name] = run
+    logger.info(
+        "ADF latest-run checks %s: %d pipeline(s), %d ran since %s, %d error(s), %.0f ms",
+        factory_name,
+        len(names),
+        sum(1 for run in latest.values() if run is not None),
+        _fmt_ts(after),
+        len(errors),
+        (time.perf_counter() - started) * 1000,
+    )
+    return latest, errors
+
+
+# --- pipeline inventory and name resolution -----------------------------------
+# ADF Studio files pipelines into folders, but a folder is ONLY organisation: the
+# management API addresses a pipeline by its bare name, unique per factory and
+# case-insensitive, with the folder carried as metadata. Pipeline names cannot
+# contain '/', '\\', '.', '>' or ':', so anything a caller writes around a name in
+# those characters is a folder path or a file name, never part of the name.
+#
+# The run-query API, however, matches PipelineName CASE-SENSITIVELY and returns an
+# empty page for any spelling that is not exact — indistinguishable from "this
+# pipeline exists but is idle". Every pipeline-name tool therefore runs its query
+# first and, only when that comes back empty, resolves the name against the real
+# inventory of every configured factory and retries on what it finds.
+
+
+@dataclass(frozen=True)
+class _PipelineInfo:
+    """One published pipeline, as list_by_factory reports it."""
+
+    alias: str
+    name: str
+    folder: str = ""  # '' = the factory root
+    description: str = ""
+    annotations: tuple = ()
+
+
+@dataclass(frozen=True)
+class _PipelineHit:
+    """Where a requested pipeline name actually lives, and how it was matched."""
+
+    alias: str
+    sub: str
+    rg: str
+    factory_name: str
+    name: str
+    folder: str
+    how: str
+
+
+# Separators people and models swap freely inside a pipeline name.
+_SEPARATORS_RE = re.compile(r"[\s_\-./\\>:]+")
+# Characters ADF forbids in a pipeline name, so they can only be path syntax.
+_PATH_SPLIT_RE = re.compile(r"[/\\>]")
+
+
+def _squash(text) -> str:
+    """Casefolded text with every separator removed: 'PL_A-b c' -> 'plabc'."""
+    return _SEPARATORS_RE.sub("", str(text or "")).casefold()
+
+
+def _tokens(text) -> list[str]:
+    """Casefolded words of a query or name, split on every separator."""
+    return [t for t in _SEPARATORS_RE.split(str(text or "").casefold()) if t]
+
+
+def _bare_pipeline_name(raw: str) -> str:
+    """The pipeline name inside whatever the caller wrapped around it.
+
+    'ingestion/surveyco/pl-100-01-…' (an ADF Studio folder path), the git
+    file 'pipeline/pl-x.json', and a quoted or back-ticked name all come back as
+    the bare name ADF knows. A folder-qualified name used to be passed straight
+    to ADF, which can never match it, and came back as "DOES NOT EXIST".
+    """
+    text = (raw or "").strip().strip("`'\"").strip()
+    if _PATH_SPLIT_RE.search(text):
+        segments = [s.strip() for s in _PATH_SPLIT_RE.split(text) if s.strip()]
+        text = segments[-1] if segments else ""
+    if text.casefold().endswith(".json"):
+        text = text[: -len(".json")]
+    if text != (raw or "").strip():
+        logger.info("ADF pipeline name %r normalised to %r", raw, text)
+    return text
+
+
+def _folder_of(pipeline) -> str:
+    """A pipeline's ADF Studio folder path ('' at the root), model or wire dict.
+
+    The raw ARM JSON (_keep_wire) nests it under 'properties'; the model and a
+    flat as_dict() carry it at the top level.
+    """
+    if isinstance(pipeline, dict):
+        folder = pipeline.get("folder") or (pipeline.get("properties") or {}).get("folder")
+    else:
+        folder = getattr(pipeline, "folder", None)
+    name = folder.get("name") if isinstance(folder, dict) else getattr(folder, "name", None)
+    return str(name or "").strip().strip("/")
+
+
+def _folder_text(folder: str) -> str:
+    return folder or "(root)"
+
+
+async def _factory_inventory(
+    alias: str, sub: str, rg: str, factory_name: str
+) -> list[_PipelineInfo]:
+    """Every published pipeline in one factory, with folder, description and annotations.
+
+    ONE paged list call: list_by_factory returns every pipeline regardless of
+    folder, with its metadata, so nothing here needs a per-pipeline read.
+    """
+    started = time.perf_counter()
+    client = await _client(sub)
+    pipelines = [
+        _PipelineInfo(
+            alias=alias,
+            name=p.name,
+            folder=_folder_of(p),
+            description=str(getattr(p, "description", None) or ""),
+            annotations=tuple(str(a) for a in (getattr(p, "annotations", None) or ())),
+        )
+        async for p in client.pipelines.list_by_factory(rg, factory_name)
+        if getattr(p, "name", None)
+    ]
+    foldered = [p for p in pipelines if p.folder]
+    logger.info(
+        "ADF inventory %s: %d pipeline(s) — %d at the root, %d in %d folder(s), %.0f ms",
+        factory_name,
+        len(pipelines),
+        len(pipelines) - len(foldered),
+        len(foldered),
+        len({p.folder for p in foldered}),
+        (time.perf_counter() - started) * 1000,
+    )
+    return pipelines
+
+
+def _configured_targets() -> list[tuple[str, str, str, str]]:
+    """Every usable configured factory, the default first.
+
+    A half-filled mapping entry is skipped (and logged) rather than failing a
+    lookup that the other factories could answer.
+    """
+    default = _default_alias()
+    targets = []
+    for alias in sorted(_factory_aliases(), key=lambda a: a != default):
+        try:
+            targets.append(_resolve_factory(alias))
+        except _InputError as exc:
+            logger.warning("ADF factory alias '%s' skipped: %s", alias, exc)
+    return targets
+
+
+async def _inventories(targets: list) -> tuple[dict, dict]:
+    """``_factory_inventory`` for several factories at once: (alias -> list, alias -> error)."""
+
+    async def _one(alias: str, sub: str, rg: str, name: str):
+        try:
+            return alias, await _factory_inventory(alias, sub, rg, name), None
+        except Exception as exc:  # noqa: BLE001 - reported per factory
+            logger.warning("ADF inventory %s failed: %s", name, _truncate(exc))
+            return alias, None, _truncate(exc)
+
+    found: dict = {}
+    failed: dict = {}
+    for alias, pipelines, error in await asyncio.gather(*(_one(*t) for t in targets)):
+        if error is None:
+            found[alias] = pipelines
+        else:
+            failed[alias] = error
+    return found, failed
+
+
+def _name_matches(pipelines: list[_PipelineInfo], wanted: str) -> tuple[list[_PipelineInfo], str]:
+    """The pipelines ``wanted`` names, at the strictest tier that matches anything.
+
+    exact → case-insensitive (ADF names are unique that way, so at most one) →
+    separator-insensitive ('pl_a_b' for 'pl-a-b', which can match several).
+    """
+    exact = [p for p in pipelines if p.name == wanted]
+    if exact:
+        return exact, "exact"
+    folded = [p for p in pipelines if p.name.casefold() == wanted.casefold()]
+    if folded:
+        return folded, "case-insensitive"
+    squashed = _squash(wanted)
+    loose = [p for p in pipelines if squashed and _squash(p.name) == squashed]
+    return loose, ("separator-insensitive" if loose else "")
+
+
+_MATCH_TIERS = ("exact", "case-insensitive", "separator-insensitive")
+
+
+def _closest_names(wanted: str, pipelines: list[_PipelineInfo]) -> list[_PipelineInfo]:
+    """Up to _SUGGESTIONS_MAX published pipelines that look like ``wanted``.
+
+    Scored two ways and the better one kept: character similarity on the
+    squashed names (typos, a dropped segment) and the share of the caller's
+    words that appear in the name or folder (a partial name such as 'surveyco
+    daily ingest'). Default factory first on a tie.
+    """
+    target = _squash(wanted)
+    words = _tokens(wanted)
+    scored = []
+    for p in pipelines:
+        similarity = difflib.SequenceMatcher(None, target, _squash(p.name)).ratio()
+        haystack = f"{p.name} {p.folder}".casefold()
+        coverage = sum(1 for w in words if w in haystack) / len(words) if words else 0.0
+        score = max(similarity, coverage)
+        if score >= 0.5:
+            scored.append((score, p))
+    scored.sort(key=lambda item: -item[0])
+    return [p for _, p in scored[:_SUGGESTIONS_MAX]]
+
+
+def _pipeline_cells(p: _PipelineInfo) -> str:
+    """'factory | folder | pipeline' — how every pipeline listing names one."""
+    return f"{_factory_name(p.alias)} | {_folder_text(p.folder)} | {p.name}"
+
+
+# What a missing pipeline means, per kind of caller. The run tools reached here
+# from an EMPTY run list; the structure tool from a 404 on the definition.
+_MISSING_FROM_RUNS = " — the empty run list means the pipeline is missing, not idle."
+_MISSING_FROM_STRUCTURE = (
+    ", so it has no structure to show. This is a definitive answer, not a lookup failure."
+)
+
+
+def _missing_pipeline_text(
+    wanted: str, searched: list[str], failed: dict, inventories: dict, consequence: str
+) -> str:
+    """The "does not exist" answer, naming everywhere that was searched and what is close."""
+    where = (
+        f"factory {_factory_label(searched[0])}"
+        if len(searched) == 1
+        else "any configured factory (searched "
+        + ", ".join(_factory_label(a) for a in searched)
+        + ")"
+    )
+    lines = [
+        f"[adf-agent] Pipeline '{wanted}' DOES NOT EXIST in {where}{consequence}",
+        "  Matched ignoring letter case, '-'/'_'/space differences and any folder path.",
+    ]
+    if failed:
+        lines.append(
+            "  Could NOT search: "
+            + "; ".join(f"{_factory_label(a)} ({error})" for a, error in failed.items())
+            + " — the pipeline may be there."
+        )
+    close = _closest_names(wanted, [p for a in searched for p in inventories.get(a, [])])
+    if close:
+        lines.append("  Closest published names (factory | folder | pipeline):")
+        lines += [f"    - {_pipeline_cells(p)}" for p in close]
+        lines.append(
+            "  If one of these is meant, call again with that exact pipeline name and its factory."
+        )
+    lines.append(
+        "  For a keyword or partial-name search (names, folders, descriptions), use "
+        "find_pipelines."
+    )
+    lines.append(f"  {_PUBLISHED_ONLY_NOTE}")
+    return "\n".join(lines)
+
+
+async def _locate_pipeline(
+    requested: str, factory: str, consequence: str = _MISSING_FROM_RUNS
+) -> _PipelineHit | str | None:
+    """Find the pipeline a caller meant, across every configured factory.
+
+    Returns a ``_PipelineHit`` (where it is and its exact name), a model-facing
+    string (it does not exist, or the name is ambiguous), or None when no
+    inventory could be read at all — the caller then keeps its plain answer
+    rather than claiming anything.
+
+    The named (or default) factory is searched first. An EXPLICIT factory is
+    honoured: a pipeline found only elsewhere is reported as being there, never
+    silently answered from a factory the caller did not ask about. With no
+    factory named, a pipeline living in exactly one other factory is used — that
+    is the common "the tool looked in the default factory" miss — and a name in
+    several factories is handed back as a choice.
+    """
+    wanted = _bare_pipeline_name(requested)
+    explicit = (factory or "").strip()
+    try:
+        primary = _resolve_factory(explicit)
+    except _InputError as exc:
+        return str(exc)
+    others = [t for t in _configured_targets() if t[0] != primary[0]]
+    inventories, failed = await _inventories([primary, *others])
+    if not inventories:
+        return None
+    by_alias = {t[0]: t for t in [primary, *others]}
+
+    def _hit(p: _PipelineInfo, how: str) -> _PipelineHit:
+        alias, sub, rg, name = by_alias[p.alias]
+        found = _PipelineHit(alias, sub, rg, name, p.name, p.folder, how)
+        logger.info(
+            "ADF pipeline %r resolved to %r in %s (folder %s, %s match)",
+            requested, p.name, name, _folder_text(p.folder), how,
+        )
+        return found
+
+    def _choice(matches: list[_PipelineInfo], intro: str) -> str:
+        logger.info(
+            "ADF pipeline %r is ambiguous: %s", requested, [_pipeline_cells(p) for p in matches]
+        )
+        return "\n".join(
+            [f"[adf-agent] {intro} (factory | folder | pipeline):"]
+            + [f"  - {_pipeline_cells(p)}" for p in matches]
+            + ["  Call again with the exact pipeline name and factory=<factory> of the one meant."]
+        )
+
+    matches, how = _name_matches(inventories.get(primary[0], []), wanted)
+    if len(matches) == 1:
+        return _hit(matches[0], how)
+    if matches:
+        return _choice(
+            matches,
+            f"'{wanted}' matches {len(matches)} pipelines in factory "
+            f"{_factory_label(primary[0])} once case and separators are ignored",
+        )
+
+    elsewhere: list[tuple[int, _PipelineInfo, str]] = []
+    for alias, *_ in others:
+        found, tier = _name_matches(inventories.get(alias, []), wanted)
+        elsewhere += [(_MATCH_TIERS.index(tier), p, tier) for p in found]
+    if elsewhere:
+        best = min(rank for rank, _, _ in elsewhere)
+        elsewhere = [(rank, p, tier) for rank, p, tier in elsewhere if rank == best]
+        if explicit:
+            logger.info(
+                "ADF pipeline %r not in named factory %s; found elsewhere", requested, primary[3]
+            )
+            return _choice(
+                [p for _, p, _ in elsewhere],
+                f"Pipeline '{wanted}' DOES NOT EXIST in factory {_factory_label(primary[0])}, "
+                "the factory that was named — it exists in another configured factory",
+            )
+        if len(elsewhere) == 1:
+            _, p, tier = elsewhere[0]
+            return _hit(p, tier)
+        return _choice(
+            [p for _, p, _ in elsewhere],
+            f"Pipeline '{wanted}' is not in the default factory "
+            f"{_factory_label(primary[0])} and exists in more than one other factory",
+        )
+
+    searched = [t[0] for t in [primary, *others] if t[0] in inventories]
+    logger.info("ADF pipeline %r not found in %s", requested, [_factory_name(a) for a in searched])
+    return _missing_pipeline_text(wanted, searched, failed, inventories, consequence)
+
+
+def _resolution_note(requested: str, hit: _PipelineHit, asked_alias: str) -> str:
+    """The line that says the answer below is for a resolved name or factory.
+
+    Said up front, with the exact values to reuse, because every follow-up call
+    that repeats the original spelling would otherwise miss again.
+    """
+    changes = []
+    if hit.name != requested:
+        changes.append(f"'{requested}' matched pipeline '{hit.name}' ({hit.how})")
+    if hit.alias != asked_alias:
+        changes.append(
+            f"it is in factory {_factory_label(hit.alias)}, not {_factory_label(asked_alias)}"
+        )
+    folder = f"; ADF Studio folder: {_folder_text(hit.folder)}"
+    return (
+        f"[adf-agent] NOTE: {'; '.join(changes) or f'pipeline {hit.name!r}'}{folder}. "
+        "Results below are for that "
+        f"pipeline — in follow-up calls pass pipeline_name='{hit.name}', "
+        f"factory='{_factory_name(hit.alias)}'."
+    )
+
+
+async def _retarget(
+    requested: str, pipeline_name: str, factory: str, alias: str
+) -> _PipelineHit | str | None:
+    """After an EMPTY run query: the pipeline to query instead, a final answer, or None.
+
+    None means "the name was right — it simply has no runs" (or nothing could be
+    checked), so the caller keeps its own no-runs answer.
+    """
+    hit = await _locate_pipeline(requested or pipeline_name, factory)
+    if isinstance(hit, _PipelineHit) and (hit.alias, hit.name) == (alias, pipeline_name):
+        return None
+    return hit
 
 
 # --- shared analytics helpers -------------------------------------------------
@@ -839,8 +1376,13 @@ def _sort_by_start(runs: list, newest_first: bool = True) -> list:
 # The named sections of a pipeline definition a source-system reference can hide
 # in. azure-mgmt-datafactory 9.2.0's as_dict() puts these at the TOP level;
 # the attribute fallback below (and the offline fake) nest everything but the
-# name under 'properties'. _matched_sections reads either shape.
-_DEFINITION_SECTIONS = ("name", "description", "parameters", "variables", "annotations", "activities")
+# name under 'properties'. _matched_sections reads either shape. 'folder' is the
+# ADF Studio folder path: a pipeline filed under 'SurveyCo Outbound' is about
+# SurveyCo even when nothing else in it says so, and without the section that
+# match was reported as the meaningless 'matched: definition'.
+_DEFINITION_SECTIONS = (
+    "name", "description", "folder", "parameters", "variables", "annotations", "activities"
+)
 
 
 def _definition_wire(pipeline) -> dict:
@@ -1079,50 +1621,81 @@ async def list_factories() -> str:
     return f"[adf-agent] {len(mapping)} configured factory(ies):\n" + "\n".join(lines)
 
 
-def _pipeline_row(name: str, description, run=None, link: str = "") -> str:
+def _pipeline_row(name: str, description, run=None, link: str = "", folder: str = "") -> str:
     """One inventory row: the factory's own description, plus the last run if known."""
     # The description is the factory's own metadata; pipelines without one get
     # "(no description set)" so the model reports that honestly instead of
     # inventing a gloss from the pipeline name.
     text = _truncate(description) if description else "(no description set)"
+    # The folder rides in brackets AFTER the name, never as a path prefix: a
+    # 'folder/name' rendering gets copied back as a pipeline name, which ADF
+    # cannot match.
+    label = f"{name} [folder: {folder}]" if folder else name
     if run is None:
-        return f"  - {name} — {text}"
+        return f"  - {label} — {text}"
     row = (
-        f"  - {name} — {text} | last run {_fmt_ts(getattr(run, 'run_start', None))} "
+        f"  - {label} — {text} | last run {_fmt_ts(getattr(run, 'run_start', None))} "
         f"({getattr(run, 'status', 'unknown')})"
     )
     return f"{row} | {link}" if link else row
 
 
 def _inactive_names(names: list[str]) -> str:
-    """The hidden pipelines by name while that stays readable, else nothing.
+    """The hidden pipelines by name, the first _INACTIVE_NAMES_MAX of them.
 
-    A bare count reads as "trust me"; hundreds of names drown the answer. Naming
-    a short tail keeps the default filter auditable without either failure.
+    A bare count reads as "trust me", and was all a factory with more than a
+    handful of retired pipelines ever got — so the one pipeline the user was
+    looking for was routinely among the unnamed. Past the cap the rest are
+    counted, with the way to see them all.
     """
-    if not names or len(names) > _INACTIVE_NAMES_MAX:
+    if not names:
         return "."
-    return ": " + ", ".join(sorted(names)) + "."
+    shown = sorted(names)[:_INACTIVE_NAMES_MAX]
+    rest = len(names) - len(shown)
+    return ": " + ", ".join(shown) + (f" … and {rest} more" if rest else "") + "."
 
 
 async def _latest_run_by_pipeline(
-    client, rg: str, factory_name: str, after: datetime, before: datetime
+    sub: str, rg: str, factory_name: str, names: list[str], after: datetime, before: datetime
 ) -> tuple[dict, bool]:
     """Map pipeline name -> its most recent run in the window, plus a complete flag.
 
-    ONE factory-wide run query, never one per definition: a per-pipeline fan-out
-    is the N+1 that made the ServiceNow list tool slow, and inventory runs on
-    every "what pipelines are there" question.
+    One factory-wide, newest-first sweep first, never one query per definition
+    up front: most "what pipelines are there" questions are answered by it alone.
+    The sweep is capped (_INVENTORY_SWEEP_PAGES), and in a factory with an
+    every-minute trigger the cap is reached within hours — every pipeline that
+    last ran before that was then reported as inactive. So when the sweep is cut
+    short, the pipelines it did not see are checked individually, one page each
+    (_latest_runs), over the whole window. The flag is False only when some
+    pipeline could still not be checked.
     """
-    runs, complete = await _query_all_runs(
-        client, rg, factory_name, _runs_params("", after, before)
+    client = await _client(sub)
+    runs, complete = await _page_runs(
+        client, rg, factory_name, _runs_params("", after, before), _INVENTORY_SWEEP_PAGES
     )
     latest: dict = {}
     for run in _sort_by_start(runs):
         key = getattr(run, "pipeline_name", None)
         if key and key not in latest:
             latest[key] = run
-    return latest, complete
+    if complete:
+        return latest, True
+
+    unseen = [n for n in names if n not in latest]
+    probe = unseen[:_INVENTORY_PROBE_MAX]
+    logger.info(
+        "ADF inventory %s: activity sweep truncated after %d run(s); checking %d of %d "
+        "unseen pipeline(s) individually back to %s",
+        factory_name, len(runs), len(probe), len(unseen), _fmt_ts(after),
+    )
+    # Over the WHOLE window, not just the part older than the sweep: the window
+    # filters on last-updated while the sweep is ordered by start, so a
+    # long-running run can fall between the two.
+    found, errors = await _latest_runs(sub, rg, factory_name, probe, after, before)
+    latest.update({n: r for n, r in found.items() if r is not None})
+    # Newest-first is the contract callers rank by, so re-sort after the merge.
+    latest = {r.pipeline_name: r for r in _sort_by_start(list(latest.values()))}
+    return latest, not errors and len(probe) == len(unseen)
 
 
 @tool
@@ -1149,33 +1722,44 @@ async def list_pipelines(
                  only when the user names a different period. Ignored entirely
                  when include_inactive is true.
 
-    Use this when the user asks what pipelines exist, or as a first step before
-    looking at runs.
+    Pipelines in ADF Studio folders (at any depth) are included; each row gives
+    the bare pipeline name — the only form other tools accept — with its folder
+    in brackets.
+
+    Use this when the user asks what pipelines exist in a factory, or as a first
+    step before looking at runs. To look for a particular pipeline by keyword,
+    partial name or folder, use find_pipelines instead: it searches every
+    configured factory, inactive pipelines included.
     """
     try:
         alias, sub, rg, name = _resolve_factory(factory)
     except _InputError as exc:
         return str(exc)
     try:
-        client = await _client(sub)
-        pipes = [
-            (p.name, getattr(p, "description", None))
-            async for p in client.pipelines.list_by_factory(rg, name)
-        ]
+        inventory = await _factory_inventory(alias, sub, rg, name)
     except Exception as exc:  # surface auth/permission errors to the model as text
         return (
             f"[adf-agent] ERROR listing pipelines in factory {_factory_label(alias)}: "
             f"{_truncate(exc)}"
         )
+    pipes = [(p.name, p.description) for p in inventory]
+    folders = {p.name: p.folder for p in inventory}
+
+    def _plain_row(n: str, d) -> str:
+        return _pipeline_row(n, d, folder=folders.get(n, ""))
+
     # No link on either branch below, and the rule is the same one: link only
     # where the output asserts something about RUNS. "No pipelines" and the full
     # definition inventory make no run claim at all, so a Monitor link would
     # answer a question nobody asked — on the longest output this tool produces.
     if not pipes:
-        return f"[adf-agent] Factory {_factory_label(alias)} has no pipelines."
+        return (
+            f"[adf-agent] Factory {_factory_label(alias)} has no pipelines.\n"
+            f"  {_PUBLISHED_ONLY_NOTE}"
+        )
 
     if include_inactive:
-        listing = "\n".join(_pipeline_row(n, d) for n, d in pipes)
+        listing = "\n".join(_plain_row(n, d) for n, d in pipes)
         return (
             f"[adf-agent] Factory {_factory_label(alias)} has {len(pipes)} pipeline(s) "
             f"— FULL inventory, active and inactive:\n{listing}"
@@ -1185,13 +1769,13 @@ async def list_pipelines(
     now = datetime.now(timezone.utc)
     try:
         latest, complete = await _latest_run_by_pipeline(
-            client, rg, name, now - timedelta(days=days), now
+            sub, rg, name, [n for n, _ in pipes], now - timedelta(days=days), now
         )
     except Exception as exc:
         # Fail OPEN. A run-query outage must not silently shrink the inventory:
         # hiding pipelines we merely could not check reads as "these do not
         # exist", which is the worse error. Show everything and say why.
-        listing = "\n".join(_pipeline_row(n, d) for n, d in pipes)
+        listing = "\n".join(_plain_row(n, d) for n, d in pipes)
         # This branch's whole message is "I could not check which of these
         # actually run", and Monitor is exactly where the reader checks that.
         return (
@@ -1229,8 +1813,12 @@ async def list_pipelines(
         run = latest.get(n)
         run_id = getattr(run, "run_id", None) if run is not None else None
         link = _run_link(sub, rg, name, run_id) if run_id else ""
-        return _pipeline_row(n, d, run, link)
+        return _pipeline_row(n, d, run, link, folders.get(n, ""))
 
+    logger.info(
+        "ADF list_pipelines %s: %d active, %d hidden (window %d day(s), activity %s)",
+        name, len(active), len(inactive), days, "exact" if complete else "PARTIAL",
+    )
     listing = "\n".join(_row(n, d) for n, d in active)
     lines = [
         f"[adf-agent] Factory {_factory_label(alias)}: {len(active)} ACTIVE pipeline(s) "
@@ -1241,12 +1829,13 @@ async def list_pipelines(
         lines.append(
             f"  Hidden: {len(inactive)} pipeline(s) defined but with no run in {window}"
             f"{_inactive_names(inactive)} Call list_pipelines(include_inactive=true) to "
-            "list them."
+            "list them, or find_pipelines to search for one by keyword."
         )
     if not complete:
         lines.append(
-            "  NOTE: the run history for this window was truncated, so a pipeline listed "
-            "as inactive may have run early in the window."
+            "  NOTE: the run history for this window was truncated and not every pipeline "
+            "could be checked individually, so a pipeline listed as inactive may have run "
+            "early in the window."
         )
     # Monitor IN ADDITION to the per-row links above, not instead of them: the
     # rows cover the active pipelines, while the Hidden and truncated-history
@@ -1256,42 +1845,167 @@ async def list_pipelines(
     return "\n".join(lines)
 
 
-async def _pipeline_missing_hint(
-    client, rg: str, factory_name: str, alias: str, pipeline_name: str
-) -> str | None:
-    """A "pipeline does not exist" message when an empty run list is really a
-    missing pipeline, else None.
+def _find_rank(p: _PipelineInfo, query: str, words: list[str]) -> tuple[int, list[str]] | None:
+    """How strongly a pipeline matches a find_pipelines query, and on which fields.
 
-    ADF's run query returns an empty page for a pipeline that does not exist,
-    which reads as "exists but idle" — the source of a whole family of
-    misleading "no runs" answers. This tells the two cases apart so every tool
-    that queries runs by pipeline can lead with "missing", not "idle".
+    Every word of the query must appear somewhere in the pipeline's name,
+    folder path, description or annotations (casefolded, separators ignored by
+    splitting the query into words). The rank orders the results:
+    0 the name itself, 1 every word in the name, 2 name + folder, 3 needs the
+    description or annotations. None when some word appears nowhere.
     """
-    if not pipeline_name:
+    fields = {
+        "name": p.name.casefold(),
+        "folder": p.folder.casefold(),
+        "description": p.description.casefold(),
+        "annotations": " ".join(p.annotations).casefold(),
+    }
+    squashed = _squash(query)
+    if squashed and squashed == _squash(p.name):
+        return 0, ["name"]
+    whole_in_name = bool(squashed) and squashed in _squash(p.name)
+    matched_on = [
+        field
+        for field, text in fields.items()
+        if (field == "name" and whole_in_name) or any(w in text for w in words)
+    ]
+    if whole_in_name or all(w in fields["name"] for w in words):
+        return 1, matched_on
+    if not all(any(w in text for text in fields.values()) for w in words):
         return None
-    try:
-        await client.pipelines.get(rg, factory_name, pipeline_name)
-    except ResourceNotFoundError:
-        others = [a for a in _factory_aliases() if a != alias]
-        # Name the ADF resource, never the alias: a "not in <alias>" hint sends
-        # the reader looking for a factory that is not called that in Azure, and
-        # they conclude the pipeline exists nowhere.
-        hint = (
-            f" Only factory {_factory_label(alias)} was searched; also configured: "
-            + ", ".join(_factory_label(a) for a in others)
-            + " (re-run with factory=<name> to check them)."
-            if others
-            else ""
-        )
+    if all(w in fields["name"] or w in fields["folder"] for w in words):
+        return 2, matched_on
+    return 3, matched_on
+
+
+@tool
+async def find_pipelines(query: str, factory: str = "") -> str:
+    """Search for pipelines by keyword, partial name or folder, across every factory.
+
+    The way to FIND a pipeline when the exact name is not known, or to check
+    whether one exists at all. Searches every configured factory unless
+    ``factory`` names one, and covers every published pipeline — at the root or
+    in any ADF Studio folder, active or not. Matching ignores case and treats
+    '-', '_', '/', '.' and spaces alike: every word of the query must appear in
+    the pipeline's name, folder path, description or annotations.
+
+    Args:
+        query:   Words to look for, e.g. "surveyco", "surveyco daily ingest",
+                 a folder such as "ingestion/surveyco", or part of a name
+                 such as "pl-100".
+        factory: Optional factory name to search only that factory. Leave empty
+                 to search all of them.
+
+    Returns factory | folder | pipeline | matched-on | last run in the last 30
+    days, strongest name matches first. Pass a returned Pipeline value (the bare
+    name, never the folder) together with its factory to the other tools.
+    """
+    query = (query or "").strip()
+    words = _tokens(query)
+    if not words:
         return (
-            f"[adf-agent] Pipeline '{pipeline_name}' DOES NOT EXIST in factory "
-            f"{_factory_label(alias)} — the empty run list means the pipeline is "
-            f"missing, not idle.{hint} Use list_pipelines to see the actual "
-            "pipeline names."
+            "[adf-agent] Please provide words to search for (part of a pipeline name, a "
+            "folder, or a keyword such as a source system)."
         )
-    except Exception:  # noqa: BLE001 - existence unknown; keep the plain answer
-        return None
-    return None
+    explicit = (factory or "").strip()
+    try:
+        targets = [_resolve_factory(explicit)] if explicit else _configured_targets()
+    except _InputError as exc:
+        return str(exc)
+    if not targets:
+        return "[adf-agent] No Data Factory is configured (ADF_FACTORY_MAPPING is empty)."
+
+    inventories, failed = await _inventories(targets)
+    order = {t[0]: i for i, t in enumerate(targets)}
+    ranked = []
+    for alias, pipelines in inventories.items():
+        for p in pipelines:
+            found = _find_rank(p, query, words)
+            if found is not None:
+                ranked.append(
+                    (found[0], order[alias], p.folder.casefold(), p.name.casefold(), p, found[1])
+                )
+    ranked.sort(key=lambda item: item[:4])
+    searched = sum(len(v) for v in inventories.values())
+    logger.info(
+        "ADF find_pipelines %r: %d match(es) among %d pipeline(s) in %d factory(ies), "
+        "%d factory error(s)",
+        query, len(ranked), searched, len(inventories), len(failed),
+    )
+
+    scope = (
+        f"factory {_factory_label(targets[0][0])}"
+        if len(targets) == 1
+        else f"all {len(targets)} configured factories"
+    )
+    lines: list[str] = []
+    if not ranked:
+        everything = [p for pipelines in inventories.values() for p in pipelines]
+        lines.append(
+            f"[adf-agent] No pipeline matches '{query}' in {scope} (searched {searched} "
+            "published pipeline(s) by name, folder, description and annotations)."
+        )
+        close = _closest_names(query, everything)
+        if close:
+            lines.append("  Closest names (factory | folder | pipeline):")
+            lines += [f"    - {_pipeline_cells(p)}" for p in close]
+        lines.append(f"  {_PUBLISHED_ONLY_NOTE}")
+    else:
+        shown = ranked[:_FIND_MAX_ROWS]
+        now = datetime.now(timezone.utc)
+        after = now - timedelta(days=_ACTIVE_RUN_DAYS)
+        by_alias = {t[0]: t for t in targets}
+        latest: dict = {}
+        errors: dict = {}
+        for alias in {item[4].alias for item in shown}:
+            _, sub, rg, name = by_alias[alias]
+            names = [item[4].name for item in shown if item[4].alias == alias]
+            try:
+                runs, errs = await _latest_runs(sub, rg, name, names, after, now)
+            except Exception as exc:  # noqa: BLE001 - reported on the rows
+                runs, errs = {}, {n: _truncate(exc) for n in names}
+            latest.update({(alias, n): r for n, r in runs.items()})
+            errors.update({(alias, n): e for n, e in errs.items()})
+
+        lines.append(
+            f"[adf-agent] {len(ranked)} pipeline(s) match '{query}' in {scope} "
+            f"(name, folder, description and annotations searched; strongest name "
+            f"matches first):"
+        )
+        lines.append("  Factory | Folder | Pipeline | Matched on | Last run (30 days)")
+        for _, _, _, _, p, matched_on in shown:
+            alias, sub, rg, name = by_alias[p.alias]
+            key = (p.alias, p.name)
+            run = latest.get(key)
+            if key in errors:
+                last = f"could not check runs: {errors[key]}"
+            elif run is None:
+                last = f"no run in the last {_ACTIVE_RUN_DAYS} days"
+            else:
+                last = (
+                    f"{_fmt_ts(getattr(run, 'run_start', None))} ({run.status}) | "
+                    f"{_run_link(sub, rg, name, run.run_id)}"
+                )
+            lines.append(f"  - {_pipeline_cells(p)} | {', '.join(matched_on)} | {last}")
+        if len(ranked) > len(shown):
+            lines.append(
+                f"  … and {len(ranked) - len(shown)} more not shown (showing the first "
+                f"{len(shown)}); add words to the query or name a factory to narrow it"
+            )
+        lines.append(
+            "  Use the Pipeline value exactly as shown (no folder) with its factory in "
+            "other tools."
+        )
+    if len(targets) > 1:
+        lines.insert(
+            1, "  Factories searched: " + ", ".join(_factory_label(t[0]) for t in targets)
+        )
+    if failed:
+        lines.append(
+            "  Could NOT search: "
+            + "; ".join(f"{_factory_label(a)} ({error})" for a, error in failed.items())
+        )
+    return "\n".join(lines)
 
 
 @tool
@@ -1336,14 +2050,16 @@ async def list_pipeline_runs(
     """
     # Normalized once here, so the filters ADF receives and the names echoed
     # back to the model are the same text.
-    pipeline_name = (pipeline_name or "").strip()
+    requested = (pipeline_name or "").strip()
+    pipeline_name = _bare_pipeline_name(requested)
     trigger_name = (trigger_name or "").strip()
     try:
         alias, sub, rg, name = _resolve_factory(factory)
         after, before = _resolve_window(start_date, end_date, last_n_days)
+        run_status = _normalize_status(status)
         # ADF returns pages oldest-first by default, so RunStart DESC (inside
         # _runs_params) is what makes the display cap show the NEWEST runs.
-        params = _runs_params(pipeline_name, after, before, _normalize_status(status))
+        params = _runs_params(pipeline_name, after, before, run_status)
     except _InputError as exc:
         return str(exc)
 
@@ -1356,18 +2072,38 @@ async def list_pipeline_runs(
             f"{_truncate(exc)}"
         )
 
+    note = ""
+    if not runs and pipeline_name:
+        # Empty for a NAME is ambiguous: idle, or a spelling ADF's case-
+        # sensitive filter cannot match, or a pipeline in another factory.
+        hit = await _retarget(requested, pipeline_name, factory, alias)
+        if isinstance(hit, str):
+            return hit
+        if hit is not None:
+            note = _resolution_note(requested, hit, alias) + "\n"
+            alias, sub, rg, name, pipeline_name = (
+                hit.alias, hit.sub, hit.rg, hit.factory_name, hit.name
+            )
+            try:
+                client = await _client(sub)
+                runs, complete = await _query_runs(
+                    client, rg, name, _runs_params(pipeline_name, after, before, run_status)
+                )
+            except Exception as exc:
+                return (
+                    f"{note}[adf-agent] ERROR querying runs in factory "
+                    f"{_factory_label(alias)}: {_truncate(exc)}"
+                )
+
     window = _window_text(after, before, bool(start_date or end_date), last_n_days)
     # pipeline_name is "" on an all-pipelines listing, which leaves the footer
     # factory-wide; both branches that use this string name one pipeline when it
     # is set, and an unfiltered tab there is the "Pipeline name: All" report.
     monitor = "\n" + "\n".join(_monitor_footer(sub, rg, name, pipeline_name=pipeline_name))
     if not runs:
-        missing = await _pipeline_missing_hint(client, rg, name, alias, pipeline_name)
-        if missing:
-            return missing
         scope = f" for pipeline '{pipeline_name}'" if pipeline_name else ""
         return (
-            f"[adf-agent] No runs{scope} in factory {_factory_label(alias)} {window}."
+            f"{note}[adf-agent] No runs{scope} in factory {_factory_label(alias)} {window}."
             f"{monitor}"
         )
 
@@ -1383,13 +2119,13 @@ async def list_pipeline_runs(
             # and client-side), so the reader's next move is to browse the
             # factory and find what the trigger is actually called.
             return (
-                f"[adf-agent] No runs{scope} started by trigger '{trigger_name}' in factory "
-                f"{_factory_label(alias)} {window} ({len(runs)} run(s) matched the "
+                f"{note}[adf-agent] No runs{scope} started by trigger '{trigger_name}' in "
+                f"factory {_factory_label(alias)} {window} ({len(runs)} run(s) matched the "
                 f"window under other "
                 f"triggers/invokers).{monitor}"
             )
         runs = matched
-    return _render_runs(runs, alias, pipeline_name, complete, sub, rg, name)
+    return note + _render_runs(runs, alias, pipeline_name, complete, sub, rg, name)
 
 
 async def _activity_runs_for(client, rg: str, factory_name: str, run, run_id: str) -> list:
@@ -1818,13 +2554,15 @@ async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
     Execute Pipeline activities are shown with the child pipeline they invoke,
     and activities nested inside ForEach/If containers are indented under them.
     """
-    pipeline_name = (pipeline_name or "").strip()
+    requested = (pipeline_name or "").strip()
+    pipeline_name = _bare_pipeline_name(requested)
     if not pipeline_name:
         return "[adf-agent] Please provide a pipeline name (get one from list_pipelines)."
     try:
         alias, sub, rg, name = _resolve_factory(factory)
     except _InputError as exc:
         return str(exc)
+    note = ""
     try:
         client = await _client(sub)
         pipeline = await client.pipelines.get(rg, name, pipeline_name, cls=_keep_wire)
@@ -1832,32 +2570,45 @@ async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
         # A missing pipeline is an ANSWER, not a failure, and it must not read as
         # one: rendered through the generic branch below it became "ERROR fetching
         # pipeline ...", which the model treated as a dead end and stopped at —
-        # skipping the documentation that may well describe this name.
-        others = [a for a in _factory_aliases() if a != alias]
-        hint = (
-            " Also configured: " + ", ".join(_factory_label(a) for a in others) + "."
-            if others
-            else ""
+        # skipping the documentation that may well describe this name. GET already
+        # ignores case, so what is left to try is the other factories and a name
+        # retyped with different separators.
+        kb_tail = (
+            " The knowledge base may still document this name (retired, not yet built, "
+            "or in an unconfigured factory) — search it and report the two findings "
+            "separately."
         )
-        return (
-            f"[adf-agent] Pipeline '{pipeline_name}' DOES NOT EXIST in factory "
-            f"{_factory_label(alias)}, so it has no structure to show. This is a "
-            f"definitive answer, not a lookup failure.{hint} The knowledge base may "
-            "still document this name (retired, not yet built, or in an unconfigured "
-            "factory) — search it and report the two findings separately."
+        hit = await _locate_pipeline(requested, factory, _MISSING_FROM_STRUCTURE)
+        if isinstance(hit, str):
+            return hit + ("\n " + kb_tail if "DOES NOT EXIST" in hit else "")
+        if hit is None:
+            return (
+                f"[adf-agent] Pipeline '{pipeline_name}' DOES NOT EXIST in factory "
+                f"{_factory_label(alias)}{_MISSING_FROM_STRUCTURE}{kb_tail}"
+            )
+        note = _resolution_note(requested, hit, alias) + "\n"
+        alias, sub, rg, name, pipeline_name = (
+            hit.alias, hit.sub, hit.rg, hit.factory_name, hit.name
         )
+        try:
+            client = await _client(sub)
+            pipeline = await client.pipelines.get(rg, name, pipeline_name, cls=_keep_wire)
+        except Exception as exc:
+            return (
+                f"{note}[adf-agent] ERROR fetching pipeline '{pipeline_name}' in factory "
+                f"{_factory_label(alias)}: {_truncate(exc)}"
+            )
     except Exception as exc:
         return (
             f"[adf-agent] ERROR fetching pipeline '{pipeline_name}' in factory "
             f"{_factory_label(alias)}: {_truncate(exc)}"
         )
+    folder = _folder_of(pipeline)
+    where = f"factory {_factory_label(alias)}" + (f", folder '{folder}'" if folder else "")
     lines = _walk_definition(_wire_activities(pipeline), depth=1)
     if not lines:
-        return (
-            f"[adf-agent] Pipeline '{pipeline_name}' (factory "
-            f"{_factory_label(alias)}) has no activities."
-        )
-    header = f"[adf-agent] Structure of '{pipeline_name}' (factory {_factory_label(alias)}):"
+        return f"{note}[adf-agent] Pipeline '{pipeline_name}' ({where}) has no activities."
+    header = f"{note}[adf-agent] Structure of '{pipeline_name}' ({where}):"
     return header + "\n" + "\n".join(lines)
 
 
@@ -1922,10 +2673,21 @@ async def discover_pipelines_by_source_system(
     inactive_count = 0
     inactive_rows: list[str] = []
     searched_definitions = 0
-    incomplete = False
     errors: list[str] = []
+    # Every definition has to be read to be searched, so this tool's cost is one
+    # GET per pipeline in every factory. Done a bounded few at a time rather than
+    # one after another, which on a few hundred pipelines was minutes, not seconds.
+    gate = asyncio.Semaphore(_ADF_CONCURRENCY)
+
+    async def _bounded(make):
+        async with gate:
+            try:
+                return await make(), None
+            except Exception as exc:  # noqa: BLE001 - reported per pipeline
+                return None, _truncate(exc)
 
     for alias, sub, rg, factory_name in targets:
+        started = time.perf_counter()
         try:
             client = await _client(sub)
             pipeline_names = [
@@ -1936,15 +2698,22 @@ async def discover_pipelines_by_source_system(
             continue
 
         searched_definitions += len(pipeline_names)
-        for pipeline_name in pipeline_names:
-            try:
-                definition = await client.pipelines.get(
-                    rg, factory_name, pipeline_name, cls=_keep_wire
+        definitions = await asyncio.gather(
+            *(
+                _bounded(
+                    functools.partial(
+                        client.pipelines.get, rg, factory_name, n, cls=_keep_wire
+                    )
                 )
-            except Exception as exc:
+                for n in pipeline_names
+            )
+        )
+        matches: list[tuple[str, list[str], bool]] = []
+        for pipeline_name, (definition, error) in zip(pipeline_names, definitions):
+            if error is not None:
                 errors.append(
                     f"definition lookup failed for {_factory_name(alias)}/{pipeline_name}: "
-                    f"{_truncate(exc)}"
+                    f"{error}"
                 )
                 continue
             blob = _serialize_pipeline_definition(definition)
@@ -1959,22 +2728,36 @@ async def discover_pipelines_by_source_system(
             view_hit = bool(view) and (view_lower in blob or view_lower in pipeline_name.lower())
             if view_hit:
                 sections.append(f"view '{view}'")
+            matches.append((pipeline_name, sections, view_hit))
 
-            try:
-                runs, complete = await _query_all_runs(
-                    client,
-                    rg,
-                    factory_name,
-                    _runs_params(pipeline_name, after, now),
+        # Only "did it run in the window, and when last" is needed, which the
+        # first page of a newest-first query answers — paging every match's full
+        # history is what made an every-minute pipeline slow AND "incomplete".
+        latest_runs = await asyncio.gather(
+            *(
+                _bounded(
+                    functools.partial(_latest_run, client, rg, factory_name, n, after, now)
                 )
-            except Exception as exc:
+                for n, _, _ in matches
+            )
+        )
+        logger.info(
+            "ADF discovery %s for %r: %d definition(s) read, %d matched, %d active, %.0f ms",
+            factory_name,
+            needle,
+            len(pipeline_names),
+            len(matches),
+            sum(1 for run, error in latest_runs if run is not None),
+            (time.perf_counter() - started) * 1000,
+        )
+        for (pipeline_name, sections, view_hit), (latest, error) in zip(matches, latest_runs):
+            if error is not None:
                 errors.append(
                     f"{_factory_name(alias)}/{pipeline_name}: run-history lookup failed: "
-                    f"{_truncate(exc)}"
+                    f"{error}"
                 )
                 continue
-            incomplete = incomplete or not complete
-            if not runs:
+            if latest is None:
                 inactive_count += 1
                 # Deliberately unlinked: the whole point of this row is that the
                 # pipeline has NO run in the window, so there is no run id to
@@ -1985,7 +2768,6 @@ async def discover_pipelines_by_source_system(
                     f"(matched: {', '.join(sections)})"
                 )
                 continue
-            latest = _sort_by_start(runs)[0]
             # Built from THIS row's factory triple, never the default and never
             # targets[0]: this loop sweeps every configured factory, so the row
             # being printed is routinely from a different subscription than the
@@ -2097,11 +2879,6 @@ async def discover_pipelines_by_source_system(
         lines.append(
             f"  No pipeline definition referenced '{needle}' (view context: "
             f"{view or '(not supplied)'})."
-        )
-    if incomplete:
-        lines.append(
-            "  NOTE: run history could not be fully paged for at least one candidate; "
-            "the active set may be incomplete."
         )
     if errors:
         lines.append("  Partial lookup errors: " + "; ".join(errors))
@@ -2272,37 +3049,28 @@ async def validate_pipeline_recovery(
                        selected and reported.
         factory:       Optional factory alias. Leave empty for the default.
     """
-    pipeline_name = (pipeline_name or "").strip()
-    requested_pipeline_name = pipeline_name
+    requested_pipeline_name = (pipeline_name or "").strip()
+    pipeline_name = _bare_pipeline_name(requested_pipeline_name)
     failed_run_id = (failed_run_id or "").strip()
     if not pipeline_name and not failed_run_id:
         return (
             "[adf-agent] Provide a failed_run_id, or a pipeline_name to find its latest "
             "failed run."
         )
-    try:
-        alias, sub, rg, name = _resolve_factory(factory)
-    except _InputError as exc:
-        return str(exc)
-    client = await _client(sub)
     now = datetime.now(timezone.utc)
 
     # --- Step 1: identify the failed run and capture its recovery identity ----
     selected_note = ""
+    note = ""
     if failed_run_id:
-        try:
-            failed = await client.pipeline_runs.get(rg, name, failed_run_id)
-        except Exception as exc:
-            # The ONE place in this tool that must not link. Unlike the tools
-            # that call _locate_run, this one takes whatever factory was asked
-            # for (the default, when none was), so the commonest cause of this
-            # error is a run that lives in a DIFFERENT factory. A link built
-            # from this factory would open a page that cannot contain the run,
-            # turning "I could not fetch it" into "it does not exist".
-            return (
-                f"[adf-agent] ERROR fetching run '{failed_run_id}' in factory "
-                f"{_factory_label(alias)}: {_truncate(exc)}"
-            )
+        # A run id carries no factory, so an un-named one is looked up in every
+        # configured factory (default first); a named one is honoured as given.
+        located = await _locate_run(failed_run_id, factory)
+        if isinstance(located, str):
+            # No link: the string names a factory that errored or every factory
+            # that did not hold the run, and no page built from those can show it.
+            return located
+        alias, sub, rg, name, client, failed = located
         # Past the fetch, the run is known to live HERE, so every line below
         # that names a run id links it against this factory.
         if failed.status != "Failed":
@@ -2312,10 +3080,13 @@ async def validate_pipeline_recovery(
                 f"{_run_link(sub, rg, name, failed_run_id)}"
             )
         run_pipeline_name = (failed.pipeline_name or "").strip()
+        # Compared the way pipeline names resolve everywhere else (case,
+        # separators and folder path ignored): only a DIFFERENT pipeline is a
+        # mismatch, not the same one retyped.
         if (
-            requested_pipeline_name
+            pipeline_name
             and run_pipeline_name
-            and requested_pipeline_name != run_pipeline_name
+            and _squash(pipeline_name) != _squash(run_pipeline_name)
         ):
             return (
                 f"[adf-agent] INPUT MISMATCH: run '{failed_run_id}' belongs to pipeline "
@@ -2323,26 +3094,49 @@ async def validate_pipeline_recovery(
                 f"'{requested_pipeline_name}'. No recovery decision was made. "
                 f"{_run_link(sub, rg, name, failed_run_id)}"
             )
-        pipeline_name = run_pipeline_name or requested_pipeline_name
+        pipeline_name = run_pipeline_name or pipeline_name
     else:
-        after = now - timedelta(days=_RECOVERY_LOOKBACK_DAYS)
         try:
+            alias, sub, rg, name = _resolve_factory(factory)
+        except _InputError as exc:
+            return str(exc)
+        client = await _client(sub)
+        after = now - timedelta(days=_RECOVERY_LOOKBACK_DAYS)
+
+        async def _failures() -> list:
             runs, _ = await _query_all_runs(
                 client, rg, name, _runs_params(pipeline_name, after, now, status="Failed")
             )
+            return _sort_by_start([r for r in runs if r.status == "Failed"])
+
+        try:
+            failures = await _failures()
         except Exception as exc:
             return (
                 f"[adf-agent] ERROR querying runs in factory {_factory_label(alias)}: "
                 f"{_truncate(exc)}"
             )
-        failures = _sort_by_start([r for r in runs if r.status == "Failed"])
         if not failures:
-            missing = await _pipeline_missing_hint(client, rg, name, alias, pipeline_name)
-            if missing:
-                return missing
+            hit = await _retarget(requested_pipeline_name, pipeline_name, factory, alias)
+            if isinstance(hit, str):
+                return hit
+            if hit is not None:
+                note = _resolution_note(requested_pipeline_name, hit, alias) + "\n"
+                alias, sub, rg, name, pipeline_name = (
+                    hit.alias, hit.sub, hit.rg, hit.factory_name, hit.name
+                )
+                try:
+                    client = await _client(sub)
+                    failures = await _failures()
+                except Exception as exc:
+                    return (
+                        f"{note}[adf-agent] ERROR querying runs in factory "
+                        f"{_factory_label(alias)}: {_truncate(exc)}"
+                    )
+        if not failures:
             return (
-                f"[adf-agent] No failed run found for pipeline '{pipeline_name}' in factory "
-                f"{_factory_label(alias)} in the last {_RECOVERY_LOOKBACK_DAYS} days — "
+                f"{note}[adf-agent] No failed run found for pipeline '{pipeline_name}' in "
+                f"factory {_factory_label(alias)} in the last {_RECOVERY_LOOKBACK_DAYS} days — "
                 "nothing to validate."
             )
         failed = failures[0]
@@ -2454,7 +3248,7 @@ async def validate_pipeline_recovery(
             "  NOTE: run history could not be fully paged; a matching rerun may exist beyond "
             "the retrieved window."
         )
-    return "\n".join(lines)
+    return note + "\n".join(lines)
 
 
 # How many completed executions the ETA average uses at most.
@@ -2548,7 +3342,8 @@ async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -
         pipeline_name: Exact pipeline name, e.g. "pl_orchestrator".
         factory:       Optional factory alias. Leave empty for the default.
     """
-    pipeline_name = (pipeline_name or "").strip()
+    requested = (pipeline_name or "").strip()
+    pipeline_name = _bare_pipeline_name(requested)
     if not pipeline_name:
         return "[adf-agent] Please provide a pipeline name (get one from list_pipelines)."
     try:
@@ -2565,17 +3360,34 @@ async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -
             f"[adf-agent] ERROR querying runs in factory {_factory_label(alias)}: "
             f"{_truncate(exc)}"
         )
+    note = ""
     if not runs:
-        missing = await _pipeline_missing_hint(client, rg, name, alias, pipeline_name)
-        if missing:
-            return missing
+        hit = await _retarget(requested, pipeline_name, factory, alias)
+        if isinstance(hit, str):
+            return hit
+        if hit is not None:
+            note = _resolution_note(requested, hit, alias) + "\n"
+            alias, sub, rg, name, pipeline_name = (
+                hit.alias, hit.sub, hit.rg, hit.factory_name, hit.name
+            )
+            try:
+                client = await _client(sub)
+                runs, complete = await _query_all_runs(
+                    client, rg, name, _runs_params(pipeline_name, after, now)
+                )
+            except Exception as exc:
+                return (
+                    f"{note}[adf-agent] ERROR querying runs in factory "
+                    f"{_factory_label(alias)}: {_truncate(exc)}"
+                )
+    if not runs:
         # Existing pipeline, no runs in the window: answer the status question
         # outright, but never let "not running" be read as "a run finished" —
         # there is no outcome to report.
         return (
-            f"[adf-agent] Pipeline '{pipeline_name}' in factory {_factory_label(alias)} is not "
-            f"currently running, and has no runs at all in the last {_ADF_HISTORY_DAYS} days — "
-            "so there is no completed run to report and no runtime history to estimate from.\n"
+            f"{note}[adf-agent] Pipeline '{pipeline_name}' in factory {_factory_label(alias)} "
+            f"is not currently running, and has no runs at all in the last "
+            f"{_ADF_HISTORY_DAYS} days — so there is no completed run to report and no runtime history to estimate from.\n"
             # No run id exists to link, and this is the branch a reader is most
             # likely to want to check against ADF itself, so Monitor earns its
             # place here — with the window caveat, since the claim covers 45 days
@@ -2588,9 +3400,11 @@ async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -
     history = _completed_runs(ordered)[:_ESTIMATE_HISTORY_RUNS]
     stats = _runtime_stats(history)
 
-    lines = [
-        f"[adf-agent] Runtime estimate for '{pipeline_name}' in factory {_factory_label(alias)}"
-    ]
+    header = (
+        f"{note}[adf-agent] Runtime estimate for '{pipeline_name}' in factory "
+        f"{_factory_label(alias)}"
+    )
+    lines = [header]
     if not active:
         latest = ordered[0]
         lines += [
@@ -2727,7 +3541,8 @@ async def analyze_pipeline_runtime(
         sla_minutes:   The SLA in minutes, if known. Omit when none is available.
         factory:       Optional factory alias. Leave empty for the default.
     """
-    pipeline_name = (pipeline_name or "").strip()
+    requested = (pipeline_name or "").strip()
+    pipeline_name = _bare_pipeline_name(requested)
     if not pipeline_name:
         return "[adf-agent] Please provide a pipeline name (get one from list_pipelines)."
     analysis_days = max(1, analysis_days)
@@ -2745,22 +3560,43 @@ async def analyze_pipeline_runtime(
             f"[adf-agent] ERROR querying runs in factory {_factory_label(alias)}: "
             f"{_truncate(exc)}"
         )
+    note = ""
+    if not runs:
+        hit = await _retarget(requested, pipeline_name, factory, alias)
+        if isinstance(hit, str):
+            return hit
+        if hit is not None:
+            note = _resolution_note(requested, hit, alias) + "\n"
+            alias, sub, rg, name, pipeline_name = (
+                hit.alias, hit.sub, hit.rg, hit.factory_name, hit.name
+            )
+            try:
+                client = await _client(sub)
+                runs, complete = await _query_all_runs(
+                    client, rg, name, _runs_params(pipeline_name, after, now)
+                )
+            except Exception as exc:
+                return (
+                    f"{note}[adf-agent] ERROR querying runs in factory "
+                    f"{_factory_label(alias)}: {_truncate(exc)}"
+                )
 
     # Nothing in this tool is linked, and that is deliberate: every line it
     # returns is an AGGREGATE over many runs (count, average, min, max, SLA
     # exceedances) and it never names a run id. There is no single run a link
     # could open, and Monitor's 24-hour grid is not where anyone re-derives a
     # 30-day average. get_pipeline_runtime_estimate is the tool that names runs.
+    header = (
+        f"{note}[adf-agent] Runtime analysis for '{pipeline_name}' "
+        f"(factory {_factory_label(alias)})"
+    )
     lines = [
-        f"[adf-agent] Runtime analysis for '{pipeline_name}' (factory {_factory_label(alias)})",
+        header,
         f"  Analysis Period: last {analysis_days} day(s)",
     ]
     over_retention = analysis_days > _ADF_HISTORY_DAYS
 
     if not runs:
-        missing = await _pipeline_missing_hint(client, rg, name, alias, pipeline_name)
-        if missing:
-            return missing
         lines.append("  Runs Analysed: 0 — no runs in this period; nothing to analyse.")
         if over_retention:
             lines.append(_history_limit_note(analysis_days))
@@ -3252,9 +4088,11 @@ async def rerun_failed_pipeline(
 #     was opened, and every row spells out that gap AND its direction, so the
 #     reader judges the link instead of inheriting one the tool asserted.
 
-_INCIDENT_BEFORE_HOURS = 24  # the failure almost always precedes the ticket
-_INCIDENT_AFTER_HOURS = 4  # ... but a ticket can be raised mid-failure
-_INCIDENT_MAX_SPAN_HOURS = 24 * _ADF_HISTORY_DAYS  # nothing older is in ADF anyway
+# The incident use case searches 30 minutes either side of the moment the ticket
+# was opened. The old 24h-before / 4h-after default pulled a day of unrelated
+# failures into the answer; a wider window is for when the user asks for one.
+_INCIDENT_WINDOW_MINUTES = 30
+_INCIDENT_MAX_SPAN_MINUTES = 24 * 60 * _ADF_HISTORY_DAYS  # nothing older is in ADF anyway
 _INCIDENT_MAX_ROWS = 8  # failed-run rows listed; the count is still exact
 _INCIDENT_MAX_CARDS = 3  # full activity-level cards, closest failures first
 _INCIDENT_MAX_TEXT = 20_000  # guard against a pasted attachment dump
@@ -3297,20 +4135,25 @@ def _parse_moment(value: str, label: str) -> datetime:
         ) from exc
 
 
-def _incident_span(hours_before, hours_after) -> tuple[int, int]:
-    """Clamp the caller's correlation window to something ADF can answer."""
+def _incident_span(minutes_before, minutes_after) -> tuple[int, int]:
+    """Clamp the caller's correlation window, in minutes, to something ADF can answer."""
 
-    def _hours(value, default: int, floor: int) -> int:
+    def _minutes(value, floor: int) -> int:
         try:
-            hours = int(value)
+            minutes = int(value)
         except (TypeError, ValueError):
-            return default
-        return max(floor, min(hours, _INCIDENT_MAX_SPAN_HOURS))
+            return _INCIDENT_WINDOW_MINUTES
+        return max(floor, min(minutes, _INCIDENT_MAX_SPAN_MINUTES))
 
-    return (
-        _hours(hours_before, _INCIDENT_BEFORE_HOURS, 1),
-        _hours(hours_after, _INCIDENT_AFTER_HOURS, 0),
-    )
+    return _minutes(minutes_before, 1), _minutes(minutes_after, 0)
+
+
+def _span_text(minutes: int) -> str:
+    """A window side as a reader says it: '30 min', '2h', '1h 30 min'."""
+    hours, rest = divmod(minutes, 60)
+    if not hours:
+        return f"{rest} min"
+    return f"{hours}h {rest} min" if rest else f"{hours}h"
 
 
 def _mentions(text: str, name: str) -> bool:
@@ -3366,8 +4209,8 @@ async def correlate_incident_with_pipeline_runs(
     opened_at: str = "",
     incident_number: str = "",
     pipeline_names: str = "",
-    hours_before: int = 24,
-    hours_after: int = 4,
+    minutes_before: int = _INCIDENT_WINDOW_MINUTES,
+    minutes_after: int = _INCIDENT_WINDOW_MINUTES,
     factory: str = "",
 ) -> str:
     """Find the Data Factory runs behind a ServiceNow incident, ranked by time.
@@ -3375,12 +4218,13 @@ async def correlate_incident_with_pipeline_runs(
     The ticket→pipeline investigation in one call. Given an incident's TEXT and
     the moment it was OPENED, this (1) matches every pipeline the ticket mentions
     against the factories' real pipeline lists, (2) lists the FAILED runs of
-    those pipelines around the ticket's creation time — closest failure first,
-    with the gap and its direction spelled out — and (3) returns full
-    activity-level detail for the closest ones, so the likely root cause is in
-    the first answer instead of three tool calls later. Any run GUID pasted into
-    the ticket is looked up directly as well. When the ticket names no pipeline
-    this deployment has, it falls back to every failed run in the window.
+    those pipelines within 30 minutes either side of the ticket's creation
+    time — closest failure first, with the gap and its direction spelled out —
+    and (3) returns full activity-level detail for the closest ones, so the
+    likely root cause is in the first answer instead of three tool calls later.
+    Any run GUID pasted into the ticket is looked up directly as well. When the
+    ticket names no pipeline this deployment has, it falls back to every failed
+    run in the window.
 
     Args:
         incident_text:   The ticket's text — short description, description and
@@ -3397,8 +4241,10 @@ async def correlate_incident_with_pipeline_runs(
                          caller already knows which ones the ticket means. They
                          are validated against the factory exactly like names
                          found in the text.
-        hours_before:    How far BEFORE the ticket to look (default 24).
-        hours_after:     How far AFTER the ticket to look (default 4).
+        minutes_before:  How far BEFORE the ticket's opened time to look, in
+                         minutes (default 30). Change it only when the user
+                         asks for a different window.
+        minutes_after:   How far AFTER it to look, in minutes (default 30).
         factory:         Optional factory alias. Leave EMPTY to search every
                          configured factory — a ticket rarely says which one.
     """
@@ -3432,7 +4278,7 @@ async def correlate_incident_with_pipeline_runs(
         targets = _resolve_factory_targets(factory, all_when_empty=True)
     except _InputError as exc:
         return str(exc)
-    before_h, after_h = _incident_span(hours_before, hours_after)
+    before_m, after_m = _incident_span(minutes_before, minutes_after)
     by_alias = {alias: (sub, rg, name) for alias, sub, rg, name in targets}
 
     # --- Step 1: which of the ticket's names are REAL pipelines, and where ----
@@ -3464,8 +4310,8 @@ async def correlate_incident_with_pipeline_runs(
     hits: list[tuple[str, object]] = []
     truncated = False
     if anchor is not None:
-        after = anchor - timedelta(hours=before_h)
-        before = anchor + timedelta(hours=after_h)
+        after = anchor - timedelta(minutes=before_m)
+        before = anchor + timedelta(minutes=after_m)
         for alias, sub, rg, name in targets:
             if alias not in known:  # its pipeline list failed above
                 continue
@@ -3506,7 +4352,7 @@ async def correlate_incident_with_pipeline_runs(
         out.append(f"  ticket opened : {_fmt_ts(anchor)}")
         out.append(
             f"  search window : {_fmt_ts(after)} → {_fmt_ts(before)} "
-            f"({before_h}h before / {after_h}h after the ticket)"
+            f"({_span_text(before_m)} before / {_span_text(after_m)} after the ticket)"
         )
     out.append("  factories     : " + ", ".join(_factory_label(a) for a, *_ in targets))
     if len(raw_text) > _INCIDENT_MAX_TEXT:
@@ -3561,8 +4407,9 @@ async def correlate_incident_with_pipeline_runs(
         )
         out.append(
             f"  failed runs   : NONE. No run of {scope} failed in that window, so the "
-            "failure this ticket describes is not in the window searched — widen it via "
-            f"hours_before, or it may be outside ADF's ~{_ADF_HISTORY_DAYS}-day history."
+            "failure this ticket describes is not in the window searched. Say so and offer "
+            "a wider window (minutes_before / minutes_after) rather than widening it on "
+            f"your own; it may also be outside ADF's ~{_ADF_HISTORY_DAYS}-day history."
         )
     else:
         lead = f"  failed runs   : {len(ranked)} in the window, closest failure first"
@@ -3736,6 +4583,7 @@ async def correlate_incident_with_pipeline_runs(
 ADF_TOOLS = [
     list_factories,
     list_pipelines,
+    find_pipelines,
     list_pipeline_runs,
     get_pipeline_run_details,
     get_pipeline_run_tree,
@@ -3750,6 +4598,70 @@ ADF_TOOLS = [
     manage_trigger_states,
     rerun_failed_pipeline,
 ]
+
+
+# --- tool-call logging --------------------------------------------------------
+# One INFO line when a tool is called (its arguments) and one when it returns
+# (time taken, size, and its first line — the verdict every answer here leads
+# with), plus the full text at DEBUG. Applied to each tool's coroutine rather than
+# inside the tools, so no return path can skip it; functools.wraps keeps the
+# signature StructuredTool inspects, and the args schema the model sees was
+# already built by @tool, so neither changes.
+
+_LOG_ARG_CHARS = 200
+_LOG_FIRST_LINE_CHARS = 300
+# Logged by size only: pasted ticket text can carry names, emails and anything
+# else an incident holds.
+_LOG_ARGS_BY_SIZE = frozenset({"incident_text"})
+
+
+def _log_args(kwargs: dict) -> str:
+    parts = []
+    for key, value in kwargs.items():
+        if key in _LOG_ARGS_BY_SIZE:
+            parts.append(f"{key}=<{len(str(value or ''))} chars>")
+            continue
+        text = repr(value)
+        if len(text) > _LOG_ARG_CHARS:
+            text = text[:_LOG_ARG_CHARS] + "…"
+        parts.append(f"{key}={text}")
+    return ", ".join(parts) or "(no arguments)"
+
+
+def _logged_coroutine(tool_name: str, coroutine):
+    @functools.wraps(coroutine)
+    async def _call(*args, **kwargs):
+        started = time.perf_counter()
+        logger.info("ADF tool %s called: %s", tool_name, _log_args(kwargs))
+        try:
+            result = await coroutine(*args, **kwargs)
+        except Exception:
+            logger.exception(
+                "ADF tool %s raised after %.0f ms",
+                tool_name,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise
+        text = str(result)
+        first = text.split("\n", 1)[0]
+        if len(first) > _LOG_FIRST_LINE_CHARS:
+            first = first[:_LOG_FIRST_LINE_CHARS] + "…"
+        logger.info(
+            "ADF tool %s returned in %.0f ms: %d chars, %d line(s) — %s",
+            tool_name,
+            (time.perf_counter() - started) * 1000,
+            len(text),
+            text.count("\n") + 1,
+            first,
+        )
+        logger.debug("ADF tool %s output:\n%s", tool_name, text)
+        return result
+
+    return _call
+
+
+for _adf_tool in ADF_TOOLS:
+    _adf_tool.coroutine = _logged_coroutine(_adf_tool.name, _adf_tool.coroutine)
 
 
 __all__ = ["ADF_TOOLS", "close_adf_resources"]

@@ -108,7 +108,8 @@ def test_closed_changes_come_back_newest_implemented_first_across_pages() -> Non
     rendered = result["rendered_answer"]
     assert rendered.startswith(
         "### Recent Ledger Hub Changes\n\n"
-        "Found 61 closed change requests related to 'Ledger Hub'; showing the 3 most recent"
+        "Found 61 closed change requests related to 'Ledger Hub'; showing 1-3, most recent "
+        "first by Actual End Date."
     )
     assert "1. **Change Number:** [CHG0008888](" in rendered
     for line in (
@@ -215,6 +216,42 @@ def test_closed_by_default_and_open_or_cancelled_only_when_asked() -> None:
     assert _invoke(stub, statuses="someday")["kind"] == "invalid_input"
 
 
+def test_show_more_never_repeats_a_change_and_states_the_total() -> None:
+    # 230 New changes: more than one 200-row read.
+    records = [
+        _change(
+            f"CHG{i:07d}", None,
+            state=_pair("-5", "New"), start_date=_pair(f"2026-11-{1 + i % 28:02d} 10:00:00"),
+        )
+        for i in range(230)
+    ]
+    stub = _Stub(records)
+
+    first = _invoke(stub, statuses="new")
+    shown = [c["number"] for c in first["change_requests"]]
+    assert first["rendered_answer"].startswith(
+        "### New Changes\n\n"
+        "Found 230 new change requests; showing 1-10, most recent first by Planned Start."
+    )
+
+    # The tile's "show more": the same call plus the numbers already shown.
+    second = _invoke(stub, statuses="new", already_shown=",".join(shown))
+    more = [c["number"] for c in second["change_requests"]]
+    assert len(more) == 10 and not set(more) & set(shown)
+    assert "Found 230 new change requests; showing 11-20," in second["rendered_answer"]
+    assert "\n\n11. **Change Number:**" in second["rendered_answer"]
+
+    # Past the first 200 the next block is read from the server, not page 1 again.
+    stub.calls.clear()
+    past = _invoke(stub, statuses="new", limit=20, already_shown=",".join(f"CHG{i:07d}" for i in range(200)))
+    assert {offset for _, offset in stub.calls} == {200}
+    assert {c["number"] for c in past["change_requests"]} <= {f"CHG{i:07d}" for i in range(200, 230)}
+    assert "showing 201-220," in past["rendered_answer"]
+
+    done = _invoke(stub, statuses="new", already_shown=",".join(f"CHG{i:07d}" for i in range(230)))
+    assert done["rendered_answer"] == "No more new change requests beyond the 230 already shown."
+
+
 def test_no_match_says_so() -> None:
     result = _invoke(_Stub([]), query="Ledger Hub")
     assert result["rendered_answer"] == "No closed change requests found related to 'Ledger Hub'."
@@ -268,3 +305,24 @@ def test_client_refuses_without_the_change_request_url() -> None:
         assert "MULESOFT_CHANGE_REQUEST_API_URL" in str(exc)
     else:
         raise AssertionError("expected ServiceNowError")
+
+
+def _main() -> int:
+    # `make test` (and so CI) runs each suite as a plain script: without this runner
+    # the file was only imported and its tests never ran.
+    checks = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
+    failures = 0
+    for check in checks:
+        try:
+            check()
+        except Exception as exc:  # noqa: BLE001 - standalone runner reports all
+            failures += 1
+            print(f"FAIL {check.__name__}: {type(exc).__name__}: {exc}")
+        else:
+            print(f"ok   {check.__name__}")
+    print(f"\n{len(checks) - failures}/{len(checks)} passed")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

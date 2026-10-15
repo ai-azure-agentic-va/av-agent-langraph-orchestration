@@ -49,8 +49,10 @@ except ValueError:
 
 # ponytail: reads at most 4 pages of 50 per search before sorting. Past that, only the
 # 200 most recently UPDATED matches are sorted, which still holds the most recently
-# ended ones because a change is closed (updated) right after its work ends. Raise the
-# cap if a team's closed history outgrows it.
+# ended ones because a change is closed (updated) right after its work ends. A single
+# search pages on in 200-row blocks (each sorted on its own); a subject of several
+# words is read from the top only, so its count is then a lower bound. Raise the cap
+# if a team's closed history outgrows it.
 _PAGE_SIZE = 50
 _MAX_ROWS_READ = 200
 
@@ -252,31 +254,37 @@ def _render_change(item: Mapping[str, Any], *, full: bool = False) -> str:
 
 
 def _render_answer(
-    items: list[dict[str, Any]], *, total: int | None, subject: str, title: str, label: str
+    items: list[dict[str, Any]],
+    *,
+    total: int,
+    exact: bool,
+    first: int,
+    subject: str,
+    title: str,
+    label: str,
 ) -> str:
     kind = f"{label} change requests" if label else "change requests"
     if not items:
+        if first > 1:
+            return f"No more {kind}{subject} beyond the {first - 1} already shown."
         return f"No {kind} found{subject}."
     # Closed changes sort by when the work ended; the rest by when it is planned.
     order = {"closed": " by Actual End Date", "": ""}.get(label, " by Planned Start")
-    shown = len(items)
-    if total is None:
-        # A search hit the read cap, so the full match count is unknown.
-        header = f"Showing the {shown} most recent {kind}{subject}{order}."
+    last = first + len(items) - 1
+    total = max(total, last)
+    if total == 1:
+        kind = kind.replace("requests", "request")
+    header = f"Found {total if exact else f'at least {total}'} {kind}{subject}"
+    if first == 1 and last == total:
+        header += f", most recent first{order}."
     else:
-        if total == 1:
-            kind = kind.replace("requests", "request")
-        header = f"Found {total} {kind}{subject}"
-        if total > shown:
-            header += f"; showing the {shown} most recent{order}."
-        else:
-            header += f", most recent first{order}."
-    # Numbered, with detail lines indented to nest under the number.
+        header += f"; showing {first}-{last}, most recent first{order}."
+    # Numbered on from earlier pages, with detail lines indented under the number.
     return "\n\n".join(
         [f"### {title}", header]
         + [
             f"{index}. " + _render_change(item).replace("\n", "\n" + " " * len(f"{index}. "))
-            for index, item in enumerate(items, 1)
+            for index, item in enumerate(items, first)
         ]
     )
 
@@ -290,20 +298,22 @@ def _resolve_limit(limit: int | None) -> int:
 
 
 async def _read(
-    client: ServiceNowClient, filters: dict[str, Any]
-) -> tuple[list[dict[str, Any]], bool]:
-    """Every row of one search, up to the read cap. Returns ``(rows, truncated)``."""
+    client: ServiceNowClient, filters: dict[str, Any], start: int = 0
+) -> tuple[list[dict[str, Any]], int]:
+    """One search's rows from ``start``, up to the read cap, and its total match count."""
 
     rows: list[dict[str, Any]] = []
+    total = 0
     while len(rows) < _MAX_ROWS_READ:
         envelope = await client.list_change_requests(
-            filters=filters, limit=_PAGE_SIZE, offset=len(rows)
+            filters=filters, limit=_PAGE_SIZE, offset=start + len(rows)
         )
         page = envelope.get("change_requests") or []
         rows.extend(page)
+        total = envelope.get("total_count") or 0
         if not page or not envelope.get("has_more"):
-            return rows, False
-    return rows, True
+            break
+    return rows, max(total, start + len(rows))
 
 
 @tool
@@ -375,6 +385,17 @@ async def servicenow_list_change_requests(
         int,
         Field(description=f"Max changes to return (1-{MAX_CHANGE_LIMIT})."),
     ] = DEFAULT_CHANGE_LIMIT,
+    already_shown: Annotated[
+        str,
+        Field(
+            description=(
+                "PAGING only ('show more', 'next page', 'the rest'): every CHG number "
+                "the task lists as already shown, comma-separated, with the original "
+                "call's other arguments unchanged. The tool continues after them. "
+                "Empty for a new search."
+            )
+        ),
+    ] = "",
 ) -> dict[str, Any]:
     """Search ServiceNow CHANGE REQUESTS (CHG…): the changes made to an application.
 
@@ -382,8 +403,9 @@ async def servicenow_list_change_requests(
     requests for <app>", "what changed in <app> lately", "open changes for <app>", or
     a CHG number. Returns CLOSED changes by default, most recently implemented first
     (Actual End Date), each with its assignee, assignment group, closure code and
-    closure notes; open or other states when the user names them. Not for incidents
-    or procedures: those have their own tools.
+    closure notes; open or other states when the user names them. Every list states
+    its total; "show more" passes the changes already shown in `already_shown`.
+    Not for incidents or procedures: those have their own tools.
     """
 
     try:
@@ -427,34 +449,48 @@ async def servicenow_list_change_requests(
                 else f"No change request {number} was found."
             )
         else:
+            # "Show more": the changes already shown are skipped, so no page repeats one.
+            shown = already_shown.upper() if isinstance(already_shown, str) else ""
+            seen = set(re.findall(r"CHG\d+", shown))
+            # A single search reads the 200-row block that holds the next change.
+            block = len(seen) // _MAX_ROWS_READ * _MAX_ROWS_READ
             terms = subject_terms(keyword)
             # One search per term, then only the changes that carry EVERY term.
             # ponytail: one search per word; fine for a 1-3 word name. Pick the
             # rarest words first if long subjects ever make this slow.
             searches = [{**filters, "keyword": term} for term in terms] or [filters]
-            results = await asyncio.gather(*(_read(client, f) for f in searches))
+            start = block if len(searches) == 1 else 0
+            results = await asyncio.gather(*(_read(client, f, start) for f in searches))
             unique: dict[str, dict[str, Any]] = {}
             for rows, _ in results:
                 for row in rows:
                     unique.setdefault(_plain(row.get("number")).upper(), row)
             matches = [row for row in unique.values() if _about(row, terms)]
-            truncated = any(cut for _, cut in results)
-            if not matches and keyword and not group:
+            if len(results) == 1:
+                total, exact = results[0][1], True
+            else:
+                # The union's size is exact only when every search was read to its end.
+                total = len(matches)
+                exact = all(found <= len(rows) for rows, found in results)
+            if not total and keyword and not group:
                 # "Changes related to <TEAM>": a team name never appears in a change's
                 # text, so an empty subject search gets one try as the exact group.
-                rows, truncated = await _read(client, {**filters, "assignment_group": keyword})
-                if rows:
-                    matches, subject = rows, f" for {keyword}"
-            items = sorted(
+                rows, found = await _read(client, {**filters, "assignment_group": keyword}, block)
+                if found:
+                    matches, total, exact, subject = rows, found, True, f" for {keyword}"
+            ordered = sorted(
                 (normalize_change(row) for row in matches),
                 # When the work ended, else when it is planned to start. A change
                 # with neither sorts last, never posing as the newest.
                 key=lambda item: item["actual_end"] or item["planned_start"],
                 reverse=True,
-            )[:resolved_limit]
+            )
+            items = [item for item in ordered if item["number"] not in seen][:resolved_limit]
             rendered = _render_answer(
                 items,
-                total=None if truncated else len(matches),
+                total=total,
+                exact=exact,
+                first=len(seen) + 1,
                 subject=subject,
                 title=title,
                 label=label,
