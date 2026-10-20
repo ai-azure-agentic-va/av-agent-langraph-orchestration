@@ -12,6 +12,11 @@ virtual path :data:`SKILLS_MOUNT` is served by a ``FilesystemBackend`` scoped
 (``virtual_mode=True``) to this directory. Skill ``read_file`` calls and the
 ``SkillsMiddleware`` loader both resolve through that route; everything else
 stays in memory.
+
+Skills under ``adf/`` belong to the adf-agent subagent alone. ``adf/`` has no
+``SKILL.md`` of its own, so the loader (one level deep) skips it and the
+orchestrator never lists them; the subagent's prompt names each file's path
+for it to ``read_file`` when the rule that needs it applies.
 """
 
 from __future__ import annotations

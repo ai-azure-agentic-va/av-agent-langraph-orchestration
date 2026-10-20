@@ -29,7 +29,7 @@ import logging
 import re
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -41,6 +41,7 @@ from azure.mgmt.datafactory.models import (
     RunQueryOrderBy,
 )
 from langchain_core.tools import tool
+from langsmith import traceable
 
 from v1.core.config import get_settings
 from v1.utils.azure_credentials import ThreadOffloadAsyncCredential
@@ -256,8 +257,8 @@ def _resolve_factory(factory: str) -> tuple[str, str, str, str]:
             # caller to type a value back, so an alias here would re-teach the
             # vocabulary the rest of the output no longer uses.
             raise _InputError(
-                "[adf-agent] Several factories are configured and no default is set — "
-                "pass factory=<name>. Available: "
+                "[adf-agent] Several factories are configured and no default is set, so "
+                "the factory has to be named. Available: "
                 + ", ".join(_factory_label(a) for a in _factory_aliases())
             )
     entry = mapping.get(alias)
@@ -484,11 +485,14 @@ async def _locate_run(run_id: str, factory: str):
         return alias, sub, rg, name, client, run
 
     searched = ", ".join(_factory_label(alias) for alias in missed)
+    # Facts only: the subagent copies tool lines into its answer, and a hint to
+    # name the factory reached a user who had already named it (UC2-09, run 8).
+    elsewhere = "in another factory" if explicit else "in a factory this deployment does not read"
     return (
         f"[adf-agent] Run '{run_id}' was not found in "
         + (f"factory {searched}." if len(missed) == 1 else f"any configured factory: {searched}.")
-        + " Check the run id, or name the factory explicitly if it is one this"
-        " deployment does not read."
+        + f" ADF keeps runs for about {_ADF_HISTORY_DAYS} days, so a run older than that, or "
+        f"one {elsewhere}, is not found either."
     )
 
 
@@ -604,7 +608,10 @@ def _invoked_text(run) -> str:
     ib = getattr(run, "invoked_by", None)
     if not ib:
         return "?"
-    text = f"{ib.name} ({ib.invoked_by_type})"
+    # A parent's Execute Pipeline puts its ACTIVITY run's id in ``name``, which
+    # says nothing about who started the run; the parent pipeline's name does.
+    who = (getattr(ib, "pipeline_name", None) if _is_child_run(run) else None) or ib.name
+    text = f"{who} ({ib.invoked_by_type})"
     if _is_child_run(run):
         text += f" parentRunId={ib.pipeline_run_id}"
     return text
@@ -905,12 +912,22 @@ class _PipelineHit:
     name: str
     folder: str
     how: str
+    # The same pipeline published in other configured factories, as hits.
+    copies: tuple = ()
 
 
 # Separators people and models swap freely inside a pipeline name.
 _SEPARATORS_RE = re.compile(r"[\s_\-./\\>:]+")
 # Characters ADF forbids in a pipeline name, so they can only be path syntax.
 _PATH_SPLIT_RE = re.compile(r"[/\\>]")
+# Characters ADF forbids anywhere in a pipeline, dataset or trigger name. One
+# leading or trailing a name can only be punctuation around it.
+_FORBIDDEN_NAME_CHARS = ".+?/<>*%&:\\"
+# Quotes and bracket pairs people and models wrap a name in. A QA script asked
+# for pipelines named "<surveyco>", and the brackets were searched for
+# literally, so nothing matched.
+_NAME_QUOTES = "`'\"‘’“”"
+_NAME_BRACKETS = (("<", ">"), ("[", "]"), ("(", ")"), ("{", "}"))
 
 
 def _squash(text) -> str:
@@ -923,20 +940,41 @@ def _tokens(text) -> list[str]:
     return [t for t in _SEPARATORS_RE.split(str(text or "").casefold()) if t]
 
 
+def _clean_name(raw) -> str:
+    """A name or search term without the quotes, brackets and punctuation around it.
+
+    '"<surveyco>"', '`pl_x`.', '[pl_x]' and 'pl_x,' all come back as the bare
+    text. Only the ENDS are touched — what ADF forbids in a name cannot be part
+    of one there — so an interior '(' or ',' that a name may legitimately hold
+    survives.
+    """
+    text = str(raw or "").strip()
+    while True:
+        before = text
+        text = text.strip(_NAME_QUOTES).strip()
+        for left, right in _NAME_BRACKETS:
+            if len(text) >= 2 and text.startswith(left) and text.endswith(right):
+                text = text[1:-1].strip()
+        text = text.strip(_FORBIDDEN_NAME_CHARS).rstrip(",;").strip()
+        if text == before:
+            return text
+
+
 def _bare_pipeline_name(raw: str) -> str:
     """The pipeline name inside whatever the caller wrapped around it.
 
     'ingestion/surveyco/pl-100-01-…' (an ADF Studio folder path), the git
-    file 'pipeline/pl-x.json', and a quoted or back-ticked name all come back as
-    the bare name ADF knows. A folder-qualified name used to be passed straight
-    to ADF, which can never match it, and came back as "DOES NOT EXIST".
+    file 'pipeline/pl-x.json', and a quoted, bracketed or back-ticked name all
+    come back as the bare name ADF knows. A folder-qualified name used to be
+    passed straight to ADF, which can never match it, and came back as "DOES
+    NOT EXIST".
     """
-    text = (raw or "").strip().strip("`'\"").strip()
+    text = _clean_name(raw)
     if _PATH_SPLIT_RE.search(text):
-        segments = [s.strip() for s in _PATH_SPLIT_RE.split(text) if s.strip()]
+        segments = [s for s in (_clean_name(s) for s in _PATH_SPLIT_RE.split(text)) if s]
         text = segments[-1] if segments else ""
     if text.casefold().endswith(".json"):
-        text = text[: -len(".json")]
+        text = _clean_name(text[: -len(".json")])
     if text != (raw or "").strip():
         logger.info("ADF pipeline name %r normalised to %r", raw, text)
     return text
@@ -956,10 +994,76 @@ def _folder_of(pipeline) -> str:
     return str(name or "").strip().strip("/")
 
 
+def _description_line(pipeline) -> str:
+    """The description stored on a pipeline as its own line ('' when it has none).
+
+    Shown with the structure, so 'what is pl_x for?' gets the factory's own
+    one-liner from the same call instead of a second listing.
+    """
+    if isinstance(pipeline, dict):
+        text = pipeline.get("description") or (pipeline.get("properties") or {}).get("description")
+    else:
+        text = getattr(pipeline, "description", None)
+    text = _truncate(text or "")
+    return f"\n  Description: {text}" if text else ""
+
+
+def _parameters_line(pipeline) -> str:
+    """The parameters a pipeline declares as their own line: name (type, default ...).
+
+    Recovery matches a run's exact parameter set, so a definition shown without
+    them reads as having none. '' off the typed fallback, which says nothing.
+    """
+    if not isinstance(pipeline, dict):
+        return ""
+    declared = (pipeline.get("properties") or {}).get("parameters") or {}
+    if not isinstance(declared, dict) or not declared:
+        return "\n  Parameters: none declared"
+    parts = []
+    for name, spec in declared.items():
+        spec = spec if isinstance(spec, dict) else {}
+        text = f"{name} ({spec.get('type') or 'type not set'}"
+        if "defaultValue" in spec:
+            default = _truncate(repr(spec["defaultValue"]))
+            text += f", default {default if len(default) <= 80 else default[:80] + ' …'}"
+        parts.append(text + ")")
+    return "\n  Parameters: " + ", ".join(parts)
+
+
 def _folder_text(folder: str) -> str:
     return folder or "(root)"
 
 
+def _trace_factory_only(inputs: dict) -> dict:
+    """A factory read's trace inputs: the factory, not its subscription or resource group."""
+    return {"factory": inputs.get("factory_name")}
+
+
+def _inventory_trace(pipelines) -> dict:
+    """What a factory's pipeline list held, for the LangSmith trace: the root, then each folder.
+
+    The model sees only matches and counts; the trace keeps the whole tree, so
+    which pipelines ADF returned, and in which folder, can be checked against
+    ADF Studio from the trace alone. A list that failed shows as the error.
+    """
+    tree: dict[str, list[str]] = {}
+    for p in pipelines or ():
+        tree.setdefault(_folder_text(p.folder), []).append(p.name)
+    ordered = sorted(tree.items(), key=lambda kv: (kv[0] != "(root)", kv[0].casefold()))
+    return {
+        "pipelines": sum(len(names) for names in tree.values()),
+        "at_root": len(tree.get("(root)", ())),
+        "folders": len(tree) - ("(root)" in tree),
+        "tree": {folder: sorted(names, key=str.casefold) for folder, names in ordered},
+    }
+
+
+@traceable(
+    name="adf_pipeline_inventory",
+    run_type="tool",
+    process_inputs=_trace_factory_only,
+    process_outputs=_inventory_trace,
+)
 async def _factory_inventory(
     alias: str, sub: str, rg: str, factory_name: str
 ) -> list[_PipelineInfo]:
@@ -1017,7 +1121,9 @@ async def _inventories(targets: list) -> tuple[dict, dict]:
         try:
             return alias, await _factory_inventory(alias, sub, rg, name), None
         except Exception as exc:  # noqa: BLE001 - reported per factory
-            logger.warning("ADF inventory %s failed: %s", name, _truncate(exc))
+            logger.warning(
+                "ADF inventory %s failed (%s): %s", name, type(exc).__name__, _truncate(exc)
+            )
             return alias, None, _truncate(exc)
 
     found: dict = {}
@@ -1056,7 +1162,9 @@ def _closest_names(wanted: str, pipelines: list[_PipelineInfo]) -> list[_Pipelin
     Scored two ways and the better one kept: character similarity on the
     squashed names (typos, a dropped segment) and the share of the caller's
     words that appear in the name or folder (a partial name such as 'surveyco
-    daily ingest'). Default factory first on a tie.
+    daily ingest'). Similarity alone needs 0.7: at 0.56, 'LedgerSync' (a wiki
+    page) offered pl_FileShareSync, and the agent described that pipeline.
+    Default factory first on a tie.
     """
     target = _squash(wanted)
     words = _tokens(wanted)
@@ -1065,9 +1173,8 @@ def _closest_names(wanted: str, pipelines: list[_PipelineInfo]) -> list[_Pipelin
         similarity = difflib.SequenceMatcher(None, target, _squash(p.name)).ratio()
         haystack = f"{p.name} {p.folder}".casefold()
         coverage = sum(1 for w in words if w in haystack) / len(words) if words else 0.0
-        score = max(similarity, coverage)
-        if score >= 0.5:
-            scored.append((score, p))
+        if coverage >= 0.5 or similarity >= 0.7:
+            scored.append((max(similarity, coverage), p))
     scored.sort(key=lambda item: -item[0])
     return [p for _, p in scored[:_SUGGESTIONS_MAX]]
 
@@ -1088,34 +1195,47 @@ _MISSING_FROM_STRUCTURE = (
 def _missing_pipeline_text(
     wanted: str, searched: list[str], failed: dict, inventories: dict, consequence: str
 ) -> str:
-    """The "does not exist" answer, naming everywhere that was searched and what is close."""
-    where = (
-        f"factory {_factory_label(searched[0])}"
-        if len(searched) == 1
-        else "any configured factory (searched "
-        + ", ".join(_factory_label(a) for a in searched)
-        + ")"
-    )
+    """The "does not exist" answer, naming everywhere that was searched and what is close.
+
+    DOES NOT EXIST only when every factory was read: a factory whose list could
+    not be read may hold the pipeline, so then it is "not found" there instead.
+    """
+    read = ", ".join(_factory_label(a) for a in searched)
+    if failed:
+        headline = (
+            f"[adf-agent] Pipeline '{wanted}' was NOT FOUND in the factories that could be "
+            f"read ({read}), but these could NOT be read, so it may be in one of them: "
+            + "; ".join(f"{_factory_label(a)} ({error})" for a, error in failed.items())
+            + ". So this is NOT an answer that it does not exist."
+        )
+    elif len(searched) == 1:
+        headline = f"[adf-agent] Pipeline '{wanted}' DOES NOT EXIST in factory {read}{consequence}"
+    else:
+        headline = (
+            f"[adf-agent] Pipeline '{wanted}' DOES NOT EXIST in any configured factory "
+            f"(searched {read}){consequence}"
+        )
     lines = [
-        f"[adf-agent] Pipeline '{wanted}' DOES NOT EXIST in {where}{consequence}",
+        headline,
         "  Matched ignoring letter case, '-'/'_'/space differences and any folder path.",
     ]
-    if failed:
-        lines.append(
-            "  Could NOT search: "
-            + "; ".join(f"{_factory_label(a)} ({error})" for a, error in failed.items())
-            + " — the pipeline may be there."
-        )
     close = _closest_names(wanted, [p for a in searched for p in inventories.get(a, [])])
     if close:
         lines.append("  Closest published names (factory | folder | pipeline):")
         lines += [f"    - {_pipeline_cells(p)}" for p in close]
+        # Facts, not "call again with …": the subagent copies tool lines into
+        # its answer, and an instruction to call a tool reached users verbatim.
         lines.append(
-            "  If one of these is meant, call again with that exact pipeline name and its factory."
+            "  None of these is the name asked for; each is named exactly as published, "
+            "with its factory."
         )
+    else:
+        # Said outright: with neither suggestions nor this line, the answer could
+        # not tell "nothing is close" from "nothing was compared" (UC2-08).
+        lines.append(f"  No published pipeline in {read} has a similar name.")
     lines.append(
-        "  For a keyword or partial-name search (names, folders, descriptions), use "
-        "find_pipelines."
+        "  This was a check for the name itself; a keyword or partial-name search "
+        "(names, folders, descriptions) can still be run."
     )
     lines.append(f"  {_PUBLISHED_ONLY_NOTE}")
     return "\n".join(lines)
@@ -1131,31 +1251,40 @@ async def _locate_pipeline(
     inventory could be read at all — the caller then keeps its plain answer
     rather than claiming anything.
 
-    The named (or default) factory is searched first. An EXPLICIT factory is
-    honoured: a pipeline found only elsewhere is reported as being there, never
-    silently answered from a factory the caller did not ask about. With no
-    factory named, a pipeline living in exactly one other factory is used — that
-    is the common "the tool looked in the default factory" miss — and a name in
-    several factories is handed back as a choice.
+    The named (or default) factory is searched first; with neither, every
+    factory is searched alike. An EXPLICIT factory is honoured: a pipeline found
+    only elsewhere is reported as being there, never silently answered from a
+    factory the caller did not ask about. With no factory named, a pipeline in
+    other factories under one name is used — that is the common "the tool
+    looked in the default factory" miss — and different names are handed back
+    as a choice. Same-name copies in other factories ride along on the hit.
     """
     wanted = _bare_pipeline_name(requested)
     explicit = (factory or "").strip()
     try:
-        primary = _resolve_factory(explicit)
+        primary = _resolve_factory(explicit) if explicit or _default_alias() else None
     except _InputError as exc:
         return str(exc)
-    others = [t for t in _configured_targets() if t[0] != primary[0]]
-    inventories, failed = await _inventories([primary, *others])
+    others = [t for t in _configured_targets() if primary is None or t[0] != primary[0]]
+    targets = [primary, *others] if primary else others
+    inventories, failed = await _inventories(targets)
     if not inventories:
         return None
-    by_alias = {t[0]: t for t in [primary, *others]}
+    by_alias = {t[0]: t for t in targets}
 
     def _hit(p: _PipelineInfo, how: str) -> _PipelineHit:
         alias, sub, rg, name = by_alias[p.alias]
-        found = _PipelineHit(alias, sub, rg, name, p.name, p.folder, how)
+        copies = tuple(
+            _PipelineHit(*by_alias[q.alias], q.name, q.folder, _name_matches([q], wanted)[1])
+            for a, listed in inventories.items()
+            if a != alias
+            for q in listed
+            if q.name.casefold() == p.name.casefold()
+        )
+        found = _PipelineHit(alias, sub, rg, name, p.name, p.folder, how, copies)
         logger.info(
-            "ADF pipeline %r resolved to %r in %s (folder %s, %s match)",
-            requested, p.name, name, _folder_text(p.folder), how,
+            "ADF pipeline %r resolved to %r in %s (folder %s, %s match, %d other copies)",
+            requested, p.name, name, _folder_text(p.folder), how, len(copies),
         )
         return found
 
@@ -1166,10 +1295,10 @@ async def _locate_pipeline(
         return "\n".join(
             [f"[adf-agent] {intro} (factory | folder | pipeline):"]
             + [f"  - {_pipeline_cells(p)}" for p in matches]
-            + ["  Call again with the exact pipeline name and factory=<factory> of the one meant."]
+            + ["  Each is a separate pipeline, and which one is meant decides the answer."]
         )
 
-    matches, how = _name_matches(inventories.get(primary[0], []), wanted)
+    matches, how = _name_matches(inventories.get(primary[0], []) if primary else [], wanted)
     if len(matches) == 1:
         return _hit(matches[0], how)
     if matches:
@@ -1195,54 +1324,216 @@ async def _locate_pipeline(
                 f"Pipeline '{wanted}' DOES NOT EXIST in factory {_factory_label(primary[0])}, "
                 "the factory that was named — it exists in another configured factory",
             )
-        if len(elsewhere) == 1:
+        if len({p.name.casefold() for _, p, _ in elsewhere}) == 1:
             _, p, tier = elsewhere[0]
             return _hit(p, tier)
         return _choice(
             [p for _, p, _ in elsewhere],
             f"Pipeline '{wanted}' is not in the default factory "
-            f"{_factory_label(primary[0])} and exists in more than one other factory",
+            f"{_factory_label(primary[0])} and exists in more than one other factory"
+            if primary
+            else f"'{wanted}' matches more than one pipeline across the configured factories",
         )
 
-    searched = [t[0] for t in [primary, *others] if t[0] in inventories]
+    searched = [t[0] for t in targets if t[0] in inventories]
     logger.info("ADF pipeline %r not found in %s", requested, [_factory_name(a) for a in searched])
     return _missing_pipeline_text(wanted, searched, failed, inventories, consequence)
 
 
-def _resolution_note(requested: str, hit: _PipelineHit, asked_alias: str) -> str:
+def _resolution_note(
+    requested: str, hit: _PipelineHit, asked_alias: str | None, status: str = ""
+) -> str:
     """The line that says the answer below is for a resolved name or factory.
 
     Said up front, with the exact values to reuse, because every follow-up call
-    that repeats the original spelling would otherwise miss again.
+    that repeats the original spelling would otherwise miss again. Stated as a
+    fact, not an instruction: "in follow-up calls pass pipeline_name=…" reached
+    the user word for word (QA-02, run 6). ``asked_alias`` is None when no
+    factory was named and none is the default; ``status`` is the run status the
+    other copy was checked for.
     """
     changes = []
     if hit.name != requested:
         changes.append(f"'{requested}' matched pipeline '{hit.name}' ({hit.how})")
-    if hit.alias != asked_alias:
+    copies = [c.alias for c in hit.copies]
+    if asked_alias is None:
+        changes.append(f"it is in factory {_factory_label(hit.alias)}")
+    elif asked_alias in copies:
+        # The status is named: "no matching runs" read as "no runs" next to that
+        # copy's Succeeded run listed in the same answer (QA-02, run l6).
+        changes.append(
+            f"factory {_factory_label(asked_alias)} also has it, but no "
+            f"{status + ' ' if status else ''}runs in this window"
+        )
+    elif hit.alias != asked_alias:
         changes.append(
             f"it is in factory {_factory_label(hit.alias)}, not {_factory_label(asked_alias)}"
         )
+    if others := [a for a in copies if a != asked_alias]:
+        changes.append("also published in factory " + ", ".join(map(_factory_label, others)))
     folder = f"; ADF Studio folder: {_folder_text(hit.folder)}"
     return (
         f"[adf-agent] NOTE: {'; '.join(changes) or f'pipeline {hit.name!r}'}{folder}. "
-        "Results below are for that "
-        f"pipeline — in follow-up calls pass pipeline_name='{hit.name}', "
-        f"factory='{_factory_name(hit.alias)}'."
+        f"The results below are for pipeline '{hit.name}' in factory "
+        f"{_factory_label(hit.alias)}."
     )
 
 
+def _folder_clause(hit, alias: str, pipeline_name: str, note: str) -> str:
+    """' (ADF Studio folder: …)' for an answer with no run rows, or ''.
+
+    No row is left to say where the pipeline sits in ADF Studio, and the agent
+    does not always search for it first (SRCH-08, run l8). '' at the root, when
+    ``hit`` is another pipeline, or when the NOTE above already names the folder.
+    """
+    if (
+        not isinstance(hit, _PipelineHit)
+        or not hit.folder
+        or (hit.alias, hit.name) != (alias, pipeline_name)
+        or "ADF Studio folder:" in note
+    ):
+        return ""
+    return f" (ADF Studio folder: {hit.folder})"
+
+
+async def _probe_runs(
+    hit: _PipelineHit, after: datetime, before: datetime | None, status: str = ""
+) -> bool | None:
+    """Whether ``hit`` has any run in the window with that status (None = could not tell)."""
+    try:
+        client = await _client(hit.sub)
+        page = await client.pipeline_runs.query_by_factory(
+            hit.rg,
+            hit.factory_name,
+            _runs_params(hit.name, after, before or datetime.now(timezone.utc), status),
+        )
+    except Exception as exc:  # noqa: BLE001 - an unknown just cannot decide
+        logger.warning(
+            "ADF run probe for %s in %s failed: %s", hit.name, hit.factory_name, _truncate(exc)
+        )
+        return None
+    return bool(getattr(page, "value", None))
+
+
 async def _retarget(
-    requested: str, pipeline_name: str, factory: str, alias: str
+    requested: str,
+    pipeline_name: str,
+    factory: str,
+    alias: str,
+    *,
+    after: datetime,
+    before: datetime | None = None,
+    status: str = "",
+    hit: _PipelineHit | None = None,
 ) -> _PipelineHit | str | None:
     """After an EMPTY run query: the pipeline to query instead, a final answer, or None.
 
     None means "the name was right — it simply has no runs" (or nothing could be
-    checked), so the caller keeps its own no-runs answer.
+    checked), so the caller keeps its own no-runs answer. ``hit`` is a lookup the
+    caller already made. With no factory named, a pipeline published in several
+    factories is settled by which copy has runs in the window with that
+    ``status``: the copy queried can be the empty one (QA's pl-100-00 failures
+    were in its second factory).
     """
-    hit = await _locate_pipeline(requested or pipeline_name, factory)
-    if isinstance(hit, _PipelineHit) and (hit.alias, hit.name) == (alias, pipeline_name):
-        return None
-    return hit
+    if hit is None:
+        hit = await _locate_pipeline(requested or pipeline_name, factory)
+    if not isinstance(hit, _PipelineHit):
+        return hit
+    queried = (alias, pipeline_name)
+    if hit.copies and not (factory or "").strip():
+        everywhere = (hit, *hit.copies)
+        candidates = [c for c in everywhere if (c.alias, c.name) != queried]
+        found = await asyncio.gather(*(_probe_runs(c, after, before, status) for c in candidates))
+        with_runs = [c for c, ok in zip(candidates, found) if ok]
+        # The factory just queried, under its exact name, wins over the others.
+        chosen = [c for c in with_runs if c.alias == alias] or with_runs
+        if len(chosen) == 1:
+            logger.info("ADF pipeline %r: runs found in copy %s", hit.name, chosen[0].factory_name)
+            return replace(chosen[0], copies=tuple(c for c in everywhere if c is not chosen[0]))
+        if chosen:
+            head = f"Pipeline '{hit.name}' has such runs in more than one factory"
+            return "\n".join(
+                [f"[adf-agent] {head} (factory | folder | pipeline):"]
+                + [f"  - {_factory_name(c.alias)} | {_folder_text(c.folder)} | {c.name}"
+                   for c in chosen]
+                + [
+                    (
+                        "  Each factory's copy has its own runs, and which one is meant "
+                        "decides the answer."
+                    )
+                ]
+            )
+    return None if (hit.alias, hit.name) == queried else hit
+
+
+async def _start_pipeline(requested: str, pipeline_name: str, factory: str):
+    """Where a run tool queries first: ``(target, pipeline name, note, hit)``, or a final answer.
+
+    The named or default factory, as always. With several factories and no
+    default, the pipeline is found in all of them first, instead of the "pass
+    factory=" error that left the model guessing one of seven.
+    """
+    if pipeline_name and not (factory or "").strip() and _default_alias() is None:
+        hit = await _locate_pipeline(requested or pipeline_name, "")
+        if isinstance(hit, str):
+            return hit
+        if hit is not None:
+            target = (hit.alias, hit.sub, hit.rg, hit.factory_name)
+            return target, hit.name, _resolution_note(requested, hit, None) + "\n", hit
+    try:
+        return _resolve_factory(factory), pipeline_name, "", None
+    except _InputError as exc:
+        return str(exc)
+
+
+async def _copies_note(
+    alias: str,
+    pipeline_name: str,
+    *,
+    after: datetime | None,
+    before: datetime | None,
+    status: str = "",
+) -> str:
+    """A NOTE naming the other factories that publish this pipeline name ('' if none).
+
+    For an answer from one factory's copy that no lookup has described: when
+    that copy had runs, nothing said another factory publishes the same name,
+    and its runs went unmentioned (QA-07: pl-100-00 is in example-data-factory and
+    fileShare-to-ADF). One GET per other factory, which ADF answers for any
+    casing, and a probe for ``status`` runs in the same window for each copy.
+    Without ``after`` (a definition, which has no window) nothing is probed.
+    A factory that can't be read is left out.
+    """
+    if not pipeline_name:
+        return ""
+
+    async def _copy(other: str, sub: str, rg: str, factory_name: str):
+        try:
+            found = await (await _client(sub)).pipelines.get(rg, factory_name, pipeline_name)
+        except Exception as exc:  # noqa: BLE001 - no copy, or none that can be seen
+            if not isinstance(exc, ResourceNotFoundError):
+                logger.info("ADF copy check in %s skipped: %s", factory_name, _truncate(exc))
+            return None
+        name = getattr(found, "name", None) or pipeline_name
+        hit = _PipelineHit(other, sub, rg, factory_name, name, "", "exact")
+        return hit, await _probe_runs(hit, after, before, status) if after else None
+
+    others = [t for t in _configured_targets() if t[0] != alias]
+    copies = [c for c in await asyncio.gather(*(_copy(*t) for t in others)) if c]
+    if not copies:
+        return ""
+    kind = f"{status} runs" if status else "runs"
+    probed = {True: f"it has {kind} in this window", False: f"no {kind} in this window"}
+    where = ", ".join(
+        _factory_label(hit.alias)
+        + (f" ({probed.get(has, 'its runs could not be checked')})" if after else "")
+        for hit, has in copies
+    )
+    return (
+        f"[adf-agent] NOTE: pipeline '{pipeline_name}' is also published in factory {where}. "
+        f"Each factory's copy is a separate pipeline with its own {'runs' if after else 'definition'}"
+        f"; the results below are for factory {_factory_label(alias)} only.\n"
+    )
 
 
 # --- shared analytics helpers -------------------------------------------------
@@ -1260,6 +1551,21 @@ def _extract_trigger_name(run) -> str:
     """
     ib = getattr(run, "invoked_by", None)
     return (getattr(ib, "name", "") or "") if ib else ""
+
+
+def _invoker_identity(run) -> str:
+    """Who started a run, as recovery compares it ('' if unknown).
+
+    A trigger or a manual start is named by ``invoked_by.name``. A parent's
+    Execute Pipeline activity is not: ADF puts that ACTIVITY run's id there,
+    new on every run of the parent, so a child pipeline could never match its
+    own rerun. Its invoker is the parent PIPELINE, which ADF names separately.
+    """
+    ib = getattr(run, "invoked_by", None)
+    parent = getattr(ib, "pipeline_name", None) if ib else None
+    if parent and getattr(ib, "invoked_by_type", None) == "PipelineActivity":
+        return f"pipeline {parent}"
+    return _extract_trigger_name(run)
 
 
 def _normalized_parameters(run) -> dict:
@@ -1560,7 +1866,8 @@ def _match_evidence(pipeline, needle: str) -> list[str]:
 
 
 def _render_runs(
-    runs: list, alias: str, pipeline_name: str, complete: bool, sub: str, rg: str, name: str
+    runs: list, alias: str, pipeline_name: str, complete: bool, sub: str, rg: str, name: str,
+    status_asked: str = "",
 ) -> str:
     """Render a run listing: header, per-pipeline totals when capped, then rows.
 
@@ -1574,8 +1881,11 @@ def _render_runs(
     run. The factory triple is taken rather than a finished URL so the rows and
     the footer cannot come to name two different factories.
     """
+    # The status filter is in the count: '1 run(s)' over a Failed-only listing
+    # read as the pipeline having run once (QA-02, run l5).
     header = (
-        f"[adf-agent] {len(runs)}{'' if complete else '+'} run(s) (newest first) in factory "
+        f"[adf-agent] {len(runs)}{'' if complete else '+'} "
+        f"{status_asked + ' ' if status_asked else ''}run(s) (newest first) in factory "
         f"{_factory_label(alias)}" + (f" for '{pipeline_name}'" if pipeline_name else "")
     )
     if not complete:
@@ -1803,8 +2113,8 @@ async def list_pipelines(
         return (
             f"[adf-agent] Factory {_factory_label(alias)} has {len(pipes)} pipeline(s), but "
             f"NONE has run in {window} — the factory is not idle-free, it is entirely idle "
-            "by this measure. Call list_pipelines(include_inactive=true) for the full "
-            "inventory.\n" + "\n".join(_monitor_footer(sub, rg, name))
+            "by this measure. The full inventory, inactive pipelines included, is listed "
+            "on request.\n" + "\n".join(_monitor_footer(sub, rg, name))
         )
     # Each active row quotes a last-run time and status, so it makes a claim
     # about one specific run — and _latest_run_by_pipeline already holds that
@@ -1825,11 +2135,13 @@ async def list_pipelines(
         f"(ran in {window}), newest run first:",
         listing,
     ]
+    # Declarative on purpose: an imperative here ("Call list_pipelines(…)")
+    # was copied into users' answers word for word (SUP-06, SRCH-10, run 6).
     if inactive:
         lines.append(
             f"  Hidden: {len(inactive)} pipeline(s) defined but with no run in {window}"
-            f"{_inactive_names(inactive)} Call list_pipelines(include_inactive=true) to "
-            "list them, or find_pipelines to search for one by keyword."
+            f"{_inactive_names(inactive)} They are listed on request, and a keyword search "
+            "covers them too."
         )
     if not complete:
         lines.append(
@@ -1900,7 +2212,7 @@ async def find_pipelines(query: str, factory: str = "") -> str:
     days, strongest name matches first. Pass a returned Pipeline value (the bare
     name, never the folder) together with its factory to the other tools.
     """
-    query = (query or "").strip()
+    query = _clean_name(query)
     words = _tokens(query)
     if not words:
         return (
@@ -1916,6 +2228,9 @@ async def find_pipelines(query: str, factory: str = "") -> str:
         return "[adf-agent] No Data Factory is configured (ADF_FACTORY_MAPPING is empty)."
 
     inventories, failed = await _inventories(targets)
+    unread = "; ".join(f"{_factory_label(a)} ({error})" for a, error in failed.items())
+    if not inventories:
+        return f"[adf-agent] Could NOT search: no pipeline list could be read — {unread}"
     order = {t[0]: i for i, t in enumerate(targets)}
     ranked = []
     for alias, pipelines in inventories.items():
@@ -1933,11 +2248,13 @@ async def find_pipelines(query: str, factory: str = "") -> str:
         query, len(ranked), searched, len(inventories), len(failed),
     )
 
-    scope = (
-        f"factory {_factory_label(targets[0][0])}"
-        if len(targets) == 1
-        else f"all {len(targets)} configured factories"
-    )
+    read = [t[0] for t in targets if t[0] in inventories]
+    if len(targets) == 1:
+        scope = f"factory {_factory_label(read[0])}"
+    elif failed:
+        scope = f"the {len(read)} of {len(targets)} configured factories that could be read"
+    else:
+        scope = f"all {len(targets)} configured factories"
     lines: list[str] = []
     if not ranked:
         everything = [p for pipelines in inventories.values() for p in pipelines]
@@ -1992,19 +2309,13 @@ async def find_pipelines(query: str, factory: str = "") -> str:
                 f"  … and {len(ranked) - len(shown)} more not shown (showing the first "
                 f"{len(shown)}); add words to the query or name a factory to narrow it"
             )
-        lines.append(
-            "  Use the Pipeline value exactly as shown (no folder) with its factory in "
-            "other tools."
-        )
+        # No "use the Pipeline value … in other tools" line: it reached users
+        # verbatim, and the other tools take a folder path or no factory anyway
+        # (_bare_pipeline_name, _locate_pipeline).
     if len(targets) > 1:
-        lines.insert(
-            1, "  Factories searched: " + ", ".join(_factory_label(t[0]) for t in targets)
-        )
+        lines.insert(1, "  Factories searched: " + ", ".join(map(_factory_label, read)))
     if failed:
-        lines.append(
-            "  Could NOT search: "
-            + "; ".join(f"{_factory_label(a)} ({error})" for a, error in failed.items())
-        )
+        lines.insert(1, f"  Could NOT search, so matches there are unknown: {unread}")
     return "\n".join(lines)
 
 
@@ -2054,14 +2365,17 @@ async def list_pipeline_runs(
     pipeline_name = _bare_pipeline_name(requested)
     trigger_name = (trigger_name or "").strip()
     try:
-        alias, sub, rg, name = _resolve_factory(factory)
         after, before = _resolve_window(start_date, end_date, last_n_days)
         run_status = _normalize_status(status)
-        # ADF returns pages oldest-first by default, so RunStart DESC (inside
-        # _runs_params) is what makes the display cap show the NEWEST runs.
-        params = _runs_params(pipeline_name, after, before, run_status)
     except _InputError as exc:
         return str(exc)
+    start = await _start_pipeline(requested, pipeline_name, factory)
+    if isinstance(start, str):
+        return start
+    (alias, sub, rg, name), pipeline_name, note, located = start
+    # ADF returns pages oldest-first by default, so RunStart DESC (inside
+    # _runs_params) is what makes the display cap show the NEWEST runs.
+    params = _runs_params(pipeline_name, after, before, run_status)
 
     try:
         client = await _client(sub)
@@ -2072,15 +2386,20 @@ async def list_pipeline_runs(
             f"{_truncate(exc)}"
         )
 
-    note = ""
     if not runs and pipeline_name:
         # Empty for a NAME is ambiguous: idle, or a spelling ADF's case-
-        # sensitive filter cannot match, or a pipeline in another factory.
-        hit = await _retarget(requested, pipeline_name, factory, alias)
+        # sensitive filter cannot match, or a pipeline in another factory. The
+        # lookup is kept for the folder the no-runs line names.
+        if located is None:
+            located = await _locate_pipeline(requested or pipeline_name, factory)
+        hit = None if located is None else await _retarget(
+            requested, pipeline_name, factory, alias,
+            after=after, before=before, status=run_status, hit=located,
+        )
         if isinstance(hit, str):
             return hit
         if hit is not None:
-            note = _resolution_note(requested, hit, alias) + "\n"
+            note = _resolution_note(requested, hit, alias, run_status) + "\n"
             alias, sub, rg, name, pipeline_name = (
                 hit.alias, hit.sub, hit.rg, hit.factory_name, hit.name
             )
@@ -2094,17 +2413,27 @@ async def list_pipeline_runs(
                     f"{note}[adf-agent] ERROR querying runs in factory "
                     f"{_factory_label(alias)}: {_truncate(exc)}"
                 )
+    if not note:
+        note = await _copies_note(
+            alias, pipeline_name, after=after, before=before, status=run_status
+        )
 
     window = _window_text(after, before, bool(start_date or end_date), last_n_days)
     # pipeline_name is "" on an all-pipelines listing, which leaves the footer
     # factory-wide; both branches that use this string name one pipeline when it
     # is set, and an unfiltered tab there is the "Pipeline name: All" report.
     monitor = "\n" + "\n".join(_monitor_footer(sub, rg, name, pipeline_name=pipeline_name))
+    # The status asked for is part of every empty answer: 'No runs … in the last
+    # 7 day(s)' for an InProgress-only query read as the pipeline having no runs
+    # at all, beside the last run the same answer showed (QA-03, run l4).
+    kind = f"{run_status} runs" if run_status else "runs"
+    unasked = "; runs with any other status were not asked for" if run_status else ""
     if not runs:
         scope = f" for pipeline '{pipeline_name}'" if pipeline_name else ""
+        folder = _folder_clause(located, alias, pipeline_name, note)
         return (
-            f"{note}[adf-agent] No runs{scope} in factory {_factory_label(alias)} {window}."
-            f"{monitor}"
+            f"{note}[adf-agent] No {kind}{scope} in factory {_factory_label(alias)}{folder} "
+            f"{window}{unasked}.{monitor}"
         )
 
     # Trigger filtering is client-side: ADF's run-query API cannot filter on the
@@ -2119,13 +2448,13 @@ async def list_pipeline_runs(
             # and client-side), so the reader's next move is to browse the
             # factory and find what the trigger is actually called.
             return (
-                f"{note}[adf-agent] No runs{scope} started by trigger '{trigger_name}' in "
-                f"factory {_factory_label(alias)} {window} ({len(runs)} run(s) matched the "
-                f"window under other "
-                f"triggers/invokers).{monitor}"
+                f"{note}[adf-agent] No {kind}{scope} started by trigger '{trigger_name}' in "
+                f"factory {_factory_label(alias)} {window} ({len(runs)} "
+                f"{run_status + ' ' if run_status else ''}run(s) matched the window under "
+                f"other triggers/invokers){unasked}.{monitor}"
             )
         runs = matched
-    return note + _render_runs(runs, alias, pipeline_name, complete, sub, rg, name)
+    return note + _render_runs(runs, alias, pipeline_name, complete, sub, rg, name, run_status)
 
 
 async def _activity_runs_for(client, rg: str, factory_name: str, run, run_id: str) -> list:
@@ -2321,9 +2650,18 @@ async def _walk_run_tree(
         ]
 
     stats[run.status] += 1
+    # Each node carries its times: "what happened in run X" lands here, and an
+    # answer read off a node without them cannot say when any of it happened.
+    took = "not finished" if run.status in _ACTIVE_STATUSES else _fmt_duration(_runtime_ms(run))
     lines = [
-        f"{indent}{run.pipeline_name} (runId={run_id}) → {run.status} "
-        f"{_run_link(sub, rg, factory_name, run_id)}"
+        (
+            f"{indent}{run.pipeline_name} (runId={run_id}) → {run.status} "
+            f"{_run_link(sub, rg, factory_name, run_id)}"
+        ),
+        (
+            f"{indent}  start: {_fmt_ts(run.run_start)}, end: {_fmt_ts(run.run_end)}, "
+            f"duration: {took}"
+        ),
     ]
 
     try:
@@ -2542,8 +2880,8 @@ def _walk_definition(activities: list, depth: int) -> list[str]:
 
 @tool
 async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
-    """Show a pipeline's definition as an activity tree, including which child
-    pipelines it invokes (its hierarchy).
+    """Show a pipeline's definition: its stored description and an activity tree,
+    including which child pipelines it invokes (its hierarchy).
 
     Args:
         pipeline_name: Exact pipeline name, e.g. "pl_orchestrator".
@@ -2572,11 +2910,13 @@ async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
         # pipeline ...", which the model treated as a dead end and stopped at —
         # skipping the documentation that may well describe this name. GET already
         # ignores case, so what is left to try is the other factories and a name
-        # retyped with different separators.
+        # retyped with different separators. The search is an ANSWER REQUIREMENT,
+        # which the keep middleware has the agent leave out: unmarked, it reached
+        # the user word for word (SUP-06, run l8).
         kb_tail = (
-            " The knowledge base may still document this name (retired, not yet built, "
-            "or in an unconfigured factory) — search it and report the two findings "
-            "separately."
+            " ANSWER REQUIREMENT: the knowledge base may still document this name (retired, "
+            "not yet built, or in an unconfigured factory); search it and report the two "
+            "findings separately."
         )
         hit = await _locate_pipeline(requested, factory, _MISSING_FROM_STRUCTURE)
         if isinstance(hit, str):
@@ -2603,12 +2943,15 @@ async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
             f"[adf-agent] ERROR fetching pipeline '{pipeline_name}' in factory "
             f"{_factory_label(alias)}: {_truncate(exc)}"
         )
+    if not note:
+        note = await _copies_note(alias, pipeline_name, after=None, before=None)
     folder = _folder_of(pipeline)
     where = f"factory {_factory_label(alias)}" + (f", folder '{folder}'" if folder else "")
     lines = _walk_definition(_wire_activities(pipeline), depth=1)
+    described = _description_line(pipeline) + _parameters_line(pipeline)
     if not lines:
-        return f"{note}[adf-agent] Pipeline '{pipeline_name}' ({where}) has no activities."
-    header = f"{note}[adf-agent] Structure of '{pipeline_name}' ({where}):"
+        return f"{note}[adf-agent] Pipeline '{pipeline_name}' ({where}) has no activities.{described}"
+    header = f"{note}[adf-agent] Structure of '{pipeline_name}' ({where}):{described}"
     return header + "\n" + "\n".join(lines)
 
 
@@ -2649,11 +2992,11 @@ async def discover_pipelines_by_source_system(
                    Never a definitive lineage mapping.
         factory: Optional alias to deliberately narrow the search to one factory.
     """
-    needle = (source_system_name or "").strip()
+    needle = _clean_name(source_system_name)
     if not needle:
         return "[adf-agent] Please provide a source system name to search for (e.g. 'LOANSYS')."
     needle_lower = needle.lower()
-    view = (view_name or "").strip()
+    view = _clean_name(view_name)
     view_lower = view.lower()
     try:
         targets = _resolve_factory_targets(factory, all_when_empty=True)
@@ -2690,9 +3033,7 @@ async def discover_pipelines_by_source_system(
         started = time.perf_counter()
         try:
             client = await _client(sub)
-            pipeline_names = [
-                p.name async for p in client.pipelines.list_by_factory(rg, factory_name)
-            ]
+            pipeline_names = [p.name for p in await _factory_inventory(alias, sub, rg, factory_name)]
         except Exception as exc:
             errors.append(f"{_factory_name(alias)}: could not list pipelines: {_truncate(exc)}")
             continue
@@ -2854,7 +3195,7 @@ async def discover_pipelines_by_source_system(
                 # different view" would order the model to name something the
                 # search never determined.
                 f"  GROUP B — candidates that reference '{needle}' without naming view "
-                f"'{view}' ({len(off_view)}); report each one with the evidence its row carries:"
+                f"'{view}' ({len(off_view)}):"
             )
             lines.extend(_capped_rows(off_view))
     if len(targets) > 1:
@@ -2916,7 +3257,7 @@ def _describe_near_misses(subsequent: list, trigger: str, params: dict) -> str:
         return " No later run of this pipeline was found at all."
     reasons = set()
     for r in subsequent:
-        if _extract_trigger_name(r) != trigger:
+        if _invoker_identity(r) != trigger:
             reasons.add("different trigger")
         elif not _exact_parameter_match(_normalized_parameters(r), params):
             reasons.add("different parameters")
@@ -2956,12 +3297,12 @@ def _identity_difference(run, trigger: str, params: dict) -> str:
     """How ONE later run differs from the failed run's recovery identity.
 
     Names the trigger change and/or the exact parameter(s) that diverged. The
-    values shown are the ones actually COMPARED — the bare invoker name from
-    _extract_trigger_name and the verbatim parameter dict — so the evidence
+    values shown are the ones actually COMPARED — the invoker from
+    _invoker_identity and the verbatim parameter dict — so the evidence
     cannot drift from the decision.
     """
     parts = []
-    other_trigger = _extract_trigger_name(run)
+    other_trigger = _invoker_identity(run)
     if other_trigger != trigger:
         parts.append(
             f"trigger ({trigger or '(unknown / manual)'} -> "
@@ -2994,7 +3335,7 @@ def _rejected_success_rows(
             for r in subsequent
             if r.status == "Succeeded"
             and not (
-                _extract_trigger_name(r) == trigger
+                _invoker_identity(r) == trigger
                 and _exact_parameter_match(_normalized_parameters(r), params)
             )
         ],
@@ -3096,10 +3437,10 @@ async def validate_pipeline_recovery(
             )
         pipeline_name = run_pipeline_name or pipeline_name
     else:
-        try:
-            alias, sub, rg, name = _resolve_factory(factory)
-        except _InputError as exc:
-            return str(exc)
+        start = await _start_pipeline(requested_pipeline_name, pipeline_name, factory)
+        if isinstance(start, str):
+            return start
+        (alias, sub, rg, name), pipeline_name, note, located = start
         client = await _client(sub)
         after = now - timedelta(days=_RECOVERY_LOOKBACK_DAYS)
 
@@ -3117,11 +3458,14 @@ async def validate_pipeline_recovery(
                 f"{_truncate(exc)}"
             )
         if not failures:
-            hit = await _retarget(requested_pipeline_name, pipeline_name, factory, alias)
+            hit = await _retarget(
+                requested_pipeline_name, pipeline_name, factory, alias,
+                after=after, before=now, status="Failed", hit=located,
+            )
             if isinstance(hit, str):
                 return hit
             if hit is not None:
-                note = _resolution_note(requested_pipeline_name, hit, alias) + "\n"
+                note = _resolution_note(requested_pipeline_name, hit, alias, "Failed") + "\n"
                 alias, sub, rg, name, pipeline_name = (
                     hit.alias, hit.sub, hit.rg, hit.factory_name, hit.name
                 )
@@ -3133,6 +3477,10 @@ async def validate_pipeline_recovery(
                         f"{note}[adf-agent] ERROR querying runs in factory "
                         f"{_factory_label(alias)}: {_truncate(exc)}"
                     )
+        if not note:
+            note = await _copies_note(
+                alias, pipeline_name, after=after, before=now, status="Failed"
+            )
         if not failures:
             return (
                 f"{note}[adf-agent] No failed run found for pipeline '{pipeline_name}' in "
@@ -3147,7 +3495,7 @@ async def validate_pipeline_recovery(
                 f"{_RECOVERY_LOOKBACK_DAYS} days (run started {_fmt_ts(failed.run_start)})"
             )
 
-    failed_trigger = _extract_trigger_name(failed)
+    failed_trigger = _invoker_identity(failed)
     failed_params = _normalized_parameters(failed)
     failed_start = getattr(failed, "run_start", None)
     if failed_start is None:
@@ -3187,7 +3535,7 @@ async def validate_pipeline_recovery(
         [
             r
             for r in subsequent
-            if _extract_trigger_name(r) == failed_trigger
+            if _invoker_identity(r) == failed_trigger
             and _exact_parameter_match(_normalized_parameters(r), failed_params)
         ],
         newest_first=False,  # chronological, so [0] is the earliest matching rerun
@@ -3198,6 +3546,9 @@ async def validate_pipeline_recovery(
         f"[adf-agent] Recovery validation in factory {_factory_label(alias)}{selected_note}",
         f"  Pipeline Name : {pipeline_name}",
         f"  Failed Run ID : {failed_run_id} {_run_link(sub, rg, name, failed_run_id)}",
+        # Start times for both runs: without them the subagent filled the time
+        # cells of its answer with "(time not returned by tool)" (UC2-10/11, run l4).
+        f"  Run Started   : {_fmt_ts(failed_start)}",
         f"  Trigger Name  : {failed_trigger or '(unknown / manual)'}",
         f"  Parameters    : {_truncate(failed_params) if failed_params else '(none)'}",
     ]
@@ -3212,6 +3563,7 @@ async def validate_pipeline_recovery(
         lines += [
             f"  Recovery Run ID  : {recovered.run_id} "
             f"{_run_link(sub, rg, name, recovered.run_id)}",
+            f"  Recovery Started : {_fmt_ts(recovered.run_start)}",
             "  Recovery Status  : Succeeded",
             "  Recovery Decision: Recovered",
             "  Reason: a subsequent execution used the same pipeline, trigger and exact "
@@ -3221,6 +3573,7 @@ async def validate_pipeline_recovery(
         latest = identity_matches[-1]
         lines += [
             f"  Recovery Run ID  : {latest.run_id} {_run_link(sub, rg, name, latest.run_id)}",
+            f"  Recovery Started : {_fmt_ts(latest.run_start)}",
             f"  Recovery Status  : {latest.status}",
             "  Recovery Decision: Not Recovered",
             f"  Reason: {len(identity_matches)} subsequent execution(s) matched the pipeline, "
@@ -3320,7 +3673,7 @@ def _eta_clause(start: datetime, elapsed_ms: float, stats: dict) -> str:
         f"Expected End Time: none — ALREADY EXCEEDED: start + average projected "
         f"{_fmt_ts(projected)}, {_fmt_duration(elapsed_ms - avg_ms)} ago. The run is still "
         f"active and has been running {beyond}, so this history does not predict when it "
-        "will finish: report it as running longer than usual, with no reliable ETA."
+        "will finish: it is running longer than usual, and there is no reliable ETA."
     )
 
 
@@ -3346,10 +3699,10 @@ async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -
     pipeline_name = _bare_pipeline_name(requested)
     if not pipeline_name:
         return "[adf-agent] Please provide a pipeline name (get one from list_pipelines)."
-    try:
-        alias, sub, rg, name = _resolve_factory(factory)
-    except _InputError as exc:
-        return str(exc)
+    start = await _start_pipeline(requested, pipeline_name, factory)
+    if isinstance(start, str):
+        return start
+    (alias, sub, rg, name), pipeline_name, note, located = start
     client = await _client(sub)
     now = datetime.now(timezone.utc)
     after = now - timedelta(days=_ADF_HISTORY_DAYS)
@@ -3360,9 +3713,13 @@ async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -
             f"[adf-agent] ERROR querying runs in factory {_factory_label(alias)}: "
             f"{_truncate(exc)}"
         )
-    note = ""
     if not runs:
-        hit = await _retarget(requested, pipeline_name, factory, alias)
+        # The lookup is kept for the folder the no-runs line names.
+        if located is None:
+            located = await _locate_pipeline(requested or pipeline_name, factory)
+        hit = None if located is None else await _retarget(
+            requested, pipeline_name, factory, alias, after=after, before=now, hit=located
+        )
         if isinstance(hit, str):
             return hit
         if hit is not None:
@@ -3380,13 +3737,16 @@ async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -
                     f"{note}[adf-agent] ERROR querying runs in factory "
                     f"{_factory_label(alias)}: {_truncate(exc)}"
                 )
+    if not note:
+        note = await _copies_note(alias, pipeline_name, after=after, before=now)
     if not runs:
         # Existing pipeline, no runs in the window: answer the status question
         # outright, but never let "not running" be read as "a run finished" —
         # there is no outcome to report.
+        folder = _folder_clause(located, alias, pipeline_name, note)
         return (
-            f"{note}[adf-agent] Pipeline '{pipeline_name}' in factory {_factory_label(alias)} "
-            f"is not currently running, and has no runs at all in the last "
+            f"{note}[adf-agent] Pipeline '{pipeline_name}' in factory {_factory_label(alias)}"
+            f"{folder} is not currently running, and has no runs at all in the last "
             f"{_ADF_HISTORY_DAYS} days — so there is no completed run to report and no runtime history to estimate from.\n"
             # No run id exists to link, and this is the branch a reader is most
             # likely to want to check against ADF itself, so Monitor earns its
@@ -3508,12 +3868,41 @@ def _sla_assessment(avg_ms: float, sla_ms: float, n_exceed: int, total: int) -> 
     """An evidence-based SLA verdict from the actual exceedance count, not the average alone."""
     if n_exceed == 0:
         return "no run exceeded the SLA; average runtime is within the SLA."
-    pct = 100 * n_exceed / total
-    frequency = "in most executions" if pct > 50 else "in a minority of executions"
+    # Exact counts, compared as integers: "most" of 12 of 12 undersold an SLA
+    # every run broke, and 2 of 4 is not a minority.
+    if n_exceed == total:
+        frequency = "in every execution"
+    elif 2 * n_exceed > total:
+        frequency = "in most executions"
+    elif 2 * n_exceed == total:
+        frequency = "in half of the executions"
+    else:
+        frequency = "in a minority of executions"
     position = "below" if avg_ms <= sla_ms else "above"
     return (
         f"the pipeline exceeded the SLA {frequency} ({n_exceed} of {total}); average runtime "
         f"is {position} the SLA."
+    )
+
+
+def _sla_recommendation(n_exceed: int, total: int, max_ms: float) -> str:
+    """What to do about the threshold, from the same exact exceedance count.
+
+    "Is the SLA still realistic?" asks for a recommendation, not only the
+    assessment. It never proposes a new number: the threshold is a business
+    commitment, so the longest observed run is given as the reference point.
+    """
+    if n_exceed == 0:
+        return "keep the current SLA threshold; it is realistic for current runtimes."
+    if 2 * n_exceed < total:
+        return (
+            "keep the SLA threshold, which holds for most runs, and look into the "
+            f"{n_exceed} run(s) that exceeded it."
+        )
+    return (
+        "review the SLA threshold; it is not realistic for current runtimes. Either raise "
+        f"it to fit observed runtimes (the longest run took {_fmt_duration(max_ms)}) or find "
+        "out why runs take longer than it allows."
     )
 
 
@@ -3546,10 +3935,10 @@ async def analyze_pipeline_runtime(
     if not pipeline_name:
         return "[adf-agent] Please provide a pipeline name (get one from list_pipelines)."
     analysis_days = max(1, analysis_days)
-    try:
-        alias, sub, rg, name = _resolve_factory(factory)
-    except _InputError as exc:
-        return str(exc)
+    start = await _start_pipeline(requested, pipeline_name, factory)
+    if isinstance(start, str):
+        return start
+    (alias, sub, rg, name), pipeline_name, note, located = start
     client = await _client(sub)
     now = datetime.now(timezone.utc)
     after = now - timedelta(days=analysis_days)
@@ -3560,9 +3949,10 @@ async def analyze_pipeline_runtime(
             f"[adf-agent] ERROR querying runs in factory {_factory_label(alias)}: "
             f"{_truncate(exc)}"
         )
-    note = ""
     if not runs:
-        hit = await _retarget(requested, pipeline_name, factory, alias)
+        hit = await _retarget(
+            requested, pipeline_name, factory, alias, after=after, before=now, hit=located
+        )
         if isinstance(hit, str):
             return hit
         if hit is not None:
@@ -3580,6 +3970,8 @@ async def analyze_pipeline_runtime(
                     f"{note}[adf-agent] ERROR querying runs in factory "
                     f"{_factory_label(alias)}: {_truncate(exc)}"
                 )
+    if not note:
+        note = await _copies_note(alias, pipeline_name, after=after, before=now)
 
     # Nothing in this tool is linked, and that is deliberate: every line it
     # returns is an AGGREGATE over many runs (count, average, min, max, SLA
@@ -3620,10 +4012,9 @@ async def analyze_pipeline_runtime(
         f"  Maximum Runtime: {_fmt_duration(stats['max_ms'])}",
     ]
     if sla_minutes is None or sla_minutes <= 0:
-        lines.append(
-            "  SLA: not provided — SLA assessment could not be completed. Supply an SLA (from "
-            "the SLA document or the user) to compare."
-        )
+        # Not 'SLA assessment could not be completed': with no SLA asked for,
+        # that read as a failure (UC4-03/06, run 8's re-run).
+        lines.append("  SLA: not provided, so the runs were not assessed against one.")
     else:
         sla_ms = sla_minutes * 60_000
         n_exceed = sum(1 for r in completed if (_runtime_ms(r) or 0) > sla_ms)
@@ -3632,6 +4023,8 @@ async def analyze_pipeline_runtime(
             f"  Runs Exceeding SLA: {n_exceed} / {stats['count']}",
             f"  SLA Exceedance Rate: {_exceedance_rate(n_exceed, stats['count'])}",
             "  Assessment: " + _sla_assessment(stats["avg_ms"], sla_ms, n_exceed, stats["count"]),
+            "  Recommendation: "
+            + _sla_recommendation(n_exceed, stats["count"], stats["max_ms"]),
         ]
 
     if over_retention:
@@ -3684,6 +4077,177 @@ def _trigger_result(expected: str, actual: str) -> str:
     return "PASS" if actual in _PASS_STATES[expected] else "FAIL"
 
 
+def _trigger_targets(factory: str) -> list[tuple[str, str, str, str]]:
+    """The factories a trigger is looked up in: the named one, else every configured one."""
+    explicit = (factory or "").strip()
+    if explicit:
+        return [_resolve_factory(explicit)]
+    return _configured_targets() or [_resolve_factory("")]
+
+
+def _trigger_scope(targets: list) -> str:
+    if len(targets) == 1:
+        return f"factory {_factory_label(targets[0][0])}"
+    return f"searched all {len(targets)} configured factories"
+
+
+# Trigger rows one '*' pattern can add to a table ('*' alone lists every trigger).
+_TRIGGER_PATTERN_MAX = 200
+# Matches a trigger is never changed on: only its exact name changes it.
+_LOOSE_TRIGGER_MATCHES = ("separator-insensitive", "pattern")
+
+
+def _trigger_match(requested: str, name: str) -> str:
+    """How trigger ``name`` matches a requested name that no factory holds exactly ('' = not).
+
+    'separator-insensitive', letter case ignored too (QA typed
+    TRIG_FX_60_00_… for trig-fx-60-00-…; ADF's GET already answers any casing).
+    ADF forbids '*' in a name, so a request holding one is a 'pattern'
+    ('*SURVEYCO*' for the triggers whose name contains SURVEYCO), matched the
+    same way.
+    """
+    if "*" in requested:
+        pattern = ".*".join(re.escape(_squash(part)) for part in requested.split("*"))
+        return "pattern" if re.fullmatch(pattern, _squash(name)) else ""
+    return "separator-insensitive" if _squash(name) == _squash(requested) else ""
+
+
+def _trigger_pipelines(resource) -> str:
+    """The pipelines a trigger starts, from its definition ('—' when it starts none).
+
+    Schedule and event triggers list them under ``pipelines``; a tumbling-window
+    or chaining trigger has one, under ``pipeline``. A trigger's name is no guide:
+    QA's trig-fx-60-00-ex-ops-daily-ingest_data starts pl_UC6_TriggerTarget.
+    """
+    props = getattr(resource, "properties", None)
+    refs = [*(getattr(props, "pipelines", None) or []), getattr(props, "pipeline", None)]
+    names = [
+        getattr(getattr(ref, "pipeline_reference", None), "reference_name", None)
+        for ref in refs
+    ]
+    return ", ".join(n for n in names if n) or "—"
+
+
+async def _trigger_lookup(names: list[str], targets: list) -> tuple[dict, list[str]]:
+    """Each trigger name -> [(target, resource, how)] where it was found, or the text to show
+    instead; plus the NOTE lines naming what a loosely matched name was taken to mean.
+
+    Every factory is asked: a trigger that was only looked for in the default
+    factory came back NOT FOUND although it existed in another one (QA's
+    trig-fx-60). A name found in two places is AMBIGUOUS — reading or changing
+    either one would be a guess. A name no factory holds exactly is matched
+    against each factory's trigger list (_trigger_match), read only then.
+    """
+    gate = asyncio.Semaphore(_ADF_CONCURRENCY)
+
+    async def _get(target, trigger):
+        if "*" in trigger:
+            return None, None  # a pattern, which only the trigger lists can match
+        async with gate:
+            try:
+                client = await _client(target[1])
+                return await client.triggers.get(target[2], target[3], trigger), None
+            except ResourceNotFoundError:
+                return None, None
+            except Exception as exc:  # noqa: BLE001 - reported per trigger
+                return None, _truncate(exc)
+
+    async def _list(target):
+        async with gate:
+            try:
+                client = await _client(target[1])
+                return [t async for t in client.triggers.list_by_factory(target[2], target[3])]
+            except Exception as exc:  # noqa: BLE001 - only the loose match is lost
+                logger.warning("ADF trigger list %s failed: %s", target[3], _truncate(exc))
+                return []
+
+    answers = iter(await asyncio.gather(*(_get(t, n) for n in names for t in targets)))
+    found: dict = {}
+    for name in names:
+        per = [(t, *next(answers)) for t in targets]
+        errors = [
+            error if len(targets) == 1 else f"{_factory_name(t[0])}: {error}"
+            for t, _, error in per
+            if error
+        ]
+        # ADF answers any casing of a name, under the name as it is published.
+        found[name] = [
+            (t, resource, "exact" if resource.name == name else "case-insensitive")
+            for t, resource, _ in per
+            if resource is not None
+        ] or ("ERROR: " + "; ".join(errors) if errors else "NOT FOUND")
+
+    notes: list[str] = []
+    missing = [name for name in names if found[name] == "NOT FOUND"]
+    lists = await asyncio.gather(*(_list(t) for t in targets)) if missing else []
+    for name in missing:
+        hits = [
+            (t, resource, how)
+            for t, items in zip(targets, lists)
+            for resource in items
+            if (how := _trigger_match(name, str(resource.name or "")))
+        ]
+        if "*" in name and hits:
+            capped = len(hits) > _TRIGGER_PATTERN_MAX
+            shown = f", the first {_TRIGGER_PATTERN_MAX} shown" if capped else ""
+            notes.append(
+                f"  NOTE: '{name}' is a name pattern (letter case and separators ignored); "
+                f"{len(hits)} trigger(s) match it{shown}."
+            )
+            hits = hits[:_TRIGGER_PATTERN_MAX]
+        elif len(hits) == 1 and hits[0][2] == "separator-insensitive":
+            notes.append(
+                f"  NOTE: '{name}' matched trigger '{hits[0][1].name}' in factory "
+                f"{_factory_label(hits[0][0][0])} (letter case and separators ignored)."
+            )
+        found[name] = hits or "NOT FOUND"
+
+    for name, hits in found.items():
+        if isinstance(hits, list) and len(hits) > 1 and "*" not in name:
+            found[name] = (
+                "AMBIGUOUS: in factories "
+                + ", ".join(
+                    _factory_label(t[0]) + ("" if r.name == name else f" ('{r.name}')")
+                    for t, r, _ in hits
+                )
+                + " — the factory has to be named"
+            )
+    # A trigger two requested names reach is one row, kept under the name that
+    # matched it exactly when there is one: only that name changes it.
+    seen: set = set()
+    listed = [(name, hits) for name, hits in found.items() if isinstance(hits, list)]
+    for name, hits in sorted(
+        listed, key=lambda item: any(h[2] in _LOOSE_TRIGGER_MATCHES for h in item[1])
+    ):
+        found[name] = [h for h in hits if (h[0][0], h[1].name) not in seen]
+        seen.update((t[0], r.name) for t, r, _ in found[name])
+    return found, notes
+
+
+async def _git_mode_note(alias: str, sub: str, rg: str, factory_name: str) -> str:
+    """One NOTE after a trigger change in a git-integrated factory ('' otherwise).
+
+    The change is made to the LIVE factory, while ADF Studio in git mode shows
+    the branch's saved state: QA saw an enable succeed while Studio still
+    showed the trigger Disabled. Best-effort, so '' when the factory can't be read.
+    """
+    try:
+        found = await (await _client(sub)).factories.get(rg, factory_name)
+        branch = getattr(getattr(found, "repo_configuration", None), "collaboration_branch", "")
+    except Exception as exc:  # noqa: BLE001 - a note, never a failure
+        logger.info("ADF git-mode check for %s skipped: %s", factory_name, _truncate(exc))
+        return ""
+    if not branch:
+        return ""
+    return (
+        f"  NOTE: factory {_factory_label(alias)} is git-integrated (collaboration branch "
+        f"'{branch}'). The change was made to the LIVE factory. ADF Studio in git mode shows "
+        "the trigger state saved in the branch, so it can still show the old state — switch "
+        "Studio to Live mode to see it. The next publish from git can reset the trigger to "
+        "the branch's saved state unless the branch is updated too."
+    )
+
+
 @tool
 async def get_trigger_states(
     trigger_names: list[str],
@@ -3693,7 +4257,10 @@ async def get_trigger_states(
 
     Use this for questions such as "are these triggers enabled or disabled?"
     where the user has not supplied a deployment expectation. Missing triggers
-    are reported individually and do not suppress the rest of the batch.
+    are reported individually and do not suppress the rest of the batch. A name
+    with '*' is a pattern: '*SURVEYCO*' reads every trigger whose name contains
+    SURVEYCO; '*' alone reads every trigger. Each row names the pipeline(s) its
+    trigger starts.
     """
     names = list(
         dict.fromkeys(
@@ -3705,43 +4272,37 @@ async def get_trigger_states(
     if not names:
         return "[adf-agent] Please provide at least one trigger name to inspect."
     try:
-        alias, sub, rg, factory_name = _resolve_factory(factory)
+        targets = _trigger_targets(factory)
     except _InputError as exc:
         return str(exc)
-    client = await _client(sub)
+    lookup, notes = await _trigger_lookup(names, targets)
 
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str]] = []
     for trigger_name in names:
-        try:
-            resource = await client.triggers.get(rg, factory_name, trigger_name)
-        except ResourceNotFoundError:
-            rows.append((trigger_name, "NOT FOUND", "NOT FOUND"))
+        if isinstance(lookup[trigger_name], str):
+            missing = lookup[trigger_name]
+            rows.append((trigger_name, "—", missing, missing.split(":")[0], "—"))
             continue
-        except Exception as exc:  # noqa: BLE001 - preserve partial batch results
-            rows.append((trigger_name, f"ERROR: {_truncate(exc)}", "ERROR"))
-            continue
-        if resource is None:
-            rows.append((trigger_name, "NOT FOUND", "NOT FOUND"))
-            continue
-        actual = _trigger_runtime_state(resource)
-        if actual == "Started":
-            business = "Enabled"
-        elif actual in {"Stopped", "Disabled"}:
-            business = "Disabled"
-        else:
-            business = "Unknown"
-        rows.append((trigger_name, actual, business))
+        for target, resource, _ in lookup[trigger_name]:
+            actual = _trigger_runtime_state(resource)
+            if actual == "Started":
+                business = "Enabled"
+            elif actual in {"Stopped", "Disabled"}:
+                business = "Disabled"
+            else:
+                business = "Unknown"
+            rows.append(
+                (resource.name, _factory_name(target[0]), actual, business,
+                 _trigger_pipelines(resource))
+            )
 
-    found = sum(
-        1
-        for _, actual, _ in rows
-        if actual != "NOT FOUND" and not actual.startswith("ERROR:")
-    )
+    found = sum(1 for row in rows if row[1] != "—")
     lines = [
-        f"[adf-agent] Current trigger states (factory {_factory_label(alias)}) - "
+        f"[adf-agent] Current trigger states ({_trigger_scope(targets)}) - "
         f"{found}/{len(rows)} found",
-        "  Trigger | ADF State | Business State",
-        *[f"  {trigger} | {actual} | {business}" for trigger, actual, business in rows],
+        "  Trigger | Factory | ADF State | Business State | Starts pipeline(s)",
+        *[f"  {' | '.join(row)}" for row in rows],
+        *notes,
     ]
     return "\n".join(lines)
 
@@ -3763,10 +4324,10 @@ async def validate_trigger_states(
                         ["TR_CUSTOMER_LOAD", "TR_FINANCE_LOAD"].
         expected_state: "enabled" or "disabled" (deployment intent). ADF maps
                         enabled -> Started; disabled -> Stopped or Disabled.
-        factory:        Optional factory alias. Leave empty for the default.
+        factory:        Optional factory alias. Leave empty to search every factory.
 
-    Returns a Trigger | Expected State | Actual State | Result table. A missing
-    trigger is reported on its own row without failing the others.
+    Returns a Trigger | Factory | Expected State | Actual State | Result table. A
+    missing trigger is reported on its own row without failing the others.
     """
     names = [n.strip() for n in (trigger_names or []) if n and n.strip()]
     if not names:
@@ -3778,35 +4339,33 @@ async def validate_trigger_states(
             "Started) or 'disabled' (ADF Stopped/Disabled)."
         )
     try:
-        alias, sub, rg, name = _resolve_factory(factory)
+        targets = _trigger_targets(factory)
     except _InputError as exc:
         return str(exc)
-    client = await _client(sub)
+    lookup, notes = await _trigger_lookup(names, targets)
 
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str]] = []
     for trig in names:
-        try:
-            resource = await client.triggers.get(rg, name, trig)
-        except ResourceNotFoundError:
-            rows.append((trig, expected, "NOT FOUND", "FAIL"))
+        if isinstance(lookup[trig], str):
+            missing = lookup[trig]
+            result = "FAIL" if missing == "NOT FOUND" else missing.split(":")[0]
+            rows.append((trig, "—", expected, missing, result))
             continue
-        except Exception as exc:  # noqa: BLE001 - per-trigger error, keep going
-            rows.append((trig, expected, f"ERROR: {_truncate(exc)}", "ERROR"))
-            continue
-        if resource is None:
-            rows.append((trig, expected, "NOT FOUND", "FAIL"))
-            continue
-        actual = _trigger_runtime_state(resource)
-        rows.append((trig, expected, actual, _trigger_result(expected, actual)))
+        for target, resource, _ in lookup[trig]:
+            actual = _trigger_runtime_state(resource)
+            rows.append(
+                (resource.name, _factory_name(target[0]), expected, actual,
+                 _trigger_result(expected, actual))
+            )
 
     passed = sum(1 for *_, res in rows if res == "PASS")
     header = (
-        f"[adf-agent] Trigger deployment validation (factory {_factory_label(alias)}) — expected "
+        f"[adf-agent] Trigger deployment validation ({_trigger_scope(targets)}) — expected "
         f"'{expected}': {passed}/{len(rows)} PASS"
     )
-    body = ["  Trigger | Expected State | Actual State | Result"]
-    body += [f"  {t} | {e} | {a} | {r}" for t, e, a, r in rows]
-    return header + "\n" + "\n".join(body)
+    body = ["  Trigger | Factory | Expected State | Actual State | Result"]
+    body += [f"  {' | '.join(row)}" for row in rows]
+    return header + "\n" + "\n".join(body + notes)
 
 
 @tool
@@ -3838,73 +4397,108 @@ async def manage_trigger_states(
             f"[adf-agent] Unknown trigger action '{action}'. Use 'enable' or 'disable'."
         )
     try:
-        alias, sub, rg, factory_name = _resolve_factory(factory)
+        targets = _trigger_targets(factory)
     except _InputError as exc:
         return str(exc)
-    if execute:
-        denied = _write_guard(alias)
+    if execute and len(targets) == 1:
+        denied = _write_guard(targets[0][0])
         if denied:
             return denied
-    client = await _client(sub)
+    lookup, notes = await _trigger_lookup(names, targets)
     target_adf_state = "Started" if desired == "enabled" else "Stopped"
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str]] = []
+    # Found factories, with whether this assistant may change them ('' = yes).
+    refused: dict[str, str | None] = {}
+    changed: dict[str, tuple[str, str, str, str]] = {}
+    attempted = False
 
-    for trigger_name in names:
-        try:
-            resource = await client.triggers.get(rg, factory_name, trigger_name)
-        except ResourceNotFoundError:
-            rows.append((trigger_name, "NOT FOUND", "NOT FOUND", "NOT EXECUTED"))
-            continue
-        except Exception as exc:  # noqa: BLE001 - preserve per-trigger outcomes
-            rows.append((trigger_name, "ERROR", "ERROR", f"ERROR: {_truncate(exc)}"))
-            continue
-        if resource is None:
-            rows.append((trigger_name, "NOT FOUND", "NOT FOUND", "NOT EXECUTED"))
-            continue
-
-        previous = _trigger_runtime_state(resource)
-        if previous in _PASS_STATES[desired]:
-            rows.append((trigger_name, previous, previous, "NO ACTION REQUIRED"))
-            continue
-        if not execute:
-            rows.append((trigger_name, previous, target_adf_state, "WOULD CHANGE"))
-            continue
-
-        try:
-            if desired == "enabled":
-                poller = await client.triggers.begin_start(rg, factory_name, trigger_name)
+    for requested in names:
+        if isinstance(lookup[requested], str):
+            missing = lookup[requested]
+            if missing == "NOT FOUND":
+                rows.append((requested, "—", "NOT FOUND", "NOT FOUND", "NOT EXECUTED"))
+            elif missing.startswith("ERROR"):
+                rows.append((requested, "—", "ERROR", "ERROR", missing))
             else:
-                poller = await client.triggers.begin_stop(rg, factory_name, trigger_name)
-            await poller.result()
-            verified = await client.triggers.get(rg, factory_name, trigger_name)
-            current = _trigger_runtime_state(verified)
-            result = "SUCCESS" if current in _PASS_STATES[desired] else "VERIFY FAILED"
-            rows.append((trigger_name, previous, current, result))
-        except Exception as exc:  # noqa: BLE001 - one trigger must not abort the batch
+                rows.append((requested, "—", "—", "—", f"NOT EXECUTED — {missing}"))
+            continue
+        for target, resource, how in lookup[requested]:
+            alias, sub, rg, factory_name = target
+            where = _factory_name(alias)
+            # The published name: the one requested may differ in case or separators.
+            trigger_name = resource.name
+
+            previous = _trigger_runtime_state(resource)
+            if previous in _PASS_STATES[desired]:
+                rows.append((trigger_name, where, previous, previous, "NO ACTION REQUIRED"))
+                continue
+            if execute and alias not in refused:
+                refused[alias] = _write_guard(alias)
+            if execute and refused[alias]:
+                # Ahead of the confirmation below, which would only lead to this (QA-18).
+                rows.append(
+                    (trigger_name, where, "—", "—",
+                     "NOT EXECUTED — that change can't be made from this assistant")
+                )
+                continue
+            if how in _LOOSE_TRIGGER_MATCHES:
+                asked = (
+                    f"'{requested}' is a name pattern; '{trigger_name}'"
+                    if how == "pattern"
+                    else f"no trigger is named exactly '{requested}'; the closest is "
+                    f"'{trigger_name}', which"
+                )
+                result = (
+                    f"NOT EXECUTED — {asked} is changed only once it is confirmed by that "
+                    "exact name"
+                )
+                rows.append((trigger_name, where, previous, previous, result))
+                continue
+            if not execute:
+                rows.append((trigger_name, where, previous, target_adf_state, "WOULD CHANGE"))
+                continue
+
+            attempted = True
+            client = await _client(sub)
             try:
+                if desired == "enabled":
+                    poller = await client.triggers.begin_start(rg, factory_name, trigger_name)
+                else:
+                    poller = await client.triggers.begin_stop(rg, factory_name, trigger_name)
+                await poller.result()
                 verified = await client.triggers.get(rg, factory_name, trigger_name)
                 current = _trigger_runtime_state(verified)
-            except Exception:  # noqa: BLE001 - verification itself failed
-                current = "UNKNOWN"
-            rows.append(
-                (trigger_name, previous, current, f"ERROR: {_change_error(exc)}")
-            )
+                result = "SUCCESS" if current in _PASS_STATES[desired] else "VERIFY FAILED"
+                rows.append((trigger_name, where, previous, current, result))
+                if result == "SUCCESS":
+                    changed[alias] = target
+            except Exception as exc:  # noqa: BLE001 - one trigger must not abort the batch
+                try:
+                    verified = await client.triggers.get(rg, factory_name, trigger_name)
+                    current = _trigger_runtime_state(verified)
+                except Exception:  # noqa: BLE001 - verification itself failed
+                    current = "UNKNOWN"
+                rows.append(
+                    (trigger_name, where, previous, current, f"ERROR: {_change_error(exc)}")
+                )
 
     successes = sum(
         1
         for *_, result in rows
         if result in {"SUCCESS", "NO ACTION REQUIRED"}
     )
-    mode = "EXECUTED" if execute else "DRY RUN"
+    # "EXECUTED" over rows that were all left alone read as a change made.
+    mode = "EXECUTED" if attempted else "NO CHANGE MADE" if execute else "DRY RUN"
     lines = [
-        f"[adf-agent] Trigger management {mode} (factory {_factory_label(alias)}) - requested "
+        f"[adf-agent] Trigger management {mode} ({_trigger_scope(targets)}) - requested "
         f"'{desired}'; {successes}/{len(rows)} already-correct or successful",
-        "  Trigger | Previous State | Current/Planned State | Result",
-        *[
-            f"  {trigger} | {previous} | {current} | {result}"
-            for trigger, previous, current, result in rows
-        ],
+        "  Trigger | Factory | Previous State | Current/Planned State | Result",
+        *[f"  {' | '.join(row)}" for row in rows],
+        *notes,
     ]
+    for target in changed.values():
+        if note := await _git_mode_note(*target):
+            lines.append(note)
     return "\n".join(lines)
 
 
@@ -4113,6 +4707,11 @@ _GUID_RE = re.compile(r"\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b", re.IGN
 _CLAIMED_PIPELINE_RE = re.compile(r"\bpl[_-][A-Za-z0-9][A-Za-z0-9_-]*\b", re.IGNORECASE)
 
 
+# ' UTC' / '(GMT)' after a ticket time: what a person or the model adds to the
+# value ServiceNow returned. Without it removed the time could not be read.
+_UTC_WORD_RE = re.compile(r"\s*\(?(?:utc|gmt)\)?$", re.IGNORECASE)
+
+
 def _parse_moment(value: str, label: str) -> datetime:
     """Parse a ticket timestamp: 'YYYY-MM-DD HH:MM:SS', ISO-8601, or a bare date.
 
@@ -4122,7 +4721,7 @@ def _parse_moment(value: str, label: str) -> datetime:
     taken as UTC — that is what ServiceNow stores, and assuming local time would
     silently shift the whole correlation window by hours.
     """
-    raw = (value or "").strip()
+    raw = _UTC_WORD_RE.sub("", (value or "").strip())
     if raw.endswith(("Z", "z")):
         raw = raw[:-1] + "+00:00"
     try:
@@ -4156,7 +4755,7 @@ def _span_text(minutes: int) -> str:
     return f"{hours}h {rest} min" if rest else f"{hours}h"
 
 
-def _mentions(text: str, name: str) -> bool:
+def _mentions(text: str, name: str, squashed: str | None = None) -> bool:
     """True when ``name`` appears in ``text`` as a whole token, any casing.
 
     Token boundaries are checked against ``[A-Za-z0-9_-]`` rather than ``\\b`` so
@@ -4164,8 +4763,21 @@ def _mentions(text: str, name: str) -> bool:
     must NOT be reported as mentioned by a ticket that says
     'pl_UC2_TriggerMismatch', and 'PL-EX-04' must not match inside
     'PL-EX-04-SAMPLE-LEDGER'.
+
+    '-' and '_' are interchangeable, and optional, inside the name: tickets are
+    typed by people, and 'pl-acme-rate-feed-…' must still find the pipeline
+    'pl-acme_rate_feed-…'. ``squashed`` is ``_squash(text)``, passed when one
+    ticket is checked against thousands of names, so the patterns only run for
+    names whose squashed form is in the ticket at all.
     """
-    pattern = rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])"
+    key = _squash(name)
+    if not key or key not in (_squash(text) if squashed is None else squashed):
+        return False
+    exact = rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])"
+    if re.search(exact, text, re.IGNORECASE):
+        return True
+    loose = "[_-]?".join(re.escape(c) for c in key)
+    pattern = rf"(?<![A-Za-z0-9])(?<![A-Za-z0-9][_-]){loose}(?![A-Za-z0-9]|[_-][A-Za-z0-9])"
     return re.search(pattern, text, re.IGNORECASE) is not None
 
 
@@ -4183,7 +4795,11 @@ def _gap_text(moment, anchor: datetime) -> str:
     """
     if moment is None:
         return "an unknown distance from the ticket (ADF reported no timestamp)"
-    seconds = (_as_utc(moment) - anchor).total_seconds()
+    # Whole seconds on both sides, as _fmt_ts prints them: a gap rounded from
+    # the exact times can sit a second off the two times printed beside it.
+    seconds = (
+        _as_utc(moment).replace(microsecond=0) - anchor.replace(microsecond=0)
+    ).total_seconds()
     if abs(seconds) < 1:
         return "at the moment the ticket was opened"
     side = "BEFORE" if seconds < 0 else "AFTER"
@@ -4251,7 +4867,9 @@ async def correlate_incident_with_pipeline_runs(
     raw_text = incident_text or ""
     text = raw_text[:_INCIDENT_MAX_TEXT]
     incident_number = (incident_number or "").strip()
-    explicit = [n.strip() for n in (pipeline_names or "").replace(";", ",").split(",") if n.strip()]
+    explicit = [
+        n for n in map(_clean_name, (pipeline_names or "").replace(";", ",").split(",")) if n
+    ]
     if not text and not explicit:
         return (
             "[adf-agent] Nothing to correlate: pass the incident's text as incident_text "
@@ -4285,7 +4903,8 @@ async def correlate_incident_with_pipeline_runs(
     known: dict[str, list[str]] = {}
     real_names: set[str] = set()
     problems: list[str] = []
-    wanted = {n.casefold() for n in explicit}
+    wanted = {_squash(n) for n in explicit}
+    squashed = _squash(text)
     for alias, sub, rg, name in targets:
         try:
             client = await _client(sub)
@@ -4297,11 +4916,17 @@ async def correlate_incident_with_pipeline_runs(
             )
             continue
         real_names.update(names)
-        known[alias] = sorted(n for n in names if n.casefold() in wanted or _mentions(text, n))
+        known[alias] = sorted(
+            n for n in names if _squash(n) in wanted or _mentions(text, n, squashed)
+        )
 
-    real_folded = {n.casefold() for n in real_names}
+    real_squashed = {_squash(n) for n in real_names}
     claimed = list(dict.fromkeys(_CLAIMED_PIPELINE_RE.findall(text) + explicit))
-    absent = [c for c in claimed if c.casefold() not in real_folded]
+    absent = [c for c in claimed if _squash(c) not in real_squashed]
+    # "Not in Data Factory" is only known when every factory's list was read.
+    searched = "any searched factory" if len(known) == len(targets) else (
+        "the factories that could be read"
+    )
     matched = [(alias, n) for alias, names in sorted(known.items()) for n in names]
     sweep = not matched
 
@@ -4345,6 +4970,12 @@ async def correlate_incident_with_pipeline_runs(
             seen_ids.add(run_id)
             ranked.append(pair)
 
+    # A window reaching back past ADF's run history comes back empty because the
+    # runs are gone, not because nothing failed — a different answer, and
+    # widening the window cannot change it.
+    history_start = datetime.now(timezone.utc) - timedelta(days=_ADF_HISTORY_DAYS)
+    expired = anchor is not None and after < history_start
+
     # --- Step 3: render -------------------------------------------------------
     label = f"Incident {incident_number}" if incident_number else "Incident"
     out = [f"[adf-agent] {label} ↔ Data Factory correlation"]
@@ -4354,7 +4985,16 @@ async def correlate_incident_with_pipeline_runs(
             f"  search window : {_fmt_ts(after)} → {_fmt_ts(before)} "
             f"({_span_text(before_m)} before / {_span_text(after_m)} after the ticket)"
         )
-    out.append("  factories     : " + ", ".join(_factory_label(a) for a, *_ in targets))
+    if expired:
+        out.append(
+            f"  run history   : this window reaches back past ADF's ~{_ADF_HISTORY_DAYS}-day "
+            f"run history (it keeps runs from about {_fmt_ts(history_start)} on), so runs "
+            "from before then may no longer be held, failed or not — a run missing from "
+            "there proves nothing."
+        )
+    # Labelled as SEARCHED: under a bare 'factories' the line read as a detail
+    # and was dropped, leaving 'not found' with no scope.
+    out.append("  factories searched: " + ", ".join(_factory_label(a) for a, *_ in targets))
     if len(raw_text) > _INCIDENT_MAX_TEXT:
         # This clip moves the tool's INPUTS, not just its output: run ids and
         # pipeline names live in work notes appended at the END of a long ticket,
@@ -4374,12 +5014,12 @@ async def correlate_incident_with_pipeline_runs(
     else:
         out.append(
             "  pipelines named in the ticket AND present in Data Factory: NONE — no "
-            "configured factory holds a pipeline whose name appears in this ticket."
+            f"pipeline whose name appears in this ticket is in {searched}."
         )
     if absent:
         out.append(
-            "  named in the ticket but NOT in any searched factory — NO runs were "
-            "fetched for these, and none may be reported against them:"
+            f"  named in the ticket but NOT in {searched} — NO runs were "
+            "fetched for these, so no run in this answer is theirs:"
         )
         out.extend(f"    - {c}" for c in absent[:_INCIDENT_MAX_ROWS])
         if len(absent) > _INCIDENT_MAX_ROWS:
@@ -4389,14 +5029,20 @@ async def correlate_incident_with_pipeline_runs(
             # and no count elsewhere in this answer recovers the difference.
             out.append(
                 f"    … and {len(absent) - _INCIDENT_MAX_ROWS} more name(s) in the ticket "
-                "that no searched factory has — the same rule covers them: NO runs were "
-                "fetched, and none may be reported against them."
+                "that no searched factory has — NO runs were fetched for them either, so no "
+                "run in this answer is theirs."
             )
 
     if anchor is None:
         out.append(
             "  time correlation: SKIPPED — no opened_at was supplied, so only the run "
             "id(s) found in the ticket text were looked up."
+        )
+    elif not ranked and expired:
+        out.append(
+            "  failed runs   : NONE RETAINED. The window reaches past ADF's run history, so "
+            "this cannot show whether a run failed then — it does not mean no run failed — "
+            "and a wider window cannot change that: runs that old are gone."
         )
     elif not ranked:
         scope = (
@@ -4407,11 +5053,17 @@ async def correlate_incident_with_pipeline_runs(
         )
         out.append(
             f"  failed runs   : NONE. No run of {scope} failed in that window, so the "
-            "failure this ticket describes is not in the window searched. Say so and offer "
-            "a wider window (minutes_before / minutes_after) rather than widening it on "
-            f"your own; it may also be outside ADF's ~{_ADF_HISTORY_DAYS}-day history."
+            "failure this ticket describes is not in the window searched. A wider window "
+            "is searched only on request."
         )
     else:
+        # Proximity is all this tool measures. The caveat rides the result itself,
+        # so it reaches every answer built from these rows, not only the turns on
+        # which the model happens to read the correlation skill.
+        out.append(
+            "  caveat        : closeness in time is a lead, not proof — a run is tied to "
+            "this incident only if the ticket names it or its pipeline."
+        )
         lead = f"  failed runs   : {len(ranked)} in the window, closest failure first"
         if sweep:
             lead += " (factory-wide sweep — the ticket named no pipeline this deployment has)"
@@ -4469,8 +5121,8 @@ async def correlate_incident_with_pipeline_runs(
         out.append(
             f"  FULL DETAIL covers only the {_INCIDENT_MAX_CARDS} failure(s) closest to the "
             f"ticket. The other {len(ranked) - _INCIDENT_MAX_CARDS} failed run(s) were "
-            "ranked but NOT expanded to activity level — call get_pipeline_run_details on a "
-            "run id above to see its errors."
+            "ranked but NOT expanded to activity level; the errors of any one of them are "
+            "read by its run id on request."
         )
 
     for run_id in ticket_run_ids[:_INCIDENT_MAX_CARDS]:
@@ -4500,11 +5152,13 @@ async def correlate_incident_with_pipeline_runs(
                 f"{_factory_label(seen_alias)}): correlated above.{here}"
             )
             continue
+        asked: list[str] = []
         for alias, sub, rg, name in targets:
             try:
                 client = await _client(sub)
                 run = await client.pipeline_runs.get(rg, name, run_id)
             except ResourceNotFoundError:
+                asked.append(_factory_label(alias))
                 continue  # not this factory's run; try the next one
             except Exception as exc:  # noqa: BLE001 - surfaced to the model as text
                 # No link: this is a per-factory probe in a search that is still
@@ -4531,11 +5185,23 @@ async def correlate_incident_with_pipeline_runs(
             # Deliberately unlinked: every configured factory was asked and none
             # owns this id, so there is no factory a link could be built from.
             # Guessing one would manufacture the "the run does not exist" page
-            # that this message is carefully NOT claiming.
-            out.append(
-                f"  RUN ID IN THE TICKET — {run_id}: NOT FOUND in any searched factory. "
-                "Report it as a run id this deployment cannot read, not as a missing run."
-            )
+            # that this message is carefully NOT claiming. The factories asked
+            # are named on this line: an answer that dropped the 'factories
+            # searched' header said "not found" with no scope (UC8-05, run l5).
+            # One whose lookup failed is not among them; it is under the
+            # lookups that did not complete.
+            if asked:
+                out.append(
+                    f"  RUN ID IN THE TICKET — {run_id}: NOT FOUND in {', '.join(asked)}. "
+                    f"ADF keeps runs for about {_ADF_HISTORY_DAYS} days, so a run older than "
+                    "that, or one in a factory this deployment does not search, is not found "
+                    "either; this does not show that the run never existed."
+                )
+            else:
+                out.append(
+                    f"  RUN ID IN THE TICKET — {run_id}: could NOT be looked up; the lookup "
+                    "failed in every factory (listed below)."
+                )
     if len(ticket_run_ids) > _INCIDENT_MAX_CARDS:
         # The worst of the caps: a run id the ticket itself pasted appears nowhere
         # else in this answer, so a reader cannot tell it was even seen.
@@ -4562,20 +5228,16 @@ async def correlate_incident_with_pipeline_runs(
             out.append(
                 f"  … and {len(skipped)} more run id(s) pasted in the ticket, NOT looked up "
                 f"(only the first {_INCIDENT_MAX_CARDS} are resolved by id): "
-                f"{', '.join(skipped)}. Report these as un-checked, never as missing."
+                f"{', '.join(skipped)}. These are un-checked, not missing."
             )
 
     if problems:
         out.append("")
         out.append("  lookups that did not complete (results above are partial):")
         out.extend(problems)
-
-    out.append("")
-    out.append(
-        "  NOTE: closeness in time is a LEAD, not proof. Say these runs failed near the "
-        "moment the ticket was raised; never state that one CAUSED the incident unless "
-        "the ticket itself names that run or pipeline."
-    )
+    # No closing "lead, not proof" NOTE: the caveat line above the ranked runs
+    # says it once, and the NOTE also printed under a NONE, about runs the
+    # answer does not have.
     return "\n".join(out)
 
 

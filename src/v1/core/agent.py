@@ -29,6 +29,7 @@ from v1.core.middlewares.safety import SafetyGateMiddleware
 from v1.core.middlewares.sliding_window import SlidingWindowFloorMiddleware
 from v1.core.middlewares.source_accumulator import SourceAccumulatorMiddleware
 from v1.core.middlewares.subagent_access import SubagentAccessMiddleware
+from v1.core.middlewares.subagent_relay import SubagentRelayMiddleware
 from v1.core.middlewares.user_context import UserContextMiddleware
 from v1.core.prompts import SYSTEM_PROMPT
 from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
@@ -348,6 +349,10 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             # subagent. Sits inner of deepagents' SubAgentMiddleware so it sees
             # the assembled request.
             SubagentAccessMiddleware(),
+            # View-only: appends a relay requirement to this turn's adf-agent
+            # answers, beside them, so the reply carries the answer whole instead
+            # of re-titling it and dropping its opening lines.
+            SubagentRelayMiddleware(),
             # Selective retention: clear stale tool-result bodies before the model
             # call (view-only; persisted artifacts / citations preserved).
             ContextEditingMiddleware(

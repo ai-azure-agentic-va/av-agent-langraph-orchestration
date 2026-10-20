@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from v1.core.middlewares.adf_result_keep import AdfResultKeepMiddleware
 from v1.core.middlewares.source_accumulator import SourceAccumulatorMiddleware
 from v1.core.middlewares.user_context import SUBAGENT_GUIDANCE, UserContextMiddleware
 from v1.core.prompts import ADF_SUBAGENT_DESCRIPTION, ADF_SUBAGENT_PROMPT
@@ -31,9 +32,12 @@ ADF_SUBAGENT = {
     "tools": [*ADF_TOOLS, ai_search_tool],
     # ADF records no per-user owner, so the signed-in-user block is here to make a
     # "my pipelines" ask say it cannot filter by person rather than pass off every
-    # run as the user's.
+    # run as the user's. The keep reminder rides on the ADF tools' results only
+    # (never ai_search_tool's): the lines graded runs found missing were dropped
+    # here, before the orchestrator ever saw the answer.
     "middleware": [
         SourceAccumulatorMiddleware(),
         UserContextMiddleware(guidance=SUBAGENT_GUIDANCE),
+        AdfResultKeepMiddleware(tool.name for tool in ADF_TOOLS),
     ],
 }
