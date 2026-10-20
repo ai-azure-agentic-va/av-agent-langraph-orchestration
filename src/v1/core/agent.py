@@ -30,6 +30,7 @@ from v1.core.middlewares.sliding_window import SlidingWindowFloorMiddleware
 from v1.core.middlewares.source_accumulator import SourceAccumulatorMiddleware
 from v1.core.middlewares.subagent_access import SubagentAccessMiddleware
 from v1.core.middlewares.subagent_relay import SubagentRelayMiddleware
+from v1.core.middlewares.subagent_sources import SubagentSourcesMiddleware
 from v1.core.middlewares.user_context import UserContextMiddleware
 from v1.core.prompts import SYSTEM_PROMPT
 from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
@@ -107,7 +108,8 @@ class ChatAgentState(DeepAgentState):
 
     # Append-only cumulative "Referenced Sources" for the WHOLE conversation: every
     # document ai_search has surfaced, numbered 1..n and de-duped by source_key.
-    # SourceAccumulatorMiddleware writes it after each turn; ai_search reads it back
+    # SourceAccumulatorMiddleware writes it after each turn (SubagentSourcesMiddleware
+    # adds a subagent's searches when its `task` returns); ai_search reads it back
     # (InjectedState) to seed conversation-stable [n] numbering, and CitationGuard
     # validates markers against it. Durable (checkpointed graph state) so numbering
     # survives a process restart. NotRequired: a new thread has none until the first
@@ -339,6 +341,10 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             # seeds next turn's conversation-stable [n] numbering and backs the
             # collapsed Referenced Sources panel.
             SourceAccumulatorMiddleware(),
+            # A subagent's ai_search results never surface in the parent thread, so
+            # give its `task` result the documents event, artifact and `all_sources`
+            # entry an orchestrator search produces; otherwise its [n] renders bare.
+            SubagentSourcesMiddleware(),
             SafetyGateMiddleware(),
             # Appends the signed-in user's name, email, and AD group names (from
             # the JWT principal) to the system prompt. Outer of SubagentAccess so

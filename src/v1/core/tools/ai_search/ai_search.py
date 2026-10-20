@@ -364,6 +364,25 @@ def assigned_citation_indices(run_id: str | None) -> set[int]:
     return reg.indices()
 
 
+def turn_documents_snapshot(run_id: str | None) -> list[dict]:
+    """The documents numbered so far for ``run_id`` (seeded cumulative set).
+
+    Read-only peek like :func:`assigned_citation_indices`: never creates a
+    registry, so a run that has not searched returns ``[]``. Lets the orchestrator
+    surface what a subagent's searches numbered in the shared registry (see
+    ``SubagentSourcesMiddleware``).
+    """
+
+    if not run_id:
+        return []
+    with _document_registries_lock:
+        reg = _document_registries.get(run_id)
+        if reg is None:
+            return []
+        _document_registries.move_to_end(run_id)
+    return reg.documents()
+
+
 def _current_run_id() -> str | None:
     """Stable per-turn id from the LangGraph run config (``metadata.run_id``).
 

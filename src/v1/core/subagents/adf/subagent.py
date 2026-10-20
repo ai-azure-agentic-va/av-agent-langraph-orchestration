@@ -11,20 +11,19 @@ from v1.core.tools import ADF_TOOLS, ai_search_tool
 # not store. It is the one non-ADF tool here; the prompt bounds it tightly to
 # documented thresholds/runbooks and forbids it as a source of pipeline facts.
 #
-# The subagent runs its OWN SourceAccumulatorMiddleware so those searches reach
-# "Referenced Sources" like the orchestrator's do. Without it the citation path
-# is one-way and silently broken: `all_sources` is copied INTO the subagent (so
-# numbering continues correctly and a `[n]` minted here looks plausible), but the
-# subagent's ToolMessages never enter the parent thread, so the parent's own
-# accumulator cannot see the artifact. The marker would then survive
-# CitationGuardMiddleware — parent and subagent share one per-run registry, keyed
-# on a `run_id` that propagates unchanged into the subgraph — and render as a
-# dead bracket pointing at no panel entry.
+# `all_sources` is copied INTO the subagent (so numbering continues correctly and
+# a `[n]` minted here looks plausible), but the subagent's ToolMessages never
+# enter the parent thread, so the parent's own accumulator cannot see the
+# artifact. The marker survives CitationGuardMiddleware — parent and subagent
+# share one per-run registry, keyed on a `run_id` that propagates unchanged into
+# the subgraph — so the orchestrator's SubagentSourcesMiddleware puts the
+# documents on the `task` result and in `all_sources`, where the UI finds them.
 #
-# Running the accumulator HERE closes the loop: it writes this subagent's
-# documents into its own `all_sources`, which deepagents copies back to the
-# parent on return (every state key except messages/todos/structured_response),
-# where `merge_sources` unions it into the conversation's running set.
+# The subagent also runs its OWN SourceAccumulatorMiddleware, which writes its
+# documents into its own `all_sources`; deepagents copies that back to the parent
+# on return (every state key except messages/todos/structured_response), where
+# `merge_sources` unions it into the conversation's running set. That keeps them
+# persisted even if the run's registry were evicted.
 ADF_SUBAGENT = {
     "name": "adf-agent",
     "description": ADF_SUBAGENT_DESCRIPTION,

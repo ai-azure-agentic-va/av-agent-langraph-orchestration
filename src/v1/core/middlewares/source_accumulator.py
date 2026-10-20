@@ -13,10 +13,10 @@ into the running list. Writing STATE (not only the live custom ``documents`` eve
 is what makes the cumulative list DURABLE — it survives a thread reopened from
 history, where the live event never replays, and a process restart.
 
-Note: the ServiceNow subagent runs ``ai_search_tool`` inside its own subgraph, whose
-ToolMessages do not surface in the parent ``messages``; those subagent sources are
-therefore not accumulated here (a known boundary, not a regression — subagent
-searches did not contribute to the parent's sources before either).
+Note: a subagent runs ``ai_search_tool`` inside its own subgraph, whose ToolMessages
+do not surface in the parent ``messages``, so this middleware never sees them.
+SubagentSourcesMiddleware adds those documents to ``all_sources`` (and to the
+``task`` result the UI reads) when the subagent returns.
 """
 
 from __future__ import annotations
