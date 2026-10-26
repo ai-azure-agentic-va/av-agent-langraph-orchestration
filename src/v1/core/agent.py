@@ -23,14 +23,12 @@ from langchain_openai import AzureChatOpenAI
 from langgraph.errors import GraphBubbleUp
 
 from v1.core.config import get_settings
-from v1.core.middlewares.citation_guard import CitationGuardMiddleware
+from v1.core.middlewares.citations import CitationsMiddleware
 from v1.core.middlewares.model_error_guard import ModelErrorGuardMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
 from v1.core.middlewares.sliding_window import SlidingWindowFloorMiddleware
-from v1.core.middlewares.source_accumulator import SourceAccumulatorMiddleware
 from v1.core.middlewares.subagent_access import SubagentAccessMiddleware
 from v1.core.middlewares.subagent_relay import SubagentRelayMiddleware
-from v1.core.middlewares.subagent_sources import SubagentSourcesMiddleware
 from v1.core.middlewares.user_context import UserContextMiddleware
 from v1.core.prompts import SYSTEM_PROMPT
 from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
@@ -108,10 +106,10 @@ class ChatAgentState(DeepAgentState):
 
     # Append-only cumulative "Referenced Sources" for the WHOLE conversation: every
     # document ai_search has surfaced, numbered 1..n and de-duped by source_key.
-    # SourceAccumulatorMiddleware writes it after each turn (SubagentSourcesMiddleware
-    # adds a subagent's searches when its `task` returns); ai_search reads it back
-    # (InjectedState) to seed conversation-stable [n] numbering, and CitationGuard
-    # validates markers against it. Durable (checkpointed graph state) so numbering
+    # CitationsMiddleware writes it after each turn (and adds a subagent's searches
+    # when its `task` returns); ai_search reads it back (InjectedState) to seed
+    # conversation-stable [n] numbering, and CitationsMiddleware validates the
+    # answer's markers against it. Durable (checkpointed graph state) so numbering
     # survives a process restart. NotRequired: a new thread has none until the first
     # search. Merged by `merge_sources`.
     all_sources: NotRequired[Annotated[list[dict], merge_sources]]
@@ -332,19 +330,14 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             # and return a graceful assistant message through the normal response
             # path, so the UI streams a readable reply instead of a raw 400 error.
             ModelErrorGuardMiddleware(),
-            # Post-processes the fully assembled model response to strip citation
-            # markers the model invented (numbers not in the conversation's
-            # cumulative ai_search set), so no orphan [n] is persisted or shown raw.
-            CitationGuardMiddleware(),
-            # After each turn, persist this turn's ai_search documents into the
-            # cumulative `all_sources` channel (append-only, de-duped). That state
-            # seeds next turn's conversation-stable [n] numbering and backs the
-            # collapsed Referenced Sources panel.
-            SourceAccumulatorMiddleware(),
-            # A subagent's ai_search results never surface in the parent thread, so
-            # give its `task` result the documents event, artifact and `all_sources`
-            # entry an orchestrator search produces; otherwise its [n] renders bare.
-            SubagentSourcesMiddleware(),
+            # Knowledge-base citations, at three points of a turn: strip [n]
+            # markers the model invented from the fully assembled answer (outer of
+            # every middleware that rewrites it); give a subagent's `task` result
+            # the documents event, artifact and `all_sources` entry an orchestrator
+            # search produces, or its [n] renders bare; and after the turn persist
+            # its ai_search documents into `all_sources` (append-only, de-duped),
+            # which seeds next turn's numbering and backs Referenced Sources.
+            CitationsMiddleware(),
             SafetyGateMiddleware(),
             # Appends the signed-in user's name, email, and AD group names (from
             # the JWT principal) to the system prompt. Outer of SubagentAccess so

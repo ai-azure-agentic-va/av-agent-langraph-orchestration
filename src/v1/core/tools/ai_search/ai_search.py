@@ -6,6 +6,7 @@ import threading
 from collections import OrderedDict
 from datetime import date, datetime
 from typing import Annotated, Any, List, Optional
+from urllib.parse import quote
 
 from azure.core.credentials import AzureKeyCredential, TokenCredential
 from azure.search.documents import SearchClient
@@ -26,6 +27,39 @@ from v1.utils.group_routing import groups_from_config, resolve_for_groups
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+# RFC 3986 reserved/unreserved characters that are valid inside a URL but
+# excluding ( ) [ ] which are Markdown link delimiters, and { } which most
+# Markdown parsers do not allow unencoded inside a link target.
+_MARKDOWN_URL_SAFE = ":/?#@!$&'*+,;=-._~"
+
+# The "scheme://authority" prefix. Kept verbatim: percent-encoding a host would
+# break an IDN or bracketed IPv6 host, and nothing in it can break a link.
+_URL_AUTHORITY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^/?#]*")
+
+# A "%" that does not begin a valid %XX escape (e.g. a raw "100% Done" folder).
+_STRAY_PERCENT_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
+
+def _safe_url(url: str) -> str:
+    """Return a source URL that is safe as a link target (Markdown or ``href``).
+
+    Percent-encodes ONLY what is not already URL-legal — spaces, the Markdown link
+    delimiters ``(`` ``)`` ``[`` ``]`` ``{`` ``}``, ``<`` ``>``, non-ASCII, and a
+    stray ``%`` that does not begin an escape — and NEVER decodes anything. Indexed
+    SharePoint / ADO wiki URLs arrive already encoded, so a folder name's special
+    characters live in them as escapes (``%26`` for ``&``, ``%23`` for ``#``,
+    ``%2B`` for ``+``, and an ADO wiki page's literal hyphen as ``%252D``). Decoding
+    one (``unquote``) would turn it back into a live delimiter and change or cut
+    the link target, so every existing escape is kept byte-for-byte. Idempotent:
+    running it twice is a no-op.
+    """
+
+    match = _URL_AUTHORITY_RE.match(url)
+    prefix = match.group(0) if match else ""
+    rest = _STRAY_PERCENT_RE.sub("%25", url[len(prefix):])
+    return prefix + quote(rest, safe=_MARKDOWN_URL_SAFE + "%")
 
 
 def _simple_phrase_query(value: str) -> str:
@@ -370,7 +404,7 @@ def turn_documents_snapshot(run_id: str | None) -> list[dict]:
     Read-only peek like :func:`assigned_citation_indices`: never creates a
     registry, so a run that has not searched returns ``[]``. Lets the orchestrator
     surface what a subagent's searches numbered in the shared registry (see
-    ``SubagentSourcesMiddleware``).
+    ``CitationsMiddleware``).
     """
 
     if not run_id:
@@ -441,7 +475,9 @@ def _collapse_chunks(results) -> "dict[str, dict]":
         if doc is None:
             docs[key] = {
                 "title": _first_value(r, "document_title", "title", "file_name") or "Untitled",
-                "url": _first_value(r, "source_url", "url", "source") or None,
+                # Link-safe for the UI (see _safe_url). Identity stays on the raw
+                # value (_regkey -> source_key), so numbering/dedup are unaffected.
+                "url": _safe_url(_first_value(r, "source_url", "url", "source")) or None,
                 "file_name": _first_value(r, "file_name") or None,
                 "breadcrumb": _first_value(r, "breadcrumb") or None,
                 "source_type": _first_value(r, "source_type") or None,

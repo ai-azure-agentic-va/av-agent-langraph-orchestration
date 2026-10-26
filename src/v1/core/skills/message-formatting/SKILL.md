@@ -3,12 +3,16 @@ name: message-formatting
 description: >-
   Shapes HOW the orchestrator presents grounded results in its final answer —
   read it before composing any reply that renders retrieved data. Covers
-  document/inventory lists, URL and hyperlink rules, ServiceNow incident list
-  rows and full detail cards (reproduced verbatim), ASCII diagrams, [n] citation
-  mechanics, and synthesis/non-repetition. Use whenever an answer lists
-  documents or workbooks, shows one or more ServiceNow incidents, contains URLs
-  or a diagram, or cites sources. It governs presentation only; every value must
-  still be grounded in what the tools returned.
+  answer-first readability (the status or outcome on the first line, in bold,
+  then scannable detail), document/inventory lists, URL and hyperlink rules,
+  ServiceNow incident list rows and full detail cards (reproduced verbatim),
+  relayed Data Factory answers, ASCII diagrams, [n] citation mechanics, and
+  synthesis/non-repetition. Use whenever an answer reports a status or outcome
+  (is it running, did it succeed or fail, was it recovered, is the SLA met, are
+  the triggers in the expected state), lists documents or workbooks, shows one
+  or more ServiceNow incidents, contains URLs or a diagram, or cites sources. It
+  governs presentation only; every value must still be grounded in what the
+  tools returned.
 metadata:
   domain: presentation
   applies-to: orchestrator final answers
@@ -17,15 +21,19 @@ metadata:
 # Message Formatting
 
 This skill governs **how** you present results in your final answer. It never
-changes **what** you may say: every fact must still come from `ai_search_tool`
-or the `servicenow-ticket-agent`, and this skill never substitutes for calling
-them. It only shapes the presentation of results they already returned.
+changes **what** you may say: every fact must still come from `ai_search_tool`,
+the `servicenow-ticket-agent` or, where it is available, the `adf-agent`, and
+this skill never substitutes for calling them. It only shapes the presentation
+of results they already returned.
 
 ## When to use this skill
 
 Consult it before composing an answer that renders retrieved data — in
 particular when the reply:
 
+- reports a status or an outcome — whether something is running, succeeded,
+  failed, was recovered, meets its SLA, is enabled, or whether a change was
+  made (see "Answer first" below);
 - lists documents, workbooks, or an inventory ("what is available / which
   documents / list the workbooks");
 - shows one or more ServiceNow incidents (a list, a single incident, or a full
@@ -49,6 +57,54 @@ add data the tools did not return.
   incident is ONE line reproduced verbatim from the subagent (see "ServiceNow
   incidents" below), in an ordered list (1., 2., 3.) when there are several. The
   one exception is a similar-incidents answer (see "Similar incidents" below).
+
+## Answer first — the outcome before the detail
+
+A reader should get the answer from the first line without reading the rest.
+An answer that leaves its result in the middle of a paragraph, or on the last
+line of a block, makes them read everything to find it.
+
+- **Open with the answer itself**, on one short line. When the question asks for
+  a status or an outcome, put it in **bold** at the start of that line:
+  "**Yes** — …", "**Not recovered** — …", "**Failed** — …", "**3 of 5 PASS** — …".
+- **Use the status word the tool or source gave** (Succeeded, Failed,
+  InProgress, Recovered, Not Recovered, PASS / FAIL, Resolved, Closed), never a
+  softer synonym, and never a status the tools did not return. The line
+  restates the result; it adds no fact the detail below does not hold.
+- **Then the detail, scannable:** one fact per bullet or `label: value` line,
+  paragraphs of two or three sentences at most, and a blank line between
+  blocks.
+- **No preamble** before the answer line ("Here is what I found…", "Based on
+  the results…") and no recap after the detail.
+- **When there is no single outcome** — an inventory, a search, a how-to — the
+  first line is the direct answer or the count, never a restatement of the
+  question.
+
+Where the first line is already fixed, it wins over this section:
+
+- a ServiceNow result opens with the block the subagent handed back (its count
+  line, card or heading); add nothing above it (see "ServiceNow incidents"
+  below);
+- an `adf-agent` answer is relayed whole, and its first line already states the
+  outcome (see "Data Factory answers" below);
+- a refusal stays the brief refusal the system prompt prescribes.
+
+## Data Factory answers — relayed whole
+
+When your reply carries an `adf-agent` answer, that subagent has already
+written it outcome first: a bold first line with the result in the tool's own
+words (Recovered / Not Recovered, the run's status and runtime, the SLA
+assessment, a PASS / FAIL count, a trigger's new state), then the tool's detail
+block. Carry it into your reply as written — its first line first, then every
+row, note, count and link, in order — and add only the follow-up block after
+it.
+
+- Do not put a headline, title or summary of your own above it, and do not move
+  its outcome line down or merge it into a sentence.
+- Do not turn its block into a table or into prose. Status words, run IDs,
+  timestamps, parameters and error text stay verbatim.
+- A refused change keeps its outcome-only line ("tr_A was not enabled."): never
+  add a reason to it.
 
 ## Citations — reusing `[n]` markers
 

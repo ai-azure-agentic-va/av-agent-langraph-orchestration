@@ -29,8 +29,9 @@ import logging
 import re
 import time
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
+from typing import Annotated
 from urllib.parse import quote
 
 from azure.core.exceptions import ResourceNotFoundError
@@ -40,7 +41,9 @@ from azure.mgmt.datafactory.models import (
     RunQueryFilter,
     RunQueryOrderBy,
 )
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
 from langsmith import traceable
 
 from v1.core.config import get_settings
@@ -899,6 +902,10 @@ class _PipelineInfo:
     folder: str = ""  # '' = the factory root
     description: str = ""
     annotations: tuple = ()
+    # The pipeline's raw ARM JSON, as the list page carried it; None when the
+    # page could not be read as JSON. Kept out of equality and repr: it is the
+    # whole definition, and two listings of one pipeline are the same pipeline.
+    definition: dict | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -1070,10 +1077,34 @@ async def _factory_inventory(
     """Every published pipeline in one factory, with folder, description and annotations.
 
     ONE paged list call: list_by_factory returns every pipeline regardless of
-    folder, with its metadata, so nothing here needs a per-pipeline read.
+    folder, with its metadata, so nothing here needs a per-pipeline read. Each
+    page also carries every pipeline's FULL definition, which the SDK keeps
+    only as typed models; the raw JSON is kept alongside (``definition``), so a
+    definition search costs the list pages rather than a GET per pipeline.
     """
     started = time.perf_counter()
     client = await _client(sub)
+    wire: dict[str, dict] = {}
+
+    def _keep_page(response) -> None:
+        # The same raw read _keep_wire makes, for the same reason: the model
+        # drops the 'type' of any activity 9.2.0 cannot model. Called once per
+        # page by azure-core, after the body is loaded.
+        try:
+            body = response.http_response.json()
+        except Exception:  # noqa: BLE001 - an unreadable page leaves definition None
+            return
+        for item in (body.get("value") if isinstance(body, dict) else None) or ():
+            if isinstance(item, dict) and item.get("name"):
+                wire[item["name"]] = item
+
+    listed = [
+        p
+        async for p in client.pipelines.list_by_factory(
+            rg, factory_name, raw_response_hook=_keep_page
+        )
+        if getattr(p, "name", None)
+    ]
     pipelines = [
         _PipelineInfo(
             alias=alias,
@@ -1081,9 +1112,9 @@ async def _factory_inventory(
             folder=_folder_of(p),
             description=str(getattr(p, "description", None) or ""),
             annotations=tuple(str(a) for a in (getattr(p, "annotations", None) or ())),
+            definition=wire.get(p.name),
         )
-        async for p in client.pipelines.list_by_factory(rg, factory_name)
-        if getattr(p, "name", None)
+        for p in listed
     ]
     foldered = [p for p in pipelines if p.folder]
     logger.info(
@@ -3017,9 +3048,10 @@ async def discover_pipelines_by_source_system(
     inactive_rows: list[str] = []
     searched_definitions = 0
     errors: list[str] = []
-    # Every definition has to be read to be searched, so this tool's cost is one
-    # GET per pipeline in every factory. Done a bounded few at a time rather than
-    # one after another, which on a few hundred pipelines was minutes, not seconds.
+    # Every definition has to be searched, and the factory list already carries
+    # them all (_factory_inventory). The GET per pipeline this tool used to make
+    # returned the same body, and took 115 s on a large factory. A GET is left
+    # only for a definition the list did not deliver.
     gate = asyncio.Semaphore(_ADF_CONCURRENCY)
 
     async def _bounded(make):
@@ -3029,28 +3061,35 @@ async def discover_pipelines_by_source_system(
             except Exception as exc:  # noqa: BLE001 - reported per pipeline
                 return None, _truncate(exc)
 
+    # All factories listed at once: the sweep's cost is then the slowest
+    # factory's list, not the sum of them.
+    inventories, unlisted = await _inventories(targets)
     for alias, sub, rg, factory_name in targets:
         started = time.perf_counter()
-        try:
-            client = await _client(sub)
-            pipeline_names = [p.name for p in await _factory_inventory(alias, sub, rg, factory_name)]
-        except Exception as exc:
-            errors.append(f"{_factory_name(alias)}: could not list pipelines: {_truncate(exc)}")
+        if alias in unlisted:
+            errors.append(f"{_factory_name(alias)}: could not list pipelines: {unlisted[alias]}")
             continue
+        client = await _client(sub)
+        inventory = inventories[alias]
+        pipeline_names = [p.name for p in inventory]
 
         searched_definitions += len(pipeline_names)
-        definitions = await asyncio.gather(
+        unread = [p.name for p in inventory if p.definition is None]
+        fetched = await asyncio.gather(
             *(
                 _bounded(
                     functools.partial(
                         client.pipelines.get, rg, factory_name, n, cls=_keep_wire
                     )
                 )
-                for n in pipeline_names
+                for n in unread
             )
         )
+        definitions = {p.name: (p.definition, None) for p in inventory}
+        definitions.update(zip(unread, fetched))
         matches: list[tuple[str, list[str], bool]] = []
-        for pipeline_name, (definition, error) in zip(pipeline_names, definitions):
+        for pipeline_name in pipeline_names:
+            definition, error = definitions[pipeline_name]
             if error is not None:
                 errors.append(
                     f"definition lookup failed for {_factory_name(alias)}/{pipeline_name}: "
@@ -3083,10 +3122,12 @@ async def discover_pipelines_by_source_system(
             )
         )
         logger.info(
-            "ADF discovery %s for %r: %d definition(s) read, %d matched, %d active, %.0f ms",
+            "ADF discovery %s for %r: %d definition(s) searched (%d fetched individually), "
+            "%d matched, %d active, %.0f ms",
             factory_name,
             needle,
             len(pipeline_names),
+            len(unread),
             len(matches),
             sum(1 for run, error in latest_runs if run is not None),
             (time.perf_counter() - started) * 1000,
@@ -4112,6 +4153,31 @@ def _trigger_match(requested: str, name: str) -> str:
     return "separator-insensitive" if _squash(name) == _squash(requested) else ""
 
 
+def _request_text(state: dict | None) -> str:
+    """What the agent was asked to do: its human messages, never a tool result.
+
+    In adf-agent that is the one task the orchestrator handed it, written from
+    the conversation. A trigger list the agent read itself is a tool result, so
+    nothing on it counts as asked for ('' when no request is visible). Nor does a
+    summary of earlier turns: it is the model's own words, tagged as a summary.
+    """
+    messages = (state or {}).get("messages") or []
+    return "\n".join(
+        m.text
+        for m in messages
+        if isinstance(m, HumanMessage) and m.additional_kwargs.get("lc_source") != "summarization"
+    )
+
+
+def _names_trigger(request: str, *names: str) -> bool:
+    """Whether ``request`` holds one of ``names`` whole, letter case ignored."""
+    return any(
+        re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", request, re.IGNORECASE)
+        for name in names
+        if name
+    )
+
+
 def _trigger_pipelines(resource) -> str:
     """The pipelines a trigger starts, from its definition ('—' when it starts none).
 
@@ -4374,14 +4440,19 @@ async def manage_trigger_states(
     action: str,
     execute: bool = False,
     factory: str = "",
+    state: Annotated[dict | None, InjectedState] = None,
 ) -> str:
     """Idempotently enable or disable ADF triggers, then verify each result.
 
     ``execute=False`` returns a dry-run plan. A real mutation requires an explicit
     ``execute=True`` plus both ADF write gates. Every trigger is processed and
     verified independently, so one missing or failed trigger does not hide the
-    outcome of the others.
+    outcome of the others. Only a trigger the request itself names is changed:
+    one taken from a trigger listing is reported, not changed.
     """
+    # ``state`` is injected by LangGraph (not a model argument): the request the
+    # names are checked against (_request_text).
+    request = _request_text(state)
     names = list(
         dict.fromkeys(
             name.strip()
@@ -4451,6 +4522,16 @@ async def manage_trigger_states(
                 result = (
                     f"NOT EXECUTED — {asked} is changed only once it is confirmed by that "
                     "exact name"
+                )
+                rows.append((trigger_name, where, previous, previous, result))
+                continue
+            if execute and not _names_trigger(request, requested, trigger_name):
+                # A name read off a trigger list is the agent's guess: given a bare
+                # 'disable the triggers', adf-agent listed every trigger and passed
+                # them all back to be disabled.
+                result = (
+                    f"NOT EXECUTED — the request does not name '{trigger_name}', which is "
+                    "changed only once it is confirmed by that exact name"
                 )
                 rows.append((trigger_name, where, previous, previous, result))
                 continue
@@ -5275,11 +5356,16 @@ _LOG_FIRST_LINE_CHARS = 300
 # Logged by size only: pasted ticket text can carry names, emails and anything
 # else an incident holds.
 _LOG_ARGS_BY_SIZE = frozenset({"incident_text"})
+# Never logged: injected by LangGraph, not passed by the model, it is the agent's
+# whole message history (the request manage_trigger_states checks names against).
+_LOG_ARGS_SKIPPED = frozenset({"state"})
 
 
 def _log_args(kwargs: dict) -> str:
     parts = []
     for key, value in kwargs.items():
+        if key in _LOG_ARGS_SKIPPED:
+            continue
         if key in _LOG_ARGS_BY_SIZE:
             parts.append(f"{key}=<{len(str(value or ''))} chars>")
             continue

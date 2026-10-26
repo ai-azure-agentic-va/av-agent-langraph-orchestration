@@ -70,6 +70,67 @@ def test_search_client_built_with_timeout() -> None:
         ais.settings.azure_search_endpoint = orig_endpoint
 
 
+def test_safe_url_encodes_markdown_breaking_chars() -> None:
+    # Spaces and the Markdown link delimiters ( ) [ ] { } are percent-encoded;
+    # ordinary URL-legal characters (scheme, slashes, query, fragment) are kept.
+    out = ais._safe_url("https://x/a b(c)[d]{e}.md?q=1&r=2#frag")
+    assert " " not in out and "(" not in out and ")" not in out
+    assert "[" not in out and "]" not in out and "{" not in out and "}" not in out
+    assert out.startswith("https://x/")
+    assert "%20" in out  # space
+    assert "?q=1&r=2#frag" in out  # query/fragment preserved
+
+
+def test_safe_url_is_idempotent_on_already_encoded() -> None:
+    # A correctly single-encoded URL is unchanged (no double-encoding of %20).
+    url = "https://x/Shared%20Documents/Jul%2024.md"
+    assert ais._safe_url(url) == url
+    assert ais._safe_url(ais._safe_url(url)) == url  # idempotent
+
+
+def test_safe_url_preserves_percent_encoded_reserved() -> None:
+    # An already-encoded SharePoint-style URL must NOT be decoded: an encoded
+    # slash/plus inside a component would change the target if turned literal.
+    url = "https://t.sharepoint.com/AllItems.aspx?id=%2Fsites%2FFoo%2FQ1%2BQ2.docx"
+    assert ais._safe_url(url) == url
+
+
+def test_safe_url_preserves_encoded_folder_special_chars() -> None:
+    # Folder/page names with special characters arrive as escapes. Decoding any
+    # of them would make it a live delimiter: %26 -> "&" splits the query, %23 ->
+    # "#" truncates at a fragment, %2B -> "+" reads as a space, %25 -> "%" forms
+    # a bogus escape. All must survive byte-for-byte.
+    urls = [
+        "https://t.sharepoint.com/sites/S/Shared%20Documents/R%26D%20%23%201/a%2Bb%25.md",
+        "https://t.sharepoint.com/AllItems.aspx?id=%2Fsites%2FS%2FR%26D%2FQ1%20%23%202",
+        # Real ADO wiki shape: a literal hyphen in a page name is %2D, and the
+        # whole pagePath value is encoded again, so %252D is correct, not a bug.
+        (
+            "https://dev.azure.com/Org/My%20Project/_wiki/wikis/W.wiki"
+            "?pagePath=%2FW%2F2026%2F2026-%252D-Q1%2FJan-25"
+        ),
+    ]
+    for url in urls:
+        assert ais._safe_url(url) == url
+
+
+def test_safe_url_encodes_raw_folder_special_chars() -> None:
+    # A raw (unencoded) URL: spaces / parens / braces / non-ASCII get encoded, and
+    # a "%" that does not begin an escape becomes %25 so it cannot form one.
+    out = ais._safe_url("https://x/Team (Ops)/100% Done/Café {v2}.md")
+    assert out == "https://x/Team%20%28Ops%29/100%25%20Done/Caf%C3%A9%20%7Bv2%7D.md"
+    assert ais._safe_url(out) == out  # idempotent
+    # Angle brackets (which would end an <...> link destination) are encoded too.
+    assert ais._safe_url("https://x/a<b>.md") == "https://x/a%3Cb%3E.md"
+
+
+def test_safe_url_keeps_authority_verbatim() -> None:
+    # The host is never percent-encoded (an IDN or [IPv6] host would break).
+    assert ais._safe_url("https://bücher.example/a b") == "https://bücher.example/a%20b"
+    assert ais._safe_url("http://[::1]:8080/a b") == "http://[::1]:8080/a%20b"
+    assert ais._safe_url("") == ""
+
+
 def test_simple_phrase_query_quotes_and_escapes() -> None:
     assert ais._simple_phrase_query("Jul 24") == '"Jul 24"'
     # Embedded double-quote is backslash-escaped inside the phrase.
@@ -183,7 +244,10 @@ def test_run_search_section_mode_filters_prefix_ignores_floor() -> None:
     assert "URL:" not in text
     assert "https://x/" not in text
     jul = next(d for d in docs.documents() if d["title"] == "Jul 24")
-    assert jul["url"] == "https://x/Shared Documents/Jul 24.md"
+    # The artifact URL is link-safe; the identity key stays the RAW url so a
+    # source keeps its conversation-level [n] across the change.
+    assert jul["url"] == "https://x/Shared%20Documents/Jul%2024.md"
+    assert jul["source_key"] == "https://x/Shared Documents/Jul 24.md"
 
 
 def test_run_search_normal_mode_uses_vector_and_emits_breadcrumb() -> None:
@@ -232,7 +296,7 @@ def test_run_search_normal_mode_uses_vector_and_emits_breadcrumb() -> None:
     # Source URL stays out of the grounding text; it rides on the documents artifact.
     assert "URL:" not in text
     assert "https://x/" not in text
-    assert docs.documents()[0]["url"] == "https://x/Policy A.md"
+    assert docs.documents()[0]["url"] == "https://x/Policy%20A.md"
 
 
 def _main() -> int:

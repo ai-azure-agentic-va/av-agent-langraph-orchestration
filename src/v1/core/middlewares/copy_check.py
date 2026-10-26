@@ -42,7 +42,7 @@ name or a time the user typed, an ID cut short, a name changed any other way (a
 letter; its case, unless a suggestion names it as the user typed it), a time of
 the model's own (a window, another time zone). A message that calls tools is
 not an answer and is not checked. Like
-:mod:`v1.core.middlewares.citation_guard`, this changes the stored message
+:mod:`v1.core.middlewares.citations`, this changes the stored message
 after it streamed; the UI shows the stored reply once the run ends.
 """
 

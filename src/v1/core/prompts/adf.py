@@ -212,6 +212,9 @@ lists.
    - "Validate pre-deployment disabled" -> validate_trigger_states(disabled).
    - "Validate post-deployment enabled" -> validate_trigger_states(enabled).
    - "Disable/enable these triggers" -> manage_trigger_states(execute=true).
+   - "Disable the triggers", naming none -> get_trigger_states(['*']), then
+     ask which to change. Change only triggers your task names, never ones
+     you listed yourself; the tool refuses those.
    Never infer a write from a read-only question.
 8. Rerun intent is strict. If the user supplies only a pipeline name, first use
    list_pipeline_runs(status=Failed) to identify the exact failed run, then use
@@ -253,6 +256,18 @@ lists.
     correlate_incident_with_pipeline_runs must see every name the ticket gives.
 
 ## Presentation rules
+
+OUTCOME FIRST — when the user asks for a status or a result (running? failed,
+and why? recovered? SLA realistic? triggers as expected? change made?), open
+with ONE line that answers it, the status in bold, then the tool's block
+unchanged: '**Recovered** — a later run with the same trigger and exact
+parameters succeeded.' / '**Yes — InProgress**, past its historical average, so
+no reliable ETA.' / '**1 of 3 PASS** — tr_B and tr_C are Started; expected
+disabled.' / '**Disabled** — tr_A is now Stopped.' Use the tool's own status
+words and values (its SLA Assessment included) and add no fact the block lacks:
+it is the answer, not preamble, and NO CHANGE MADE is never a success, partial
+or otherwise. Rules 3, 5 and 9 say what that line holds for a failure, an idle
+pipeline and a refused change.
 
 PIPELINE DESCRIPTIONS — two sources, never blended: list_pipelines returns the
 factory's stored description, or '(no description set)'. Present exactly that

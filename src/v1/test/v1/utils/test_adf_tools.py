@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import v1.core.tools.adf.tools as adf
 
@@ -150,6 +151,15 @@ def _wire_response(wire: dict) -> SimpleNamespace:
     return SimpleNamespace(http_response=SimpleNamespace(json=lambda: wire))
 
 
+def _unreadable_response() -> SimpleNamespace:
+    """A response whose body will not parse as JSON."""
+
+    def _json():
+        raise ValueError("body is not JSON")
+
+    return SimpleNamespace(http_response=SimpleNamespace(json=_json))
+
+
 @dataclass
 class _TriggerProps:
     runtime_state: str
@@ -244,6 +254,9 @@ class _FakeClient:
         trigger_pipelines: dict[str, list[str] | str] | None = None,
         created_run_id: str = "rerun-1",
         folders: dict[str, str] | None = None,
+        # False = the list page's body cannot be read as JSON, so no definition
+        # rides on the inventory and discovery has to GET each one.
+        list_wire: bool = True,
     ) -> None:
         outer = self
         self._pipelines = pipelines or []
@@ -257,6 +270,7 @@ class _FakeClient:
         self._trigger_pipelines = trigger_pipelines or {}
         self._fail_on = fail_on
         self._created_run_id = created_run_id
+        self._list_wire = list_wire
         self.trigger_calls: list[tuple[str, str]] = []
         self.create_run_calls: list[dict[str, Any]] = []
         # Every RunFilterParameters the tools sent, in order — the assertion
@@ -272,13 +286,29 @@ class _FakeClient:
                 raise RuntimeError(f"{call} denied: (403) AuthorizationFailed")
 
         class _Pipelines:
-            def list_by_factory(self, rg: str, factory: str):
+            def list_by_factory(self, rg: str, factory: str, raw_response_hook=None):
                 async def _gen():
                     _maybe_fail("list_by_factory")
+                    names = list(dict.fromkeys([*outer._pipelines, *outer._definitions]))
+                    if raw_response_hook is not None:
+                        # One page, handed over before its items like azure-core
+                        # does. A name-only pipeline is left out of the JSON: the
+                        # fake knows no definition for it, which is what sends
+                        # discovery to its per-pipeline GET fallback.
+                        page = [
+                            {**outer._definitions[n].as_dict(), "name": n}
+                            for n in names
+                            if n in outer._definitions
+                        ]
+                        raw_response_hook(
+                            _wire_response({"value": page})
+                            if outer._list_wire
+                            else _unreadable_response()
+                        )
                     # Every pipeline the factory holds — a definition IS a
                     # pipeline, so it is listed even when the test did not also
                     # name it in ``pipelines`` — each with its folder metadata.
-                    for name in dict.fromkeys([*outer._pipelines, *outer._definitions]):
+                    for name in names:
                         definition = outer._definitions.get(name)
                         folder = outer._folders.get(name) or (
                             definition.folder if definition else ""
@@ -436,6 +466,11 @@ def _patch(
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _asking(request: str) -> dict:
+    """The agent state a trigger change reads its request from: adf-agent's task."""
+    return {"messages": [HumanMessage(content=request)]}
 
 
 # --- factory resolution -------------------------------------------------------
@@ -3887,6 +3922,7 @@ def test_manage_trigger_executes_idempotently_and_verifies() -> None:
                     "trigger_names": ["TR_A", "TR_B", "TR_GONE"],
                     "action": "enable",
                     "execute": True,
+                    "state": _asking("Enable the triggers TR_A, TR_B and TR_GONE."),
                 }
             )
         )
@@ -3980,7 +4016,12 @@ def test_manage_trigger_authorization_failure_names_no_identity() -> None:
     try:
         result = _run(
             adf.manage_trigger_states.ainvoke(
-                {"trigger_names": ["TR_A"], "action": "enable", "execute": True}
+                {
+                    "trigger_names": ["TR_A"],
+                    "action": "enable",
+                    "execute": True,
+                    "state": _asking("Enable trigger TR_A."),
+                }
             )
         )
         assert (
@@ -4020,7 +4061,12 @@ def test_a_trigger_in_two_factories_is_ambiguous_and_never_changed() -> None:
     )
     restore = _patch(settings, clients_by_subscription={"sub-1": fin, "sub-2": risk})
     try:
-        args = {"trigger_names": ["TR_A"], "action": "enable", "execute": True}
+        args = {
+            "trigger_names": ["TR_A"],
+            "action": "enable",
+            "execute": True,
+            "state": _asking("Enable trigger TR_A."),
+        }
         result = _run(adf.manage_trigger_states.ainvoke(args))
         assert (
             "TR_A | — | — | — | NOT EXECUTED — AMBIGUOUS: in factories 'adf-fin', "
@@ -4080,7 +4126,12 @@ def test_a_differently_cased_trigger_name_is_changed_under_its_real_name() -> No
         assert "tr_UC6_Started | adf-fin | Started | Enabled | —" in states
         result = _run(
             adf.manage_trigger_states.ainvoke(
-                {"trigger_names": ["TR_UC6_STARTED"], "action": "disable", "execute": True}
+                {
+                    "trigger_names": ["TR_UC6_STARTED"],
+                    "action": "disable",
+                    "execute": True,
+                    "state": _asking("Disable trigger TR_UC6_STARTED."),
+                }
             )
         )
         assert "tr_UC6_Started | adf-fin | Started | Stopped | SUCCESS" in result
@@ -4094,7 +4145,12 @@ def test_a_loosely_matched_trigger_is_changed_only_once_named_exactly() -> None:
     client = _FakeClient(triggers={"tr_UC6_Started": "Started"})
     restore = _patch(_Settings({"fin": _FIN}, write_enabled=True, write_allowlist=["fin"]), client)
     try:
-        args = {"trigger_names": ["tr-UC6-Started"], "action": "disable", "execute": True}
+        args = {
+            "trigger_names": ["tr-UC6-Started"],
+            "action": "disable",
+            "execute": True,
+            "state": _asking("Disable trigger tr-UC6-Started"),
+        }
         result = _run(adf.manage_trigger_states.ainvoke(args))
         # "EXECUTED" over a table of rows left alone read as a change made.
         assert "Trigger management NO CHANGE MADE (factory 'adf-fin')" in result
@@ -4104,14 +4160,138 @@ def test_a_loosely_matched_trigger_is_changed_only_once_named_exactly() -> None:
             "once it is confirmed by that exact name" in result
         )
         assert client.trigger_calls == []
+        # The agent passing that name back is not the confirmation: the user's is.
+        exact = {**args, "trigger_names": ["tr_UC6_Started"]}
+        result = _run(adf.manage_trigger_states.ainvoke(exact))
+        assert "Trigger management NO CHANGE MADE (factory 'adf-fin')" in result
+        assert client.trigger_calls == []
         result = _run(
-            adf.manage_trigger_states.ainvoke({**args, "trigger_names": ["tr_UC6_Started"]})
+            adf.manage_trigger_states.ainvoke(
+                {**exact, "state": _asking("Yes, disable tr_UC6_Started")}
+            )
         )
         assert "Trigger management EXECUTED (factory 'adf-fin')" in result
         assert "tr_UC6_Started | adf-fin | Started | Stopped | SUCCESS" in result
         assert client.trigger_calls == [("stop", "tr_UC6_Started")]
     finally:
         restore()
+
+
+def test_a_trigger_is_changed_only_when_the_request_names_it() -> None:
+    """QA: given a bare 'disable the triggers', adf-agent listed every trigger and passed
+    them all back with execute=true. Only the request names a trigger: the agent's own
+    messages, tool results and summaries never do, and with no request nothing is named.
+    """
+    client = _FakeClient(triggers={"tr_A": "Started", "tr_B": "Started", "tr_C": "Stopped"})
+    restore = _patch(_Settings({"fin": _FIN}, write_enabled=True, write_allowlist=["fin"]), client)
+    asked = (
+        'User asked: "disable the triggers". In Azure Data Factory, identify which '
+        "triggers this refers to and perform a guarded disable operation."
+    )
+    listed = [
+        HumanMessage(content=asked),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "get_trigger_states", "args": {"trigger_names": ["*"]}, "id": "c1"}
+            ],
+        ),
+        ToolMessage(
+            content="tr_A | adf-fin | Started\ntr_B | adf-fin | Started", tool_call_id="c1"
+        ),
+        AIMessage(content="Disabling tr_A and tr_B."),
+    ]
+    every = {"trigger_names": ["tr_A", "tr_B", "tr_C"], "action": "disable", "execute": True}
+    try:
+        result = _run(adf.manage_trigger_states.ainvoke({**every, "state": {"messages": listed}}))
+        assert "Trigger management NO CHANGE MADE (factory 'adf-fin')" in result
+        assert (
+            "tr_A | adf-fin | Started | Started | NOT EXECUTED — the request does not name "
+            "'tr_A', which is changed only once it is confirmed by that exact name" in result
+        )
+        assert "tr_B | adf-fin | Started | Started | NOT EXECUTED — the request does not" in result
+        assert "tr_C | adf-fin | Stopped | Stopped | NO ACTION REQUIRED" in result
+        assert "NOT EXECUTED" not in _run(
+            adf.manage_trigger_states.ainvoke(
+                {**every, "execute": False, "state": {"messages": listed}}
+            )
+        )
+        assert "NO CHANGE MADE" in _run(adf.manage_trigger_states.ainvoke(every))
+        assert client.trigger_calls == []
+        named = _run(
+            adf.manage_trigger_states.ainvoke({**every, "state": _asking("Disable `tr_a`")})
+        )
+        assert "tr_A | adf-fin | Started | Stopped | SUCCESS" in named
+        assert "tr_B | adf-fin | Started | Started | NOT EXECUTED" in named
+        assert client.trigger_calls == [("stop", "tr_A")]
+    finally:
+        restore()
+    assert adf._names_trigger("Disable tr_A and tr_B.", "TR_B")
+    assert not adf._names_trigger("Disable tr_AB and trig-x-1", "tr_A", "trig-x")
+    summary = HumanMessage(content="Listed tr_A.", additional_kwargs={"lc_source": "summarization"})
+    assert adf._request_text({"messages": [summary, HumanMessage(content="Go on.")]}) == "Go on."
+
+
+def test_inside_adf_agent_the_request_is_the_task_it_was_handed() -> None:
+    """The check above on the real graph: LangGraph injects adf-agent's own state, so
+    the task the orchestrator wrote decides, not the user's words: a bare 'yes, go
+    ahead' confirms tr_A once the task names it. Were nothing injected, or the
+    orchestrator's state, no trigger would change."""
+    import uuid
+
+    from langgraph.checkpoint.memory import InMemorySaver
+    from test_patch_tool_calls import _stand_in_model, _user
+
+    import v1.core.agent as agent_mod
+    from v1.core.middlewares.subagent_access import TASK_TOOL_NAME
+    from v1.core.subagents import ADF_SUBAGENT, SERVICENOW_SUBAGENT
+
+    def _turn(n: int, task: str) -> list[AIMessage]:
+        delegate = {
+            "name": TASK_TOOL_NAME,
+            "args": {"description": task, "subagent_type": "adf-agent"},
+            "id": f"call_task_{n}",
+        }
+        # Every trigger, as adf-agent passed them after listing them itself.
+        change = {
+            "name": "manage_trigger_states",
+            "args": {"trigger_names": ["tr_A", "tr_B"], "action": "disable", "execute": True},
+            "id": f"call_change_{n}",
+        }
+        return [
+            AIMessage(content="", tool_calls=[delegate]),
+            AIMessage(content="", tool_calls=[change]),
+            AIMessage(content="Reported."),
+            AIMessage(content="Reported."),
+        ]
+
+    client = _FakeClient(triggers={"tr_A": "Started", "tr_B": "Started"})
+    model = _stand_in_model(
+        [
+            *_turn(1, 'User asked: "disable the triggers". Identify them and disable them.'),
+            *_turn(2, "Yes, disable trigger tr_A."),
+        ]
+    )
+    restore = _patch(_Settings({"fin": _FIN}, write_enabled=True, write_allowlist=["fin"]), client)
+    saved = (agent_mod.get_azure_chat_model, agent_mod.ENABLED_SUBAGENTS)
+    agent_mod.get_azure_chat_model = lambda: model
+    agent_mod.ENABLED_SUBAGENTS = [SERVICENOW_SUBAGENT, ADF_SUBAGENT]
+
+    async def _scenario(graph: Any) -> list[list]:
+        calls = []
+        for text in ("disable the triggers", "yes, go ahead"):
+            config = {"configurable": {"thread_id": str(uuid.uuid4()), "run_id": str(uuid.uuid4())}}
+            await graph.ainvoke(_user(text), config)
+            calls.append(list(client.trigger_calls))
+        return calls
+
+    try:
+        calls = _run(_scenario(agent_mod._build_agent_sync(InMemorySaver())))
+    finally:
+        agent_mod.get_azure_chat_model, agent_mod.ENABLED_SUBAGENTS = saved
+        restore()
+    assert calls == [[], [("stop", "tr_A")]]
+    assert not model.replies, "the scripted turns did not run to the end"
 
 
 def test_a_refused_factory_is_reported_under_the_real_trigger_name_without_a_question() -> None:
@@ -4183,7 +4363,12 @@ def test_a_trigger_two_requested_names_reach_is_one_row_under_its_exact_name() -
         assert states.count("tr_UC6_Started | adf-fin") == 1 and "2/2 found" in states
         result = _run(
             adf.manage_trigger_states.ainvoke(
-                {"trigger_names": ["*UC6*", "tr_UC6_Started"], "action": "disable", "execute": True}
+                {
+                    "trigger_names": ["*UC6*", "tr_UC6_Started"],
+                    "action": "disable",
+                    "execute": True,
+                    "state": _asking("Disable *UC6* and tr_UC6_Started."),
+                }
             )
         )
         # The pattern must not answer for the trigger the exact name changes.
@@ -4313,7 +4498,12 @@ def test_a_trigger_change_in_a_git_mode_factory_says_studio_can_show_the_old_sta
     try:
         result = _run(
             adf.manage_trigger_states.ainvoke(
-                {"trigger_names": ["TR_A", "TR_B"], "action": "enable", "execute": True}
+                {
+                    "trigger_names": ["TR_A", "TR_B"],
+                    "action": "enable",
+                    "execute": True,
+                    "state": _asking("Enable TR_A and TR_B."),
+                }
             )
         )
         assert "TR_A | adf-fin | Stopped | Started | SUCCESS" in result
@@ -4333,7 +4523,12 @@ def test_a_trigger_change_in_a_live_mode_factory_has_no_git_note() -> None:
     try:
         result = _run(
             adf.manage_trigger_states.ainvoke(
-                {"trigger_names": ["TR_A"], "action": "enable", "execute": True}
+                {
+                    "trigger_names": ["TR_A"],
+                    "action": "enable",
+                    "execute": True,
+                    "state": _asking("Enable trigger TR_A."),
+                }
             )
         )
         assert "SUCCESS" in result and "NOTE" not in result
@@ -6124,6 +6319,14 @@ def test_incident_text_is_logged_by_size_only() -> None:
     )
 
 
+def test_the_injected_agent_state_is_never_logged() -> None:
+    """manage_trigger_states is handed adf-agent's whole history to check names
+    against: the call log keeps only the arguments the model passed."""
+    assert adf._log_args({"trigger_names": ["tr_A"], "state": _asking("Disable tr_A")}) == (
+        "trigger_names=['tr_A']"
+    )
+
+
 def test_logging_leaves_every_tool_schema_and_signature_alone() -> None:
     import inspect
 
@@ -6167,23 +6370,25 @@ def test_subagent_exposes_every_tool_under_the_gated_name() -> None:
 
 
 def test_subagent_accumulates_its_own_knowledge_base_sources() -> None:
-    """The subagent MUST carry its own SourceAccumulatorMiddleware.
+    """The subagent MUST carry its own CitationsMiddleware.
 
-    Without it the citation path is one-way and silently broken: ``all_sources``
-    is copied INTO the subagent (numbering continues, so a ``[n]`` minted here
-    looks plausible) but its ToolMessages never enter the parent thread, so the
-    parent's accumulator never sees the artifact. The marker still survives
-    CitationGuardMiddleware — parent and subagent share one per-run registry
-    keyed on a ``run_id`` that propagates unchanged into the subgraph — and would
-    render as a dead bracket with no "Referenced Sources" entry behind it.
+    Its ``all_sources`` is copied INTO the subagent (numbering continues, so a
+    ``[n]`` minted here looks plausible) but its ToolMessages never enter the
+    parent thread. The orchestrator's CitationsMiddleware surfaces the subagent's
+    documents from the run's shared registry; the subagent's own writes them into
+    its ``all_sources``, which deepagents copies back, so they stay persisted even
+    if that registry were evicted. Without both, the marker survives the citation
+    check (parent and subagent share one per-run registry keyed on a ``run_id``
+    that propagates unchanged into the subgraph) and renders as a dead bracket with
+    no "Referenced Sources" entry behind it.
     """
-    from v1.core.middlewares.source_accumulator import SourceAccumulatorMiddleware
+    from v1.core.middlewares.citations import CitationsMiddleware
     from v1.core.subagents import ADF_SUBAGENT
 
     assert any(
-        isinstance(mw, SourceAccumulatorMiddleware)
+        isinstance(mw, CitationsMiddleware)
         for mw in ADF_SUBAGENT.get("middleware", [])
-    ), "adf-agent must run SourceAccumulatorMiddleware or its KB citations point at nothing"
+    ), "adf-agent must run CitationsMiddleware or its KB citations point at nothing"
 
 
 def _adf_skill_text(name: str) -> str:
@@ -6324,6 +6529,50 @@ def test_orchestrator_correlates_a_pasted_ticket_without_a_servicenow_lookup() -
 
     assert "A TICKET THE USER ALREADY PASTED goes straight to `adf-agent`" in ADF_ROUTING_BLOCK
     assert "CORRELATE ANYWAY from the text they gave you" in ADF_ROUTING_BLOCK
+
+
+def test_status_answers_open_with_their_outcome() -> None:
+    """QA: users had to read the whole answer to find its result.
+
+    The verdict sat inside the tool block: UC2-01's Recovery Decision under the
+    run details, UC4-01's SLA Assessment under six metrics, UC5-01's '1/3 PASS'
+    at the end of a header. adf-agent writes those answers and the relay carries
+    its first line first, so the outcome line has to come from adf-agent. The
+    orchestrator gets the same shape for its own answers from the formatting
+    skill, which its skills listing now describes for status answers.
+    """
+    from deepagents.middleware.skills import _list_skills
+
+    from v1.core.agent import build_backend
+    from v1.core.middlewares.subagent_relay import RELAY_REQUIREMENT
+    from v1.core.prompts.adf import ADF_SUBAGENT_PROMPT
+    from v1.core.skills import SKILLS_MOUNT
+
+    # First among the presentation rules, ahead of every rule about copying blocks.
+    rules = ADF_SUBAGENT_PROMPT.split("## Presentation rules\n\n", 1)[1]
+    assert rules.startswith("OUTCOME FIRST — when the user asks for a status or a result")
+    assert "'**Recovered** — a later run with the same trigger and exact" in rules
+    assert "add no fact the block lacks" in rules
+    assert "NO CHANGE MADE is never a success, partial\nor otherwise" in rules
+    assert "Rules 3, 5 and 9 say what that line holds" in rules
+    # A change that names no trigger lists them and asks: the tool changes only named ones.
+    assert (
+        "\"Disable the triggers\", naming none -> get_trigger_states(['*']), then\n"
+        "     ask which to change. Change only triggers your task names, never ones\n"
+        "     you listed yourself; the tool refuses those." in ADF_SUBAGENT_PROMPT
+    )
+    # The relay keeps that line first and puts no headline of its own above it.
+    assert "its first line, then every heading" in RELAY_REQUIREMENT
+    assert "Never open with an answer, title or summary of your own" in RELAY_REQUIREMENT
+
+    backend = build_backend()
+    listed = {skill["name"]: skill for skill in _list_skills(backend, SKILLS_MOUNT)}
+    assert "reports a status or outcome" in listed["message-formatting"]["description"]
+    read = backend.read(f"{SKILLS_MOUNT}message-formatting/SKILL.md")
+    assert read.error is None
+    skill = read.file_data["content"]
+    assert "## Answer first — the outcome before the detail" in skill
+    assert "## Data Factory answers — relayed whole" in skill
 
 
 def test_orchestrator_relays_the_factory_resource_name_and_the_utc_label() -> None:
@@ -6506,11 +6755,15 @@ def test_prompts_stay_within_their_context_budget() -> None:
     every delegation. Guidance only some questions need belongs in a skill the
     agent reads when its rule applies (skills/adf/), so growing past these caps
     is a decision to make, not a side effect.
+
+    The adf-agent cap moved from 24,000 for OUTCOME FIRST: it shapes nearly every
+    status answer, so a skill read would cost a tool call on each of them. The
+    unnamed-trigger line in rule 7 stays inline for the same reason as its rule.
     """
     from v1.core.prompts.adf import ADF_SUBAGENT_DESCRIPTION, ADF_SUBAGENT_PROMPT
     from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK, BASE_SYSTEM_PROMPT
 
-    assert len(ADF_SUBAGENT_PROMPT) <= 24_000
+    assert len(ADF_SUBAGENT_PROMPT) <= 25_000
     orchestrator = (BASE_SYSTEM_PROMPT, ADF_ROUTING_BLOCK, ADF_SUBAGENT_DESCRIPTION)
     assert sum(map(len, orchestrator)) <= 49_000
 
@@ -6854,18 +7107,15 @@ def test_structure_fetches_the_raw_wire_so_unmodelled_types_keep_their_name() ->
         restore()
 
 
-def test_discovery_fetches_the_raw_wire_like_structure_does() -> None:
-    """discover_pipelines_by_source_system must read the wire, as its sibling does.
+def test_discovery_searches_the_listed_wire_without_a_get_per_pipeline() -> None:
+    """Discovery searches the raw JSON the factory LIST already carried.
 
-    Reading the deserialized MODEL here instead makes the two tools contradict
-    each other about one definition: get_pipeline_structure prints
-    '- RunNightlyJob [DatabricksJob]' (it reads the wire) while discovery cannot
-    see that string at all, so 'which pipelines feed from Databricks' answers
-    'none'.
-
-    Pinned as a CALL CONTRACT rather than through the result, because the
-    offline fake's as_dict() preserves every 'type' — it is structurally
-    incapable of reproducing the loss. The test below is what proves the loss.
+    It used to GET every pipeline to read its definition: one round trip per
+    pipeline, 115 s on a large factory, for a body identical to the list
+    entry. The list page's raw JSON still holds the
+    'type' 9.2.0 discards, so get_pipeline_structure (which reads the wire) and
+    discovery keep agreeing about one definition: '- RunNightlyJob
+    [DatabricksJob]' there, a Databricks match here.
     """
     definitions = {
         "pl_dbx_feed": _Definition(
@@ -6873,21 +7123,148 @@ def test_discovery_fetches_the_raw_wire_like_structure_does() -> None:
             activities=[
                 {"name": "RunNightlyJob", "type": "DatabricksJob", "typeProperties": {"jobId": 42}}
             ],
-        )
+        ),
+        "pl_other": _Definition(name="pl_other", activities=[]),
     }
     runs = {"r": _Run("r", "pl_dbx_feed", "Succeeded", run_start=_ago(1), last_updated=_ago(1))}
     client = _FakeClient(pipelines=list(definitions), runs=runs, definitions=definitions)
     restore = _patch(_Settings({"fin": _FIN}), client)
     try:
         result = _run(
-            adf.discover_pipelines_by_source_system.ainvoke(
-                {"source_system_name": "DatabricksJob"}
-            )
+            adf.discover_pipelines_by_source_system.ainvoke({"source_system_name": "DatabricksJob"})
         )
-        assert client.definition_cls == [adf._keep_wire], "discovery must read the raw wire"
+        assert client.definition_cls == [], "discovery must not GET what the list carried"
         assert "pl_dbx_feed" in result and "activities" in result
+        assert "pl_other" not in result
     finally:
         restore()
+
+
+def test_discovery_gets_the_raw_wire_when_the_list_page_is_unreadable() -> None:
+    """No definition on the inventory -> one GET per pipeline, through _keep_wire.
+
+    The fallback, not the normal path: it keeps a page that will not parse from
+    turning into 'no pipeline references X', and it reads the wire for the same
+    reason the list does.
+    """
+    definitions = {
+        "pl_dbx_feed": _Definition(
+            name="pl_dbx_feed",
+            activities=[{"name": "RunNightlyJob", "type": "DatabricksJob"}],
+        )
+    }
+    runs = {"r": _Run("r", "pl_dbx_feed", "Succeeded", run_start=_ago(1), last_updated=_ago(1))}
+    client = _FakeClient(runs=runs, definitions=definitions, list_wire=False)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(
+            adf.discover_pipelines_by_source_system.ainvoke({"source_system_name": "DatabricksJob"})
+        )
+        assert client.definition_cls == [adf._keep_wire], "the fallback must read the raw wire"
+        assert "1 active candidate pipeline(s)" in result and "pl_dbx_feed" in result
+    finally:
+        restore()
+
+
+def test_inventory_keeps_every_pages_raw_definition_through_the_real_sdk() -> None:
+    """The real 9.2.0 client hands raw_response_hook EVERY page of the list.
+
+    The fake above cannot show this: it is one page, and it calls the hook
+    itself. Here the real DataFactoryManagementClient pages a two-page list over
+    an in-memory transport, so the test fails if the SDK or azure-core stop
+    forwarding the hook to the nextLink requests — which would quietly send
+    discovery back to a GET per pipeline on any factory too big for one page.
+    """
+    import json
+
+    from azure.core.pipeline.policies import SansIOHTTPPolicy
+    from azure.core.pipeline.transport import AsyncHttpTransport
+    from azure.core.rest._http_response_impl_async import AsyncHttpResponseImpl
+    from azure.mgmt.datafactory.aio import DataFactoryManagementClient
+
+    class _Response(AsyncHttpResponseImpl):
+        def __init__(self, request, body: dict) -> None:
+            super().__init__(
+                request=request,
+                internal_response=None,
+                block_size=4096,
+                status_code=200,
+                reason="OK",
+                content_type="application/json",
+                headers={"Content-Type": "application/json"},
+                stream_download_generator=None,
+            )
+            self._content = json.dumps(body).encode()
+            self._is_stream_consumed = True
+
+        async def read(self) -> bytes:
+            return self._content
+
+        async def close(self) -> None:
+            pass
+
+    class _Pages(AsyncHttpTransport):
+        def __init__(self, pages: list) -> None:
+            self.pages = pages
+            self.sent = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc) -> None:
+            pass
+
+        async def open(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+        async def send(self, request, **kwargs):
+            self.sent += 1
+            return _Response(request, self.pages[self.sent - 1])
+
+    base = (
+        "https://management.azure.com/subscriptions/sub-1/resourceGroups/rg-fin/providers/"
+        "Microsoft.DataFactory/factories/adf-fin/pipelines"
+    )
+    dbx = {"name": "RunNightlyJob", "type": "DatabricksJob", "typeProperties": {"jobId": 42}}
+    transport = _Pages(
+        [
+            {
+                "value": [{"name": "pl_dbx_feed", "properties": {"activities": [dbx]}}],
+                "nextLink": f"{base}?api-version=2018-06-01&$skipToken=page2",
+            },
+            {
+                "value": [
+                    {
+                        "name": "pl_load",
+                        "properties": {"activities": [], "folder": {"name": "ingest"}},
+                    }
+                ]
+            },
+        ]
+    )
+    client = DataFactoryManagementClient(
+        credential=object(),
+        subscription_id="sub-1",
+        transport=transport,
+        authentication_policy=SansIOHTTPPolicy(),
+    )
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        inventory = _run(adf._factory_inventory("fin", "sub-1", "rg-fin", "adf-fin"))
+    finally:
+        restore()
+    assert transport.sent == 2, "both pages must be requested"
+    by_name = {p.name: p for p in inventory}
+    assert set(by_name) == {"pl_dbx_feed", "pl_load"}
+    assert by_name["pl_load"].folder == "ingest"
+    assert all(p.definition is not None for p in inventory), "every page's JSON must be kept"
+    assert by_name["pl_dbx_feed"].definition["properties"]["activities"] == [dbx]
+    assert adf._matched_sections(by_name["pl_dbx_feed"].definition, "databricksjob") == [
+        "activities"
+    ]
 
 
 def test_unmodelled_activity_type_is_searchable_only_on_the_wire() -> None:
