@@ -1599,6 +1599,38 @@ def _invoker_identity(run) -> str:
     return _extract_trigger_name(run)
 
 
+def _started_by_activity(run, triggered_by: str) -> bool:
+    """True when ``triggered_by`` is the GUID ADF Monitor shows as this run's Triggered By.
+
+    A pipeline a parent starts through Execute Pipeline — QA's "generic"
+    pipelines are — shows that ACTIVITY run's id in Monitor's Triggered By
+    column: neither a trigger name nor a pipeline run id, so neither lookup
+    finds it. ADF records it as the invoker's ``name`` and ``id``.
+    """
+    ib = getattr(run, "invoked_by", None)
+    if not ib or getattr(ib, "invoked_by_type", None) != "PipelineActivity":
+        return False
+    wanted = (triggered_by or "").strip().casefold()
+    return bool(wanted) and any(
+        wanted == (getattr(ib, field, None) or "").casefold() for field in ("name", "id")
+    )
+
+
+def _started_by(run, trigger_name: str) -> bool:
+    """list_pipeline_runs' trigger filter: what started the run, by any name it goes by.
+
+    A trigger or a manual start matches its exact name, as before. A child run
+    has no trigger of its own, so it also matches the Triggered By GUID Monitor
+    shows for it, or its parent pipeline's name — spelled loosely, or in the
+    'pipeline <name>' form the recovery tool prints.
+    """
+    if _extract_trigger_name(run) == trigger_name or _started_by_activity(run, trigger_name):
+        return True
+    parent = _invoker_identity(run).removeprefix("pipeline ") if _is_child_run(run) else ""
+    wanted = trigger_name.strip().removeprefix("pipeline ")
+    return bool(parent) and _squash(parent) == _squash(wanted)
+
+
 def _normalized_parameters(run) -> dict:
     """A run's parameter dict, treating a missing/None set as empty.
 
@@ -2373,9 +2405,12 @@ async def list_pipeline_runs(
                        casing). Leave empty for all statuses.
         trigger_name:  Optional exact trigger name to filter by (e.g.
                        "tr_every_2_hours") — only runs started by
-                       that trigger are returned. Matched against each run's
-                       invocation info AFTER the query (ADF's run-query API has
-                       no trigger filter). Leave empty for all runs.
+                       that trigger are returned. For a child pipeline (a
+                       "generic" one a parent starts) pass the parent
+                       pipeline's name, or the GUID ADF Monitor shows as its
+                       Triggered By. Matched against each run's invocation
+                       info AFTER the query (ADF's run-query API has no
+                       trigger filter). Leave empty for all runs.
         start_date:    Optional window start, "YYYY-MM-DD" (UTC, inclusive).
                        Use with end_date for questions about a specific date
                        range (e.g. "between Jul 10 and Jul 12").
@@ -2471,7 +2506,7 @@ async def list_pipeline_runs(
     # trigger, so the window is queried without it and each run's invocation
     # info is compared here. Counts/rows below reflect the trigger-matched set.
     if trigger_name:
-        matched = [r for r in runs if _extract_trigger_name(r) == trigger_name]
+        matched = [r for r in runs if _started_by(r, trigger_name)]
         if not matched:
             scope = f" for pipeline '{pipeline_name}'" if pipeline_name else ""
             # Monitor, not a run link: there is no run to open, and this is the
@@ -3409,10 +3444,52 @@ def _rejected_success_rows(
     return rows
 
 
+async def _parent_run_lines(
+    client, sub: str, rg: str, factory_name: str, run, label: str = ""
+) -> list[str]:
+    """A child run's Triggered By, resolved to its parent pipeline and parent run.
+
+    A generic pipeline is started by a parent's Execute Pipeline, and ADF
+    Monitor shows that activity run's GUID as its Triggered By. Users read that
+    GUID off Monitor and compare the PARENTS, so the GUID is named next to the
+    parent pipeline it stands for, and the parent run is fetched for its status
+    and parameters. Evidence only: the decision never reads it.
+
+    Execute Pipeline cannot cross factories, so the parent run lives in the
+    child's factory and is linked there even when the fetch fails.
+    """
+    if run is None or not _is_child_run(run):
+        return []
+    ib = run.invoked_by
+    parent_id = ib.pipeline_run_id
+    try:
+        parent = await client.pipeline_runs.get(rg, factory_name, parent_id)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the model as text
+        parent, details = None, f"details could not be read: {_truncate(exc)}"
+    else:
+        params = _normalized_parameters(parent)
+        details = (
+            f"{parent.status} | started {_fmt_ts(parent.run_start)} | "
+            f"parameters={_truncate(params) if params else '(none)'}"
+        )
+    parent_name = getattr(ib, "pipeline_name", None) or getattr(parent, "pipeline_name", None)
+    return [
+        (
+            f"  {label}Triggered By    : {ib.name or getattr(ib, 'id', None) or '?'}  (the "
+            "GUID ADF Monitor shows: the parent's Execute Pipeline activity run, not a "
+            "trigger and not a run id)"
+        ),
+        f"  {label}Parent Pipeline : {parent_name or '(not recorded)'}",
+        f"  {label}Parent Run ID   : {parent_id} {_run_link(sub, rg, factory_name, parent_id)}",
+        f"  {label}Parent Run      : {details}",
+    ]
+
+
 @tool
 async def validate_pipeline_recovery(
     pipeline_name: str = "",
     failed_run_id: str = "",
+    triggered_by: str = "",
     factory: str = "",
 ) -> str:
     """Decide whether a FAILED pipeline run was recovered by a later rerun.
@@ -3423,21 +3500,37 @@ async def validate_pipeline_recovery(
     parameters), and Succeeded. A different trigger, any changed parameter, or a
     rerun that failed again all mean NOT recovered.
 
+    For a child pipeline (a "generic" one a parent starts through Execute
+    Pipeline) the invoker compared is the PARENT PIPELINE's name, and both runs'
+    parent runs are fetched and shown.
+
     Args:
         pipeline_name: The pipeline to check. Optional if failed_run_id is given
                        (it is read from the run).
         failed_run_id: The specific failed run to validate. If omitted, the
                        latest failed run of pipeline_name in the last 30 days is
                        selected and reported.
+        triggered_by:  The GUID ADF Monitor shows as a child run's Triggered By
+                       (the parent's Execute Pipeline activity run — NOT a run
+                       id, so never pass it as failed_run_id). Selects the
+                       failed run of pipeline_name it started; needs
+                       pipeline_name.
         factory:       Optional factory alias. Leave empty for the default.
     """
     requested_pipeline_name = (pipeline_name or "").strip()
     pipeline_name = _bare_pipeline_name(requested_pipeline_name)
     failed_run_id = (failed_run_id or "").strip()
+    triggered_by = (triggered_by or "").strip()
     if not pipeline_name and not failed_run_id:
         return (
             "[adf-agent] Provide a failed_run_id, or a pipeline_name to find its latest "
-            "failed run."
+            "failed run"
+            + (
+                f". A Triggered By value ('{triggered_by}') is only searched among one "
+                "pipeline's runs, so it needs the pipeline_name it was shown for."
+                if triggered_by
+                else "."
+            )
         )
     now = datetime.now(timezone.utc)
 
@@ -3475,6 +3568,12 @@ async def validate_pipeline_recovery(
                 f"'{run_pipeline_name}', not the supplied pipeline "
                 f"'{requested_pipeline_name}'. No recovery decision was made. "
                 f"{_run_link(sub, rg, name, failed_run_id)}"
+            )
+        if triggered_by and not _started_by_activity(failed, triggered_by):
+            return (
+                f"[adf-agent] INPUT MISMATCH: run '{failed_run_id}' was not started by "
+                f"Triggered By '{triggered_by}' (it was started by {_invoked_text(failed)}). "
+                f"No recovery decision was made. {_run_link(sub, rg, name, failed_run_id)}"
             )
         pipeline_name = run_pipeline_name or pipeline_name
     else:
@@ -3528,9 +3627,25 @@ async def validate_pipeline_recovery(
                 f"factory {_factory_label(alias)} in the last {_RECOVERY_LOOKBACK_DAYS} days — "
                 "nothing to validate."
             )
+        if triggered_by:
+            started = [r for r in failures if _started_by_activity(r, triggered_by)]
+            if not started:
+                return (
+                    f"{note}[adf-agent] None of the {len(failures)} failed run(s) of pipeline "
+                    f"'{pipeline_name}' in factory {_factory_label(alias)} in the last "
+                    f"{_RECOVERY_LOOKBACK_DAYS} days shows Triggered By '{triggered_by}'. "
+                    "That GUID is the parent's Execute Pipeline activity run, new on every "
+                    "parent run, so it only ever matches the one child run it started."
+                )
+            failures = started
         failed = failures[0]
         failed_run_id = failed.run_id
-        if len(failures) > 1:
+        if triggered_by:
+            selected_note = (
+                f" — selected the failed run whose Triggered By is {triggered_by} "
+                f"(run started {_fmt_ts(failed.run_start)})"
+            )
+        elif len(failures) > 1:
             selected_note = (
                 f" — selected the latest of {len(failures)} failed runs in the last "
                 f"{_RECOVERY_LOOKBACK_DAYS} days (run started {_fmt_ts(failed.run_start)})"
@@ -3600,15 +3715,32 @@ async def validate_pipeline_recovery(
         lines.append(f"  Run Group ID  : {failed.run_group_id}  (supporting evidence only)")
 
     recovered = next((r for r in identity_matches if r.status == "Succeeded"), None)
+    shown = recovered or (identity_matches[-1] if identity_matches else None)
+    # A child's own invoker is an activity run nobody recognises, so the parent
+    # runs on both sides are pulled; the decision above never reads them.
+    failed_parent, shown_parent = await asyncio.gather(
+        _parent_run_lines(client, sub, rg, name, failed),
+        _parent_run_lines(client, sub, rg, name, shown, "Recovery "),
+    )
+    lines += failed_parent
+    # Same rule either way; for a child the "trigger" is its parent pipeline,
+    # and the reason says so in the terms a reader compares.
+    identity = (
+        f"pipeline ({pipeline_name}), parent pipeline "
+        f"({failed_trigger.removeprefix('pipeline ')}) and exact parameter set"
+        if failed_parent and failed_trigger.startswith("pipeline ")
+        else "pipeline, trigger and exact parameter set"
+    )
     if recovered is not None:
         lines += [
             f"  Recovery Run ID  : {recovered.run_id} "
             f"{_run_link(sub, rg, name, recovered.run_id)}",
             f"  Recovery Started : {_fmt_ts(recovered.run_start)}",
             "  Recovery Status  : Succeeded",
+            *shown_parent,
             "  Recovery Decision: Recovered",
-            "  Reason: a subsequent execution used the same pipeline, trigger and exact "
-            "parameter set and completed successfully.",
+            f"  Reason: a subsequent execution used the same {identity} and completed "
+            "successfully.",
         ]
     elif identity_matches:
         latest = identity_matches[-1]
@@ -3616,9 +3748,10 @@ async def validate_pipeline_recovery(
             f"  Recovery Run ID  : {latest.run_id} {_run_link(sub, rg, name, latest.run_id)}",
             f"  Recovery Started : {_fmt_ts(latest.run_start)}",
             f"  Recovery Status  : {latest.status}",
+            *shown_parent,
             "  Recovery Decision: Not Recovered",
-            f"  Reason: {len(identity_matches)} subsequent execution(s) matched the pipeline, "
-            f"trigger and exact parameters, but none Succeeded (latest was {latest.status}).",
+            f"  Reason: {len(identity_matches)} subsequent execution(s) matched the same "
+            f"{identity}, but none Succeeded (latest was {latest.status}).",
         ]
     else:
         # "(none)" is the literal absence of a recovery run, so there is nothing
@@ -3628,8 +3761,8 @@ async def validate_pipeline_recovery(
             "  Recovery Run ID  : (none)",
             "  Recovery Status  : (none)",
             "  Recovery Decision: Not Recovered",
-            "  Reason: no subsequent execution matched the pipeline, trigger and exact "
-            "parameter set." + _describe_near_misses(subsequent, failed_trigger, failed_params),
+            f"  Reason: no subsequent execution matched the {identity}."
+            + _describe_near_misses(subsequent, failed_trigger, failed_params),
         ]
     if recovered is None:
         # Both Not-Recovered branches need the same evidence: the branch above

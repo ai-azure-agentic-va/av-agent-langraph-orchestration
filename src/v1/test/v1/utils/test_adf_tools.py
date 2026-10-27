@@ -63,6 +63,7 @@ class _InvokedBy:
     invoked_by_type: str
     pipeline_run_id: str | None = None
     pipeline_name: str | None = None
+    id: str | None = None
 
 
 @dataclass
@@ -3046,8 +3047,15 @@ def test_recovery_names_both_triggers_of_a_rejected_success() -> None:
 
 
 def _started_by_parent(activity_run_id: str, parent: str, parent_run_id: str) -> _InvokedBy:
-    """What ADF records on a run a parent's Execute Pipeline activity started."""
-    return _InvokedBy(activity_run_id, "PipelineActivity", parent_run_id, pipeline_name=parent)
+    """What ADF records on a run a parent's Execute Pipeline activity started.
+
+    ADF puts the activity run's id in both ``name`` and ``id``; it is the GUID
+    Monitor shows in the child's Triggered By column.
+    """
+    return _InvokedBy(
+        activity_run_id, "PipelineActivity", parent_run_id, pipeline_name=parent,
+        id=activity_run_id,
+    )
 
 
 def test_recovery_of_a_child_run_compares_its_parent_pipeline_not_the_activity_run() -> None:
@@ -3066,7 +3074,9 @@ def test_recovery_of_a_child_run_compares_its_parent_pipeline_not_the_activity_r
         assert "Recovery Decision: Recovered" in result
         assert "Recovery Run ID  : s" in result
         assert "Trigger Name  : pipeline pl_parent" in result
-        assert "act-1" not in result
+        # The activity run's id is shown only as what it is, never as the trigger.
+        assert "Trigger Name  : act-1" not in result
+        assert "Triggered By    : act-1  (the GUID ADF Monitor shows" in result
     finally:
         restore()
 
@@ -3089,6 +3099,229 @@ def test_recovery_of_a_child_run_rerun_by_another_parent_is_not_recovery() -> No
         assert "differs on: trigger (pipeline pl_parent -> Manual)" in result
         # The row names the parent that started it, not an activity run's id.
         assert "triggeredBy=pl_other (PipelineActivity) parentRunId=p2" in result
+    finally:
+        restore()
+
+
+# A generic pipeline as ADF runs it: pl_master's Execute Pipeline starts it, so
+# ADF Monitor shows an activity run's GUID as its Triggered By. The GUIDs are
+# made up; the shape is the live UC2 ChildRecovery fixture's.
+_GUID_FAILED = "3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b"
+_GUID_RERUN = "7c8d9e0f-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+_GENERIC_PARAMS = {"SourceSystem": "MEMBERS", "TableName": "MEMBER_ADDRESS"}
+
+
+def _generic_family(**overrides) -> dict[str, _Run]:
+    """A failed generic child, its successful rerun, and both parent runs."""
+    runs = {
+        "c-fail": _Run(
+            "c-fail", "pl_generic_load", "Failed", run_start=_ago(3),
+            parameters=dict(_GENERIC_PARAMS),
+            invoked_by=_started_by_parent(_GUID_FAILED, "pl_master", "p-fail"),
+        ),
+        "c-ok": _Run(
+            "c-ok", "pl_generic_load", "Succeeded", run_start=_ago(2),
+            parameters=dict(_GENERIC_PARAMS),
+            invoked_by=_started_by_parent(_GUID_RERUN, "pl_master", "p-ok"),
+        ),
+        "p-fail": _Run(
+            "p-fail", "pl_master", "Failed", run_start=_ago(3, hours=0.1),
+            parameters={"BusinessDate": "2026-10-19"},
+            invoked_by=_InvokedBy("tr_nightly", "ScheduleTrigger"),
+        ),
+        "p-ok": _Run(
+            "p-ok", "pl_master", "Succeeded", run_start=_ago(2, hours=0.1),
+            parameters={"BusinessDate": "2026-10-19"},
+            invoked_by=_InvokedBy("Manual", "Manual"),
+        ),
+    }
+    runs.update(overrides)
+    return runs
+
+
+def test_recovery_from_a_triggered_by_guid_resolves_the_generic_run_and_both_parents() -> None:
+    """The QA case: a generic pipeline, identified by the Triggered By GUID Monitor shows.
+
+    A LATER failure of the same pipeline exists, so selecting by the GUID (not
+    "the latest failure") is what makes this one Recovered.
+    """
+    runs = _generic_family(
+        **{
+            "c-fail-later": _Run(
+                "c-fail-later", "pl_generic_load", "Failed", run_start=_ago(1),
+                parameters=dict(_GENERIC_PARAMS),
+                invoked_by=_started_by_parent("9e9e9e9e-0000-4000-8000-000000000001",
+                                              "pl_master", "p-later"),
+            )
+        }
+    )
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=runs))
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke({
+            "pipeline_name": "pl_generic_load",
+            # As pasted from Monitor, in whatever casing the user typed it.
+            "triggered_by": _GUID_FAILED.upper(),
+        }))
+        assert f"selected the failed run whose Triggered By is {_GUID_FAILED.upper()}" in result
+        assert "Failed Run ID : c-fail" in result
+        assert "Trigger Name  : pipeline pl_master" in result
+        assert f"  Triggered By    : {_GUID_FAILED}  (the GUID ADF Monitor shows" in result
+        assert "  Parent Pipeline : pl_master" in result
+        assert "  Parent Run ID   : p-fail [open run](" in result
+        assert "  Parent Run      : Failed | started" in result
+        assert "BusinessDate" in result  # the parent's own parameters are pulled too
+        assert "Recovery Run ID  : c-ok" in result
+        assert f"  Recovery Triggered By    : {_GUID_RERUN}" in result
+        assert "  Recovery Parent Pipeline : pl_master" in result
+        assert "  Recovery Parent Run ID   : p-ok [open run](" in result
+        assert "  Recovery Parent Run      : Succeeded | started" in result
+        assert "Recovery Decision: Recovered" in result
+        assert (
+            "same pipeline (pl_generic_load), parent pipeline (pl_master) and exact "
+            "parameter set" in result
+        )
+    finally:
+        restore()
+
+
+def test_a_generic_runs_parent_runs_are_linked_in_the_factory_it_ran_in() -> None:
+    """Execute Pipeline cannot cross factories, so the parent is read and linked in
+    the child's own factory — here the second one, not the default."""
+    clients = {"sub-1": _FakeClient(), "sub-2": _FakeClient(runs=_generic_family())}
+    restore = _patch(
+        _Settings({"fin": _FIN, "risk": _RISK}, "fin"), clients_by_subscription=clients
+    )
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke({"failed_run_id": "c-fail"}))
+        assert "Recovery Decision: Recovered" in result
+        risk = adf._run_url("sub-2", "rg-risk", "adf-risk", "p-fail")
+        assert f"  Parent Run ID   : p-fail [open run](<{risk}>)" in result
+        assert "  Parent Run      : Failed | started" in result
+        assert "  Recovery Parent Run      : Succeeded | started" in result
+    finally:
+        restore()
+
+
+def test_a_generic_rerun_by_the_same_parent_with_other_parameters_is_not_recovery() -> None:
+    runs = _generic_family(
+        **{
+            "c-ok": _Run(
+                "c-ok", "pl_generic_load", "Succeeded", run_start=_ago(2),
+                parameters={**_GENERIC_PARAMS, "TableName": "MEMBER_PHONE"},
+                invoked_by=_started_by_parent(_GUID_RERUN, "pl_master", "p-ok"),
+            )
+        }
+    )
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=runs))
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke(
+            {"pipeline_name": "pl_generic_load", "triggered_by": _GUID_FAILED}
+        ))
+        assert "Recovery Decision: Not Recovered" in result
+        assert (
+            "no subsequent execution matched the pipeline (pl_generic_load), parent "
+            "pipeline (pl_master) and exact parameter set" in result
+        )
+        assert "differs on: TableName (MEMBER_ADDRESS -> MEMBER_PHONE)" in result
+        # The failed run's parent is still shown; there is no recovery run to pair.
+        assert "  Parent Run ID   : p-fail" in result
+        assert "Recovery Parent" not in result
+    finally:
+        restore()
+
+
+def test_a_generic_rerun_whose_parent_cannot_be_read_still_gets_a_decision() -> None:
+    runs = _generic_family()
+    del runs["p-ok"]
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=runs))
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke(
+            {"pipeline_name": "pl_generic_load", "triggered_by": _GUID_FAILED}
+        ))
+        assert "Recovery Decision: Recovered" in result
+        assert "  Recovery Parent Run ID   : p-ok [open run](" in result
+        assert "  Recovery Parent Run      : details could not be read:" in result
+    finally:
+        restore()
+
+
+def test_a_triggered_by_guid_that_started_no_failed_run_is_said_so() -> None:
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=_generic_family()))
+    try:
+        # The rerun's GUID: it started a run, but not a FAILED one.
+        result = _run(adf.validate_pipeline_recovery.ainvoke(
+            {"pipeline_name": "pl_generic_load", "triggered_by": _GUID_RERUN}
+        ))
+        assert "None of the 1 failed run(s) of pipeline 'pl_generic_load'" in result
+        assert f"shows Triggered By '{_GUID_RERUN}'" in result
+        assert "Recovery Decision" not in result
+    finally:
+        restore()
+
+
+def test_a_triggered_by_guid_without_its_pipeline_asks_for_the_pipeline() -> None:
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=_generic_family()))
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke({"triggered_by": _GUID_FAILED}))
+        assert "needs the pipeline_name it was shown for" in result
+        assert "Recovery Decision" not in result
+    finally:
+        restore()
+
+
+def test_a_failed_run_id_the_triggered_by_guid_did_not_start_is_an_input_mismatch() -> None:
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=_generic_family()))
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke(
+            {"failed_run_id": "c-fail", "triggered_by": _GUID_RERUN}
+        ))
+        assert "INPUT MISMATCH" in result
+        assert "pl_master (PipelineActivity) parentRunId=p-fail" in result
+        assert "Recovery Decision" not in result
+    finally:
+        restore()
+
+
+def test_a_run_a_trigger_started_shows_no_parent_lines() -> None:
+    p = {"d": "1"}
+    runs = {
+        "f": _Run("f", "pl_load", "Failed", run_start=_ago(2), invoked_by=_TRIG, parameters=p),
+        "s": _Run("s", "pl_load", "Succeeded", run_start=_ago(1), invoked_by=_TRIG,
+                  parameters=dict(p)),
+    }
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=runs))
+    try:
+        result = _run(adf.validate_pipeline_recovery.ainvoke({"failed_run_id": "f"}))
+        assert "Recovery Decision: Recovered" in result
+        assert "Parent" not in result and "Triggered By" not in result
+        assert "same pipeline, trigger and exact parameter set" in result
+    finally:
+        restore()
+
+
+def test_runs_of_a_generic_pipeline_filter_by_parent_name_or_triggered_by_guid() -> None:
+    runs = _generic_family(
+        **{
+            "c-sched": _Run(
+                "c-sched", "pl_generic_load", "Succeeded", run_start=_ago(1),
+                invoked_by=_InvokedBy("tr_nightly", "ScheduleTrigger"),
+            )
+        }
+    )
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=runs))
+    try:
+        def ids(trigger_name: str) -> set[str]:
+            result = _run(adf.list_pipeline_runs.ainvoke(
+                {"pipeline_name": "pl_generic_load", "trigger_name": trigger_name}
+            ))
+            return {r for r in ("c-fail", "c-ok", "c-sched") if f"runId={r} " in result}
+
+        assert ids("pl_master") == {"c-fail", "c-ok"}
+        assert ids("PL-Master") == {"c-fail", "c-ok"}  # loosely spelled, like names elsewhere
+        assert ids("pipeline pl_master") == {"c-fail", "c-ok"}  # as the recovery tool prints it
+        assert ids(_GUID_FAILED) == {"c-fail"}
+        assert ids("tr_nightly") == {"c-sched"}  # a trigger still matches exactly
+        assert ids("pl_other") == set()
     finally:
         restore()
 
@@ -6536,15 +6769,15 @@ def test_status_answers_open_with_their_outcome() -> None:
 
     The verdict sat inside the tool block: UC2-01's Recovery Decision under the
     run details, UC4-01's SLA Assessment under six metrics, UC5-01's '1/3 PASS'
-    at the end of a header. adf-agent writes those answers and the relay carries
-    its first line first, so the outcome line has to come from adf-agent. The
-    orchestrator gets the same shape for its own answers from the formatting
-    skill, which its skills listing now describes for status answers.
+    at the end of a header. adf-agent writes those answers and the orchestrator
+    carries them whole, first line first (the formatting skill's Data Factory
+    section), so the outcome line has to come from adf-agent. The orchestrator
+    gets the same shape for its own answers from the formatting skill, which its
+    skills listing now describes for status answers.
     """
     from deepagents.middleware.skills import _list_skills
 
     from v1.core.agent import build_backend
-    from v1.core.middlewares.subagent_relay import RELAY_REQUIREMENT
     from v1.core.prompts.adf import ADF_SUBAGENT_PROMPT
     from v1.core.skills import SKILLS_MOUNT
 
@@ -6561,9 +6794,6 @@ def test_status_answers_open_with_their_outcome() -> None:
         "     ask which to change. Change only triggers your task names, never ones\n"
         "     you listed yourself; the tool refuses those." in ADF_SUBAGENT_PROMPT
     )
-    # The relay keeps that line first and puts no headline of its own above it.
-    assert "its first line, then every heading" in RELAY_REQUIREMENT
-    assert "Never open with an answer, title or summary of your own" in RELAY_REQUIREMENT
 
     backend = build_backend()
     listed = {skill["name"]: skill for skill in _list_skills(backend, SKILLS_MOUNT)}
@@ -6573,6 +6803,9 @@ def test_status_answers_open_with_their_outcome() -> None:
     skill = read.file_data["content"]
     assert "## Answer first — the outcome before the detail" in skill
     assert "## Data Factory answers — relayed whole" in skill
+    # The orchestrator keeps that line first and puts no headline of its own above it.
+    assert "its first line first, then every\nrow" in skill
+    assert "Do not put a headline, title or summary of your own above it" in skill
 
 
 def test_orchestrator_relays_the_factory_resource_name_and_the_utc_label() -> None:

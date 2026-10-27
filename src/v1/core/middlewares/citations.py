@@ -248,7 +248,7 @@ class CitationsMiddleware(AgentMiddleware):
     """Check the answer's ``[n]``, surface a subagent's sources, persist the turn's.
 
     Must sit on the orchestrator, whose stream writer reaches the client, outside
-    every middleware that rewrites the answer (SubagentRelay's copy check) so it
+    every middleware that rewrites the answer, so it
     checks the text the user is shown. deepagents' FilesystemMiddleware wraps
     outside it and keeps the artifact if it evicts a large ``task`` result; a call
     SubagentAccessMiddleware blocks comes back as a ToolMessage and passes through.

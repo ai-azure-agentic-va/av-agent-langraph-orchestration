@@ -7,8 +7,10 @@ calls now sees a KEEP REQUIREMENT beside the current task's READ-tool results.
 Only that call's view changes: persisted messages, earlier turns, the write
 tools, other tools, and failed or empty results are left exactly as they were.
 
-The subagent's final answer also goes through the copy check, so a run ID it
-changed while copying a result (SUP-06, run 8's re-run), or a name, is put back.
+The subagent's final answer also goes through the copy check: a run ID it
+changed while copying a result (SUP-06, run 8's re-run), a run's date changed on
+its row (SUP-02) and a name with a separator written twice (QA-07) are put back,
+and nothing else is touched.
 
 Runs standalone (``python test_adf_result_keep.py``) or under pytest.
 """
@@ -19,7 +21,7 @@ import asyncio
 from dataclasses import dataclass, replace
 from typing import Any
 
-from langchain.agents.middleware import ModelResponse
+from langchain.agents.middleware import ExtendedModelResponse, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import v1.core.middlewares.adf_result_keep as keep
@@ -320,6 +322,210 @@ def test_only_the_final_answer_is_checked_against_usable_results() -> None:
         ToolMessage(content=RESULT, tool_call_id="c9", name="get_pipeline_runtime_estimate"),
     ]
     assert _answered(DOUBLED, later).content == DOUBLED
+
+
+# Shaped like the fixtures' run IDs: most share the ending of the host that timed
+# them, and one is random.
+RANDOM = "7c1e9a40-2b6d-4f3a-9e21-5d8c0b7a6f14"
+DAILY = "0f5e2a10-c7f0-11f1-a9a3-7a1b2c3d4e5f"
+FAILED = "3a9d1e22-c8cf-11f1-84a8-7a1b2c3d4e5f"
+
+
+def _link(run_id: str, subscription: str = "<sub>") -> str:
+    return (
+        f"[open run](<https://adf.azure.com/en/monitoring/pipelineruns/{run_id}"
+        f"?factory=/subscriptions/{subscription}/resourceGroups/<rg>/providers/"
+        "Microsoft.DataFactory/factories/example-data-factory>)"
+    )
+
+
+LISTING = (
+    "Factory example-data-factory: 3 ACTIVE pipeline(s), newest run first:\n\n"
+    f"- pl_A2_LoadCoreTables — Mid-level parent. | last run 2026-10-15 19:31:40 UTC "
+    f"(Failed) | {_link(RANDOM)}\n"
+    f"- pl-100-00-ex-surveyco-daily-ingest_data — SurveyCo ingest. | last run "
+    f"**2026-10-14 17:01:30 UTC** (Succeeded) | {_link(DAILY)}\n"
+    f"- pl_UC2_Recovery — Recovery fixture. | last run 2026-10-10 09:12:05 UTC "
+    f"(Failed) | {_link(FAILED)}"
+)
+
+
+def _listed(result: str = LISTING) -> list:
+    return _task_turn(result, name="list_pipelines")
+
+
+def _copied(answer: Any, messages: list | None = None) -> AIMessage:
+    """The answer as the middleware hands it on, for a task whose result is LISTING."""
+
+    return _answered(answer, messages if messages is not None else _listed())
+
+
+def test_a_run_id_given_another_runs_ending_is_put_back() -> None:
+    # The reply's slips in SUP-16 (run 4), SUP-06 (run 8) and SUP-02 (its
+    # re-run), should the subagent make them: this random ID written with the
+    # fixtures' common ending, so its link opened no run.
+    slipped = LISTING.replace(RANDOM, "7c1e9a40-2b6d-4f3a-9e21-5d8c-7a1b2c3d4e5f")
+    message = _copied(slipped)
+    assert message.content == LISTING
+    assert message.id == "answer-1"
+    # UC2-07 (run 3): another run's fourth group.
+    assert (
+        _copied(LISTING.replace(FAILED, "3a9d1e22-c8cf-11f1-baba-7a1b2c3d4e5f")).content == LISTING
+    )
+    # A group written twice, or dropped.
+    assert (
+        _copied(LISTING.replace(FAILED, "3a9d1e22-c8cf-11f1-11f1-84a8-7a1b2c3d4e5f")).content
+        == LISTING
+    )
+    assert _copied(LISTING.replace(FAILED, "3a9d1e22-c8cf-11f1-7a1b2c3d4e5f")).content == LISTING
+    # Written in capitals, a known ID is still known; a slip is put back as the result writes it.
+    assert _copied(LISTING.replace(DAILY, DAILY.upper())).content == LISTING.replace(
+        DAILY, DAILY.upper()
+    )
+    assert (
+        _copied(LISTING.replace(FAILED, "3A9D1E22-C8CF-11F1-BABA-7A1B2C3D4E5F")).content == LISTING
+    )
+
+
+def test_a_run_date_changed_on_its_row_is_put_back() -> None:
+    # SUP-02 (run 8): 2026-10-14 became 2026-10-10 on its row; the bold stays.
+    assert _copied(LISTING.replace("2026-10-14 17:01:30", "2026-10-10 17:01:30")).content == LISTING
+    row = f"Latest: 2026-10-10T17:01:30Z (Succeeded) {_link(DAILY)}"
+    assert _copied(row).content == f"Latest: 2026-10-14T17:01:30Z (Succeeded) {_link(DAILY)}"
+    # Both slips on one row: the ID first, then the date it carries.
+    both = LISTING.replace(DAILY, "0f5e2a10-c7f0-11f1-a9a3-7a1b2c3d4e00").replace(
+        "2026-10-14 17:01:30", "2026-10-11 17:01:30"
+    )
+    assert _copied(both).content == LISTING
+
+
+def test_what_the_user_or_the_model_wrote_is_left_alone() -> None:
+    typed = "3a9d1e22-c8cf-11f1-84a8-000000000000"
+    turn = _listed()
+    turn[0] = HumanMessage(
+        content=f'User asked: "Validate 00000000-0000-0000-0000-000000000000 and {typed}; '
+        'the ticket says it ran 2026-10-10 17:01:30 UTC"'
+    )
+    kept = [
+        # IDs and a time the user typed, though they look like slips.
+        f"Run {typed} and 00000000-0000-0000-0000-000000000000 were not found.",
+        f"The ticket's 2026-10-10 17:01:30 UTC is not {DAILY}'s 2026-10-14 17:01:30 UTC.",
+        # An ID cut short on purpose, and one with a word joined on.
+        "Latest run 0f5e2a10-c7f0-11f1-a9a3-7a1b… succeeded.",
+        f"Its log is {FAILED}-details.txt.",
+        # Times of the model's own: a window on a line with no run ID, another
+        # time zone, and a next run beside the row's own time.
+        "Searched 2026-10-15 19:15:00 to 2026-10-15 20:15:00 UTC.",
+        f"{DAILY} ran 2026-10-14 13:01:30 EDT.",
+        f"{DAILY} ran 2026-10-14 17:01:30 UTC; next 2026-10-15 17:01:30 UTC.",
+        f"{DAILY} is due again 2026-10-15 18:00:00 UTC.",
+        # The user's time on the run's row, without the row's own time.
+        f"For {DAILY} the ticket says 2026-10-10 17:01:30 UTC.",
+        # Another run that only shares a first group.
+        "Run 7c1e9a40-0000-4000-8000-000000000000 was not found.",
+    ]
+    for answer in kept:
+        assert _copied(answer, turn).content == answer, answer
+
+    # Two runs in the result share the first three groups: no way to tell.
+    twin = "3a9d1e22-c8cf-11f1-0000-111111111111"
+    result = f"{LISTING}\n- pl_twin | last run 2026-10-10 09:12:05 UTC | {_link(twin)}"
+    slipped = f"Failed run 3a9d1e22-c8cf-11f1-baba-7a1b2c3d4e5f {_link(FAILED)}"
+    assert _copied(slipped, _listed(result)).content == slipped
+    # The result has the run at two times with the same clock: no way to tell.
+    result = f"{LISTING}\n- earlier: {DAILY} 2026-10-13 17:01:30 UTC"
+    row = f"{DAILY} last ran 2026-10-12 17:01:30 UTC"
+    assert _copied(row, _listed(result)).content == row
+
+
+def test_the_subscription_in_a_link_is_not_a_run() -> None:
+    # Real links carry the subscription's ID in their factory path. Read as a
+    # run, it would tie every linked row together and lend pl_B pl_A's time.
+    subscription = "5b3e1f00-9a2c-4d7e-8f10-2c4b6a8e0d13"
+    result = (
+        f"- pl_A | last run 2026-10-15 19:31:40 UTC | {_link(RANDOM, subscription)}\n"
+        f"- pl_B | {_link(DAILY, subscription)}"
+    )
+    row = f"pl_B ran 2026-10-12 19:31:40 UTC | {_link(DAILY, subscription)}"
+    assert _copied(row, _listed(result)).content == row
+    # The rows' own slips are still put back.
+    slipped = f"pl_A ran 2026-10-11 19:31:40 UTC | {_link(RANDOM[:-4] + '0000', subscription)}"
+    fixed = f"pl_A ran 2026-10-15 19:31:40 UTC | {_link(RANDOM, subscription)}"
+    assert _copied(slipped, _listed(result)).content == fixed
+
+
+NAME = "pl-100-00-ex-surveyco-daily-ingest_data"
+
+
+def _monitor(label: str) -> str:
+    return (
+        f"in ADF Studio: [open Monitor filtered to '{label}'](<https://adf.azure.com/en/monitoring/"
+        "pipelineruns?factory=/subscriptions/<sub>/resourceGroups/<rg>/providers/"
+        f"Microsoft.DataFactory/factories/example-data-factory&filter.pipelinename={NAME}>)"
+    )
+
+
+def test_a_name_with_a_separator_written_twice_is_put_back() -> None:
+    # QA-07 (run 3 and run 8's re-run): the Monitor link labelled with a hyphen
+    # written twice; the link itself kept the name.
+    result = f"{LISTING}\n{_monitor(NAME)}"
+    slipped = f"{LISTING}\n{_monitor('pl-100-00-ex--surveyco-daily-ingest_data')}"
+    assert _copied(slipped, _listed(result)).content == result
+    # Any run of either separator, and one the result writes twice written once.
+    assert _copied(LISTING.replace("pl_UC2_Recovery", "pl__UC2___Recovery")).content == LISTING
+    doubled = LISTING.replace("pl_UC2_Recovery", "pl__UC2_Recovery")
+    assert _copied(LISTING, _listed(doubled)).content == doubled
+    # A run ID with a hyphen written twice, and then the date changed on its row.
+    slipped = LISTING.replace(DAILY, DAILY.replace("-", "--", 1)).replace(
+        "2026-10-14 17:01:30", "2026-10-11 17:01:30"
+    )
+    assert _copied(slipped).content == LISTING
+
+
+def test_a_name_changed_any_other_way_is_left_alone() -> None:
+    result = f"{LISTING}\nRe-check pl_UC2_Recovery once pl_twin_a and pl__twin_a are fixed."
+    turn = _listed(result)
+    turn[0] = HumanMessage(
+        content='User asked: "Did pl-100-00-ex--surveyco-daily-ingest_data run today?"'
+    )
+    kept = [
+        # The user's spelling, though it reads like the slip.
+        "No pipeline is named pl-100-00-ex--surveyco-daily-ingest_data.",
+        # A letter or a digit changed, its case, or '-' written for '_'.
+        "pl-100-01-ex-surveyco-daily-ingest_data has not run.",
+        "PL_UC2_RECOVERY failed; re-check it.",
+        "pl-UC2-Recovery failed.",
+        # Two names in the result read the same once squeezed: no way to tell.
+        "pl___twin_a is fixed.",
+        # Words of the model's own, with a dash written as two hyphens.
+        "The run--not the pipeline--failed; a follow-up re-run is due.",
+        # Part of a longer token: a name is read whole or not at all.
+        "Its output is pl__UC2_Recovery_.csv.",
+    ]
+    for answer in kept:
+        assert _copied(answer, turn).content == answer, answer
+
+
+def test_every_response_shape_and_text_block_is_checked() -> None:
+    slipped = LISTING.replace(RANDOM, "7c1e9a40-2b6d-4f3a-9e21-5d8c-7a1b2c3d4e5f")
+    middleware = _middleware()
+
+    def through(response: Any) -> Any:
+        return middleware.wrap_model_call(_FakeModelRequest(messages=_listed()), lambda r: response)
+
+    assert through(AIMessage(content=slipped)).content == LISTING
+    extended = through(
+        ExtendedModelResponse(model_response=ModelResponse(result=[AIMessage(content=slipped)]))
+    )
+    assert extended.model_response.result[0].content == LISTING
+
+    reasoning = {"type": "reasoning", "summary": [f"saw {slipped[:40]}"]}
+    blocks = [reasoning, {"type": "text", "text": slipped}, "plain"]
+    fixed = _copied(blocks).content
+    assert fixed == [reasoning, {"type": "text", "text": LISTING}, "plain"]
+
+    clean = AIMessage(content=LISTING)
+    assert through(ModelResponse(result=[clean])).result[0] is clean
 
 
 def test_the_async_path_checks_the_answer_too() -> None:

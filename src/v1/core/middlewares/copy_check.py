@@ -1,49 +1,32 @@
 """Put back a run ID, a run date or a name that a model changed while copying it.
 
-An ADF answer is copied twice on its way to the user: the ``adf-agent``
-subagent copies its tools' results into its answer, and the orchestrator copies
-that answer into its reply. Both copies are written token by token, and graded
-runs caught each of them changing what it copied where a reader cannot see it:
+The ``adf-agent`` subagent copies its tools' results into its answer token by
+token. Graded runs caught model copies of ADF results changing what they copied
+where a reader cannot see it:
 
-- a run ID given another run's ending, its [open run] link opening no run. The
-  reply did it in UC2-07 (run 3), and in SUP-16 (run 4), SUP-06 (run 8) and
-  SUP-02 (its re-run) to the same ID each time. The subagent did it in SUP-06
-  (the re-run), writing a group twice ('…-11f1-11f1-…').
-- a run's date changed on its row (SUP-02, run 8, in the reply).
+- a run ID given another run's ending (UC2-07, SUP-16, SUP-02), or with a group
+  written twice ('…-11f1-11f1-…', SUP-06's re-run, by the subagent), its [open
+  run] link opening no run.
+- a run's date changed on its row (SUP-02, run 8).
 - a hyphen written twice in a pipeline's name, as the label of its Monitor link
-  ('pl-100-00-ex--surveyco-daily-ingest_data'). The reply did it in QA-07, in
-  run 3 and again in run 8's re-run.
-- a trigger named in the follow-up suggestions as the user typed it, not as the
-  answer names it ('TRIG_FX_60_00_EX_OPS_DAILY_INGEST_DATA' for
-  'trig-fx-60-00-ex-ops-daily-ingest_data'). The reply did it in QA-18 in all
-  three write runs, though it is told to name each as the answer does; a
-  suggestion is sent as the user's next message when clicked.
+  ('pl-100-00-ex--surveyco-daily-ingest_data', QA-07).
 
-So :mod:`v1.core.middlewares.subagent_relay` (the reply) and
-:mod:`v1.core.middlewares.adf_result_keep` (the subagent's answer) check a final
-answer against the results it copied from and put back those slips only:
+So :mod:`v1.core.middlewares.adf_result_keep` checks the subagent's final answer
+against the results it copied from and puts back those slips only:
 
 - a run ID that appears nowhere in the conversation, and whose first three
   groups match exactly one ID in those results, becomes that ID;
 - a name that appears nowhere in the conversation, and matches exactly one name
   in those results once each run of '-' or '_' is read as one, becomes that
   name;
-- in the follow-up suggestions (the bullets the UI shows under 'Want to explore
-  further?'), a name written as the user typed it, in any case and with any
-  separators, becomes the one name in those results it matches, the user's own
-  spellings left out, unless only its first letter's case differs (a capital
-  opening a sentence: 'Re-run' for 're-run');
 - on a line carrying one of those IDs, a time that appears nowhere in the
   conversation gets its date back when the results' lines for that ID hold
   exactly one time at the same clock time that the answer's line lacks.
 
 Anything else is left as written: a near miss with two candidates, an ID, a
 name or a time the user typed, an ID cut short, a name changed any other way (a
-letter; its case, unless a suggestion names it as the user typed it), a time of
-the model's own (a window, another time zone). A message that calls tools is
-not an answer and is not checked. Like
-:mod:`v1.core.middlewares.citations`, this changes the stored message
-after it streamed; the UI shows the stored reply once the run ends.
+letter, its case), a time of the model's own (a window, another time zone). A
+message that calls tools is not an answer and is not checked.
 """
 
 from __future__ import annotations
@@ -54,7 +37,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
 from langchain.agents.middleware import ExtendedModelResponse, ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
@@ -78,15 +61,6 @@ _TIME = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})([ T])(\d{2}:\d{2}:\d{2})(?!\d)")
 _NAME = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9]+(?:[-_]+[A-Za-z0-9]+)+(?![A-Za-z0-9_-])")
 # A separator written more than once in a row: 'ex--surveyco'.
 _REPEATED_SEPARATOR = re.compile(r"([-_])\1+")
-# The follow-up suggestions, found as the UI finds them (agent-web-ui's
-# extractFollowUps): the first three bullets under this heading, on a line of
-# its own, up to the next heading or text that is not a bullet.
-_FOLLOW_UP_HEADING = re.compile(
-    r"[ \t]{0,3}(?:#{1,6}[ \t]+)?\*{0,2}[ \t]*want to explore further[\s*?:.]*", re.IGNORECASE
-)
-_FOLLOW_UPS_SHOWN = 3
-_MD_HEADING = re.compile(r"#{1,6}\s")
-_MD_BULLET = re.compile(r"(?:[-*+]|\d+[.)])\s+\S")
 
 
 def tool_call_ids(messages: Iterable[AnyMessage]) -> set[str]:
@@ -128,12 +102,6 @@ def _squeezed(name: str) -> str:
     return _REPEATED_SEPARATOR.sub(r"\1", name)
 
 
-def _folded(name: str) -> str:
-    """``name`` in lower case, without its separators: 'TRIG_FX-60' -> 'trigfx60'."""
-
-    return name.replace("-", "").replace("_", "").casefold()
-
-
 @dataclass(frozen=True)
 class _CopySources:
     """What an answer is checked against."""
@@ -148,16 +116,11 @@ class _CopySources:
     lines_by_id: dict[str, list[str]]
     # Each name in the results copied from, by its squeezed form.
     names_by_squeezed: dict[str, set[str]]
-    # The same names by their folded form, for the forms the user typed, less
-    # the user's own spellings (a result can quote one: "'TRIG_A' matched
-    # trigger 'trig-a'").
-    names_by_folded: dict[str, set[str]]
 
 
 def _copy_sources(request: ModelRequest, call_ids: Collection[str]) -> _CopySources:
     lines_by_id: dict[str, list[str]] = {}
     names_by_squeezed: dict[str, set[str]] = {}
-    names_by_folded: dict[str, set[str]] = {}
     for message in request.messages:
         if (
             isinstance(message, ToolMessage)
@@ -171,14 +134,6 @@ def _copy_sources(request: ModelRequest, call_ids: Collection[str]) -> _CopySour
                         lines_by_id.setdefault(token.lower(), []).append(line)
                 for name in _NAME.findall(line):
                     names_by_squeezed.setdefault(_squeezed(name), set()).add(name)
-                    names_by_folded.setdefault(_folded(name), set()).add(name)
-    typed = {
-        name
-        for message in request.messages
-        if isinstance(message, HumanMessage)
-        for name in _NAME.findall(_text(message))
-    }
-    typed_folded = {_folded(name) for name in typed}
     system = getattr(request, "system_message", None)
     known = "\n".join(_text(m) for m in [*([system] if system else []), *request.messages])
     return _CopySources(
@@ -187,48 +142,7 @@ def _copy_sources(request: ModelRequest, call_ids: Collection[str]) -> _CopySour
         known_names=frozenset(_NAME.findall(known)),
         lines_by_id=lines_by_id,
         names_by_squeezed=names_by_squeezed,
-        names_by_folded={
-            key: names - typed for key, names in names_by_folded.items() if key in typed_folded
-        },
     )
-
-
-def _follow_ups_named(text: str, sources: _CopySources, changes: list[str]) -> str:
-    """``text`` with each name in its follow-up suggestions written as the results write it."""
-
-    lines = text.split("\n")
-    start = next(
-        (i for i, line in enumerate(lines) if _FOLLOW_UP_HEADING.fullmatch(line.strip())), None
-    )
-    if start is None:
-        return text
-
-    def _name(match: re.Match[str]) -> str:
-        token = match.group(0)
-        found = sources.names_by_folded.get(_folded(token), set())
-        if len(found) != 1 or token in found:
-            return token
-        (name,) = found
-        if token[1:] == name[1:]:
-            # A capital opening a sentence: 'Re-run' for 're-run'.
-            return token
-        changes.append(f"follow-up name {token} -> {name}")
-        return name
-
-    shown = 0
-    for index in range(start + 1, len(lines)):
-        line = lines[index].strip()
-        if not line:
-            continue
-        if shown == _FOLLOW_UPS_SHOWN or _MD_HEADING.match(line):
-            break
-        if not _MD_BULLET.match(line):
-            if shown:
-                break
-            continue
-        lines[index] = _NAME.sub(_name, lines[index])
-        shown += 1
-    return "\n".join(lines)
 
 
 def _put_back(text: str, sources: _CopySources) -> tuple[str, list[str]]:
@@ -262,7 +176,7 @@ def _put_back(text: str, sources: _CopySources) -> tuple[str, list[str]]:
 
     # Dates last: a run ID with a hyphen written twice is read as one only once
     # it is put back as a name.
-    text = _follow_ups_named(_NAME.sub(_name, _RUN_ID.sub(_run_id, text)), sources, changes)
+    text = _NAME.sub(_name, _RUN_ID.sub(_run_id, text))
     lines = text.split("\n")
     for index, line in enumerate(lines):
         ids = {token.lower() for token in _RUN_ID.findall(line)} & sources.lines_by_id.keys()

@@ -1,22 +1,19 @@
 """View-only keep reminder on the ``adf-agent`` subagent's own tool results.
 
-:mod:`v1.core.middlewares.subagent_relay` made the orchestrator pass an
-``adf-agent`` answer through whole, and graded runs confirm it now does, word
-for word. What was still missing in run 7 was gone one step earlier: the
-subagent itself dropped lines its tools had printed while writing that answer —
-a discovery row's Status (UC1-01) and its [open run] link (UC1-06), the GROUP B
-heading (UC1-09), the 'Completion estimate: Not applicable' line (UC3-02/03),
-the factories searched (UC8-10) and the closest-names line (UC2-08). The ADF
-prompt's closing paragraph says to keep the tools' rows and labels verbatim,
-far above the result it governs.
+In run 7 the subagent dropped lines its tools had printed while writing its
+answer — a discovery row's Status (UC1-01) and its [open run] link (UC1-06), the
+GROUP B heading (UC1-09), the 'Completion estimate: Not applicable' line
+(UC3-02/03), the factories searched (UC8-10) and the closest-names line
+(UC2-08). The ADF prompt's closing paragraph says to keep the tools' rows and
+labels verbatim, far above the result it governs.
 
 So for each of the subagent's model calls this middleware appends a short KEEP
 REQUIREMENT to every result of a READ tool from the current task, right where
 the model reads it. It is:
 
-- **View-only.** Like the relay, it calls ``handler(request.override(...))``
-  with patched copies, so the subagent's state and what reaches the orchestrator
-  are untouched.
+- **View-only.** It calls ``handler(request.override(...))`` with patched
+  copies, so the subagent's state and what reaches the orchestrator are
+  untouched.
 - **Narrow.** Only the tools it is given are patched. The write tools are left
   out on purpose: rule 9 of the ADF prompt (and its adf-write-refusals skill)
   reports a refused change by its outcome ALONE, and an instruction to keep
@@ -44,10 +41,9 @@ from langchain.agents.middleware import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
 from v1.core.middlewares.copy_check import copy_checked, tool_call_ids
-from v1.core.middlewares.subagent_relay import _turn_start
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +51,9 @@ logger = logging.getLogger(__name__)
 # (ADF prompt rule 9), which a keep-every-line instruction would contradict.
 WRITE_TOOL_NAMES = frozenset({"manage_trigger_states", "rerun_failed_pipeline"})
 
-# Same form as the relay's and the tools' own ANSWER REQUIREMENT lines, none of
-# which has reached a user in the graded runs. Each item it names is a line
-# that went missing in run 7.
+# Same form as the tools' own ANSWER REQUIREMENT lines, none of which has
+# reached a user in the graded runs. Each item it names is a line that went
+# missing in run 7.
 KEEP_REQUIREMENT = (
     "KEEP REQUIREMENT (an instruction to you, not text for the user): if your answer "
     "uses the result above, carry its lines into the answer as the tool wrote them, in "
@@ -72,6 +68,19 @@ KEEP_REQUIREMENT = (
 
 # The tools' label for their own text; the patched copy reads without it.
 _TAG = re.compile(r"\[adf-agent\] ?")
+
+
+def _turn_start(messages: list[AnyMessage]) -> int:
+    """Index of the first message after the latest ``HumanMessage`` (0 if none).
+
+    In the subagent that is where the current task starts: deepagents opens it
+    with the task's description as a ``HumanMessage``.
+    """
+
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], HumanMessage):
+            return index + 1
+    return 0
 
 
 def _read_call_ids(messages: list[AnyMessage], tool_names: frozenset[str]) -> set[str]:

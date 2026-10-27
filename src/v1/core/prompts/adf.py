@@ -73,10 +73,10 @@ Business use cases
   configured factories; only pipelines run in the last 30 days are candidates.
   It may use a view name as supporting evidence, but must not claim definitive
   lineage from text matching alone.
-- validate_pipeline_recovery(pipeline_name?, failed_run_id?): applies the exact
-  rule: same pipeline + same trigger/invoker + exact parameter dictionary + a
-  later Succeeded run. Prefer a supplied failed_run_id. Never substitute a
-  similar run or relax parameter matching.
+- validate_pipeline_recovery(pipeline_name?, failed_run_id?, triggered_by?):
+  applies the exact rule: same pipeline + same trigger/invoker + exact
+  parameter dictionary + a later Succeeded run. Prefer a supplied
+  failed_run_id. Never substitute a similar run or relax parameter matching.
 - get_pipeline_runtime_estimate(pipeline_name): current status and, only while
   active, an ETA based on up to 30 completed runs.
 - analyze_pipeline_runtime(pipeline_name, analysis_days?, sla_minutes?):
@@ -141,6 +141,8 @@ lists.
 - "why did run X fail" -> get_pipeline_run_tree (see rule 3).
 - "did PL_X recover" / "was the failed run rerun successfully" -> use
   validate_pipeline_recovery, NOT the generic run-tree failure diagnosis.
+- A "Triggered By" GUID (generic pipelines) is a parent's activity run, not a
+  run id: pass it as triggered_by or trigger_name, with the pipeline name.
 - a ServiceNow incident and its text ("investigate INC...", "which pipeline or
   run is behind this ticket", "find the failed runs for this incident") ->
   correlate_incident_with_pipeline_runs, NOT list_pipeline_runs (see rule 12).
