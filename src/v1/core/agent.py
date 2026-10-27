@@ -23,6 +23,7 @@ from langchain_openai import AzureChatOpenAI
 from langgraph.errors import GraphBubbleUp
 
 from v1.core.config import get_settings
+from v1.core.middlewares.adls_verdict_guard import AdlsVerdictGuardMiddleware
 from v1.core.middlewares.citations import CitationsMiddleware
 from v1.core.middlewares.model_error_guard import ModelErrorGuardMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
@@ -35,6 +36,7 @@ from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
 from v1.core.subagents import (
     ENABLED_SUBAGENTS,
     close_adf_resources,
+    close_adls_resources,
     close_servicenow_resources,
 )
 from v1.core.tools import (
@@ -283,8 +285,8 @@ def _build_agent_sync(checkpointer: Any) -> Any:
 
     for name, setting_name in settings.unconfigured_capabilities:
         logger.warning(
-            "Subagent %r NOT registered: %s is empty; its questions will fall "
-            "through to ai_search_tool.",
+            "Subagent %r NOT registered (set %s to enable it); its questions "
+            "will fall through to ai_search_tool.",
             name,
             setting_name,
         )
@@ -343,11 +345,13 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             # the JWT principal) to the system prompt. Outer of SubagentAccess so
             # the ADF restriction note still lands last.
             UserContextMiddleware(),
-            # Per-request gate: for callers in ADF_DISABLED_GROUPS appends a
-            # restriction note and hard-blocks delegation to the disabled
+            # Per-request gate: for callers in ADF_DISABLED_GROUPS / ADLS_DISABLED_GROUPS
+            # appends a restriction note and hard-blocks delegation to the disabled
             # subagent. Sits inner of deepagents' SubAgentMiddleware so it sees
             # the assembled request.
             SubagentAccessMiddleware(),
+            # No on-time/late verdicts on ADLS answers.
+            *([AdlsVerdictGuardMiddleware()] if settings.adls_enabled else []),
             # View-only: appends a relay requirement to this turn's adf-agent
             # answers, beside them, so the reply carries the answer whole instead
             # of re-titling it and dropping its opening lines.
@@ -513,6 +517,7 @@ async def close_agent_resources() -> None:
     closers = {
         "servicenow": close_servicenow_resources(),
         "adf": close_adf_resources(),
+        "adls": close_adls_resources(),
         "checkpointer": close_checkpointer(),
         # Shared async Key Vault client/credential (used by ServiceNow secret
         # resolution and any other aresolve_env_secret callers).

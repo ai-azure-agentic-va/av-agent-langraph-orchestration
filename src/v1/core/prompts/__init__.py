@@ -1,7 +1,9 @@
 from v1.core.config import get_settings
 from v1.core.prompts.adf import ADF_SUBAGENT_DESCRIPTION, ADF_SUBAGENT_PROMPT
+from v1.core.prompts.adls import ADLS_SUBAGENT_DESCRIPTION, ADLS_SUBAGENT_PROMPT
 from v1.core.prompts.orchestrator import (
     ADF_ROUTING_BLOCK,
+    ADLS_ROUTING_BLOCK,
     BASE_SYSTEM_PROMPT,
     URL_READER_BLOCK,
 )
@@ -17,6 +19,7 @@ SYSTEM_PROMPT = "\n\n".join(
     [
         BASE_SYSTEM_PROMPT,
         *([ADF_ROUTING_BLOCK] if _settings.adf_enabled else []),
+        *([ADLS_ROUTING_BLOCK] if _settings.adls_enabled else []),
         *([URL_READER_BLOCK] if _settings.url_reader_enabled else []),
     ]
 )
@@ -25,6 +28,9 @@ __all__ = [
     "ADF_ROUTING_BLOCK",
     "ADF_SUBAGENT_DESCRIPTION",
     "ADF_SUBAGENT_PROMPT",
+    "ADLS_ROUTING_BLOCK",
+    "ADLS_SUBAGENT_DESCRIPTION",
+    "ADLS_SUBAGENT_PROMPT",
     "BASE_SYSTEM_PROMPT",
     "URL_READER_BLOCK",
     "SYSTEM_PROMPT",

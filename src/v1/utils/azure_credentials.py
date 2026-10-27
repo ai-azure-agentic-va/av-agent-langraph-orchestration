@@ -71,8 +71,8 @@ class ThreadOffloadAsyncCredential:
     """Async ``TokenCredential`` that acquires tokens from the sync
     ``DefaultAzureCredential`` singleton on a worker thread.
 
-    Async SDK clients (``azure.mgmt.datafactory.aio``) need an async credential,
-    and the obvious choice is
+    Async SDK clients (``azure.mgmt.datafactory.aio``, ``azure.storage.blob.aio``)
+    need an async credential, and the obvious choice is
     ``azure.identity.aio.DefaultAzureCredential``. That does NOT work locally: its
     ``AzureCliCredential`` leg still does blocking filesystem work while resolving
     the ``az`` binary, so under the ``blockbuster`` detector ``langgraph dev``

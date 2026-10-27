@@ -69,6 +69,7 @@ dependencies = [
   # The ARM api-version is 2018-06-01 in both, so this is purely a client-side
   # codegen difference. 9.2.0 adds azure-common, which 10.0.0 had dropped.
   "azure-mgmt-datafactory==9.2.0",
+  "azure-storage-blob==12.30.0",
   # Required by azure-core's aio transport, which backs every async Azure SDK
   # client we use (azure.mgmt.datafactory.aio in the ADF tools, the async Key
   # Vault client). Nothing imports it directly, but without it those clients

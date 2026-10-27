@@ -3,8 +3,8 @@
 The parent orchestration agent is a process-wide singleton (see
 :mod:`v1.core.agent`), so the set of wired subagents cannot vary per request at
 build time. Some callers (e.g. external users) must NOT have access to a given
-subagent — ADF pipelines — while internal callers keep it. The caller's Entra
-groups are only reliably available *during* a run (the same
+subagent — ADF pipelines, the ADLS data lake — while internal callers keep it.
+The caller's Entra groups are only reliably available *during* a run (the same
 ``groups_from_config()`` path :func:`ai_search_tool` uses to resolve the
 index), so this middleware enforces the restriction at model- and tool-call
 time.
@@ -54,6 +54,7 @@ regardless of what the model was shown.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -68,11 +69,13 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from v1.core.config import get_settings
 from v1.utils.group_routing import groups_from_config
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Names the orchestrator's subagents are registered under (each is the `task`
 # tool's `subagent_type`); see v1.core.subagents.
 ADF_SUBAGENT_NAME = "adf-agent"
+ADLS_SUBAGENT_NAME = "adls-agent"
 
 # deepagents exposes all subagents through a single tool named "task".
 TASK_TOOL_NAME = "task"
@@ -103,6 +106,21 @@ ADF_RESTRICTION_NOTE = (
     "capabilities, following all other instructions above."
 )
 
+# Appended to the system message for an ADLS-disabled caller.
+ADLS_RESTRICTION_NOTE = (
+    "Data Lake Storage is not available to this user: do not delegate to "
+    "`adls-agent`. If they ask whether or when a file landed in the data lake, "
+    "reply in one or two sentences that Data Lake Storage lookup is not "
+    "available for your access, with no follow-up section. Answer everything "
+    "else as usual."
+)
+
+# Without this, callers blocked from ADF often had data-lake questions refused too.
+ADLS_AVAILABLE_NOTE = (
+    "Data Lake Storage is still available to this user: send questions about "
+    "whether or when a file landed in the data lake to `adls-agent`."
+)
+
 
 @dataclass(frozen=True)
 class SubagentGate:
@@ -117,6 +135,8 @@ class SubagentGate:
     # unregistered subagent (e.g. ADF with no factories configured) would append
     # a restriction note about a capability the deployment never had.
     is_registered: Callable[[], bool] = lambda: True
+    # Added when another gate blocks the caller and this one does not.
+    available_note: str = ""
 
 
 GATES: tuple[SubagentGate, ...] = (
@@ -126,6 +146,14 @@ GATES: tuple[SubagentGate, ...] = (
         restriction_note=ADF_RESTRICTION_NOTE,
         blocked_message="Data Factory pipeline lookup is not available for your access.",
         is_registered=lambda: bool(settings.adf_factory_mapping),
+    ),
+    SubagentGate(
+        subagent_name=ADLS_SUBAGENT_NAME,
+        settings_field="adls_disabled_groups",
+        restriction_note=ADLS_RESTRICTION_NOTE,
+        blocked_message="Data Lake Storage lookup is not available for your access.",
+        is_registered=lambda: settings.adls_enabled,
+        available_note=ADLS_AVAILABLE_NOTE,
     ),
 )
 
@@ -176,10 +204,13 @@ def _restrict_request(request: ModelRequest, disabled: frozenset[str]) -> ModelR
     if not disabled:
         return request
 
-    notes = [
-        gate.restriction_note
-        for gate in _registered_gates()
-        if gate.subagent_name in disabled
+    logger.debug("Restriction notes applied for %s", ", ".join(sorted(disabled)))
+    gates = _registered_gates()
+    notes = [gate.restriction_note for gate in gates if gate.subagent_name in disabled]
+    notes += [
+        gate.available_note
+        for gate in gates
+        if gate.subagent_name not in disabled and gate.available_note
     ]
     return request.override(system_message=_append_notes(request.system_message, notes))
 
@@ -214,7 +245,15 @@ def _blocked_tool_message(tool_call: dict[str, Any]) -> ToolMessage | None:
     """
 
     gate = _blocked_gate(tool_call, _disabled_subagents_for_caller())
-    return _blocked_message(gate, tool_call) if gate is not None else None
+    if gate is None:
+        return None
+    logger.warning(
+        "Blocked task delegation to %s for a caller in %s (the model ignored the "
+        "restriction note)",
+        gate.subagent_name,
+        gate.settings_field.upper(),
+    )
+    return _blocked_message(gate, tool_call)
 
 
 class SubagentAccessMiddleware(AgentMiddleware):

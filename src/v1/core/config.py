@@ -85,6 +85,50 @@ class Settings(BaseSettings):
             "explicitly."
         ),
     )
+    # Azure Data Lake Storage (adls-agent)
+    adls_agent_enabled: bool = Field(
+        default=False,
+        alias="ADLS_AGENT_ENABLED",
+        description="Turns the adls-agent on. Off by default; also needs ADLS_ACCOUNT_MAPPING.",
+    )
+    adls_account_mapping: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        alias="ADLS_ACCOUNT_MAPPING",
+        description=(
+            'Alias -> ADLS Gen2 account, e.g. {"datalake": {"account_url": '
+            '"https://acct.dfs.core.windows.net", "filesystem": "adls"}}. '
+            "Empty (default) turns the ADLS subagent off."
+        ),
+    )
+    adls_default_account: str | None = Field(
+        default=None,
+        alias="ADLS_DEFAULT_ACCOUNT",
+        description=(
+            "ADLS_ACCOUNT_MAPPING alias used when none is given; optional when only "
+            "one account is mapped."
+        ),
+    )
+    adls_allowed_path_prefixes: StringList = Field(
+        default_factory=list,
+        alias="ADLS_ALLOWED_PATH_PREFIXES",
+        description=(
+            "Comma-separated folder prefixes the adls-agent may list, e.g. 'lnd/'. "
+            "Empty (default) refuses every path."
+        ),
+    )
+    adls_business_timezone: str = Field(
+        default="America/New_York",
+        alias="ADLS_BUSINESS_TIMEZONE",
+        description="IANA timezone that defines the business day for ADLS checks.",
+    )
+    adls_disabled_groups: StringList = Field(
+        default_factory=list,
+        alias="ADLS_DISABLED_GROUPS",
+        description=(
+            "Comma-separated Entra group ids or names that may not use the adls-agent. "
+            "Empty (default) allows everyone."
+        ),
+    )
     #Openai Config
     # Reasoning effort for gpt-5.x deployments. "none" turns the model into a
     # plain (non-reasoning) chat model — no hidden reasoning tokens — AND is what
@@ -470,7 +514,8 @@ class Settings(BaseSettings):
         """Every Entra group object-id or display name this deployment maps to behavior.
 
         Union of the group-keyed knobs: ``tenant_group_index_mapping``,
-        ``tenant_group_starter_prompts_mapping``, and ``adf_disabled_groups``.
+        ``tenant_group_starter_prompts_mapping``, ``adf_disabled_groups``, and
+        ``adls_disabled_groups``.
         Auth exports ONLY a caller's intersection with this set (both forms of a
         matched group) into ``langgraph_auth_user`` — the platform persists run
         configs and returns them through its threads/runs read APIs, so the
@@ -483,6 +528,7 @@ class Settings(BaseSettings):
                 *self.tenant_group_index_mapping,
                 *self.tenant_group_starter_prompts_mapping,
                 *self.adf_disabled_groups,
+                *self.adls_disabled_groups,
             )
         )
 
@@ -491,6 +537,12 @@ class Settings(BaseSettings):
         """Whether the ADF subagent has a factory to talk to."""
 
         return bool(self.adf_factory_mapping)
+
+    @property
+    def adls_enabled(self) -> bool:
+        """Whether the ADLS subagent is on and has an account to read."""
+
+        return self.adls_agent_enabled and bool(self.adls_account_mapping)
 
     @property
     def unconfigured_capabilities(self) -> tuple[tuple[str, str], ...]:
@@ -505,6 +557,11 @@ class Settings(BaseSettings):
             (name, setting_name)
             for name, setting_name, enabled in (
                 ("adf-agent", "ADF_FACTORY_MAPPING", self.adf_enabled),
+                (
+                    "adls-agent",
+                    "ADLS_ACCOUNT_MAPPING" if self.adls_agent_enabled else "ADLS_AGENT_ENABLED",
+                    self.adls_enabled,
+                ),
             )
             if not enabled
         )

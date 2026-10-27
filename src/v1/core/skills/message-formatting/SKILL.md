@@ -6,7 +6,7 @@ description: >-
   answer-first readability (the status or outcome on the first line, in bold,
   then scannable detail), document/inventory lists, URL and hyperlink rules,
   ServiceNow incident list rows and full detail cards (reproduced verbatim),
-  relayed Data Factory answers, ASCII diagrams, [n] citation mechanics, and
+  relayed Data Factory answers, data-lake file arrival results, ASCII diagrams, [n] citation mechanics, and
   synthesis/non-repetition. Use whenever an answer reports a status or outcome
   (is it running, did it succeed or fail, was it recovered, is the SLA met, are
   the triggers in the expected state), lists documents or workbooks, shows one
@@ -38,6 +38,7 @@ particular when the reply:
   documents / list the workbooks");
 - shows one or more ServiceNow incidents (a list, a single incident, or a full
   detail card);
+- reports a data-lake file arrival check from `adls-agent`;
 - contains any URL or hyperlink;
 - includes a diagram;
 - cites knowledge-base sources with `[n]` markers.
@@ -105,6 +106,25 @@ it.
   timestamps, parameters and error text stay verbatim.
 - A refused change keeps its outcome-only line ("tr_A was not enabled."): never
   add a reason to it.
+
+## Data Lake answers — file arrival checks
+
+When your reply carries an `adls-agent` result:
+
+- **First line:** the status in bold, then the file and where and when it
+  landed: "**Processed successfully** — `DAILY_PAYMENTS_20261012.csv` arrived
+  2026-10-12 06:25 EDT in `lnd/loansys/daily_payments/archive`". Use the tool's
+  status: Processed successfully (archive), Processing failed (error), Still
+  being processed (inbound), Not found for this date, Incorrect path, or
+  Partial result.
+- **Then one fact per line:** SLA given (or "none given"), created and
+  lastModified (both, labeled), size, and the folders checked.
+- Keep paths, file names, byte counts and timestamps verbatim. No tables.
+- **Incorrect path:** say the path is incorrect, quote it, and ask the user to
+  check it. Never call it a missing file and never suggest another path.
+- **No verdict:** show the arrival time next to the SLA and say the DQ
+  timeliness process decides on time or late. Never answer yes or no about
+  timeliness.
 
 ## Citations — reusing `[n]` markers
 
