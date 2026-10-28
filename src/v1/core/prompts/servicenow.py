@@ -421,13 +421,14 @@ name of the affected pipeline / application / service, verbatim from the instanc
 TOTAL MATCHES — every list result carries a rendered `header`: the count line the BACKEND
 built from total_count (matches across every page) and this page's INCLUSIVE position in
 that run (`showing 1-10`, then `showing 11-20`, then `showing 21-28`). PRINT IT
-VERBATIM as the FIRST line of a list answer, above your own sentence — never re-word it,
+VERBATIM as the FIRST line of a list answer (it already opens the result's
+`rendered_answer`; a list you merge or filter yourself still opens with it) — never re-word it,
 never drop it, and never replace it with a number-free phrase like "here are the open
 incidents" or "there are additional incidents beyond these". This is NOT optional and
 NO query type is exempt: a person/engineer search, a closed-or-resolved search and a
 keyword search each lead with their own header exactly like any other list. It carries no
 subject
-on purpose — name the subject/status you searched in YOUR sentence underneath ("open
+on purpose — name the subject/status you searched in YOUR sentence AFTER the block ("open
 incidents mentioning TSYS"), and never let that sentence contradict its numbers.
 When the source reports no total the header says the count is unavailable; NEVER
 manufacture a number in its place — not from count, not from the rows in front of you, not
@@ -724,8 +725,12 @@ USE-CASE PATTERNS (dynamic, not hardcoded flows):
   4. If nothing falls in the window, say so; list out-of-window matches only as an aside.
 
 INCIDENT VIEWS — pick by how many incidents and how much the user asked for:
-- LIST ROW (DEFAULT for every list/search result — even when only ONE incident matches):
-  print each result's `row` field VERBATIM. It arrives FULLY RENDERED — markdown link,
+- LIST ROW / LIST ANSWER (DEFAULT for every list/search result — even when only ONE incident
+  matches): print the result's `rendered_answer` EXACTLY as given, character for character:
+  the count line, a blank line, then the rows, already NUMBERED (page 2 starts at 11; a
+  single match is unnumbered). Keep every number — never drop, restart or re-style them.
+  Your own sentence or follow-up suggestions go AFTER the block, never inside it. Each row
+  is that ticket's `row` field VERBATIM. It arrives FULLY RENDERED — markdown link,
   bold labels, separators, empty fields already dropped — so never rebuild it from the
   other fields, never re-order or re-style it, never split it into sub-bullets, and never
   append a field it does not carry ('Data source / business service:', 'Category:',
@@ -815,10 +820,12 @@ OUTPUT RULES:
   (a storage path like `abfss://…`, a share, an endpoint) arrives ALREADY fenced in
   backticks — keep the backticks and the URI byte-for-byte, and NEVER turn it into a
   markdown link. Half a URI linked is worse than none: whole link or no link.
-- NUMBER multi-incident lists: whenever the answer has more than one incident, present an
-  ordered markdown list (1., 2., 3., …), one LIST ROW per incident in result order. A
-  later page continues the count from its header: under "showing 11-16" the rows are
-  numbered 11. to 16., never restarted at 1. A
+- NUMBERING: a page printed from `rendered_answer` arrives numbered — never touch it. When you
+  write a list yourself (merged or filtered rows: cluster, classification, missing data —
+  which has no `rendered_answer` — or who-worked-on), it is still opened by a count line,
+  then present an ordered markdown list
+  (1., 2., 3., …), one LIST ROW per incident in result order. A later page continues the
+  count: under "showing 11-16" the rows are numbered 11. to 16., never restarted at 1. A
   list/search that returns ONE match still gets a LIST ROW (unnumbered) — SUMMARY and
   FULL CARD are only for incidents the user names by number.
 - Timestamps come back as '2026-05-10 17:00:00 UTC'. Print each one in exactly that form,

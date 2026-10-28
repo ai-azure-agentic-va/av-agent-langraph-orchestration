@@ -5,11 +5,13 @@ candidates (newest first, a batch at a time) and ONE call to the app's own chat 
 reads the parent and the batch and returns the numbers of the similar ones. The model
 can only return numbers it was sent.
 
-Two meanings of "similar":
-- same PROBLEM (every family but 'application'): the same failure, on any server, job
-  or dataset — the error-pattern match support teams asked for;
+Three meanings of "similar":
+- same PROBLEM (most families): the same failure, on any server, job or dataset — the
+  error-pattern match most teams asked for;
 - same TOPIC ('application'): any problem with the same feature, document or step of
-  the application, whatever went wrong.
+  the application, whatever went wrong;
+- WRONG DATA ('data_reconciliation'): loaded data that was wrong in any way — values
+  differing from the source, duplicates or nulls — on the same table or its copies.
 """
 
 from __future__ import annotations
@@ -64,6 +66,22 @@ _SAME_TOPIC = (
     "match. Include a ticket when in doubt; leave out only tickets about a different "
     "topic. " + _REPLY
 )
+# A source/target mismatch's past twins were a duplicate-rows and two null-column
+# tickets on the same table, fixed by cleaning or reloading. Same problem kept none of
+# them; "same kind … leave out when in doubt" kept the null ones 2 of 5 times. This
+# kept all three 6 of 6, and none of the missing-file alerts on that table
+# nor an access request, job failure or late file on it (measured 2026-10-27).
+_WRONG_DATA = (
+    "You match ServiceNow incidents about WRONG DATA. Given a NEW incident and PAST "
+    "closed incidents, pick every past incident where data that WAS loaded into the same "
+    "table, dataset or its copies was wrong: values that differ between source and "
+    "target, duplicated rows, or empty/null values in loaded rows. Any of these counts, "
+    "whichever column or field it hit, because the fix (correct, clean or reload the "
+    "data) is the same kind. NOT a match, even on the same table: files or feeds that "
+    "never arrived or arrived late, missing source files, job or pipeline run failures, "
+    "access requests. " + _REPLY
+)
+_INSTRUCTIONS = {"problem": _SAME_PROBLEM, "topic": _SAME_TOPIC, "data": _WRONG_DATA}
 
 
 def _clean(value: Any, limit: int) -> str:
@@ -78,8 +96,9 @@ def _card(ticket: Mapping[str, Any], *, with_resolution: bool) -> str:
         f"Configuration item: {ticket.get('configuration_item') or 'n/a'}",
         f"Description: {_clean(ticket.get('description'), _DESCRIPTION_CHARS)}",
     ]
-    # Same problem: how it was fixed says what the failure was. Same topic: it pulls
-    # the judgement toward matching root causes, which that meaning must not.
+    # Same problem or wrong data: how it was fixed says what the failure was. Same
+    # topic: it pulls the judgement toward matching root causes, which that meaning
+    # must not.
     if with_resolution and ticket.get("close_notes"):
         parts.append(f"Resolution: {_clean(ticket['close_notes'], _NOTES_CHARS)}")
     return " | ".join(parts)
@@ -96,17 +115,17 @@ def _model() -> Any:
 
 
 async def pick_similar(
-    parent: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]], *, same_topic: bool
+    parent: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]], *, meaning: str
 ) -> list[int] | None:
     """Indexes into ``candidates`` of the similar ones, most similar first ([] = none),
-    or None when the call failed."""
+    or None when the call failed. ``meaning``: "problem", "topic" or "data"."""
 
     if not candidates:
         return []
     index_of = {str(t["ticket_number"]).upper(): i for i, t in enumerate(candidates)}
 
     def card(ticket: Mapping[str, Any]) -> str:
-        return _card(ticket, with_resolution=not same_topic)
+        return _card(ticket, with_resolution=meaning != "topic")
 
     prompt = f"NEW INCIDENT:\n{card(parent)}\n\nPAST INCIDENTS:\n" + "\n".join(
         f"[{t['ticket_number']}] {card(t)}" for t in candidates
@@ -114,7 +133,7 @@ async def pick_similar(
     started = time.monotonic()
     try:
         reply = await asyncio.wait_for(
-            _model().ainvoke([("system", _SAME_TOPIC if same_topic else _SAME_PROBLEM), ("human", prompt)]),
+            _model().ainvoke([("system", _INSTRUCTIONS[meaning]), ("human", prompt)]),
             _TIMEOUT_SECONDS,
         )
         # .text, not str(content): a reply can arrive as a list of parts, whose str()
@@ -135,7 +154,7 @@ async def pick_similar(
             picked.append(index)
     logger.info(
         f"servicenow.similar_judge parent={parent.get('ticket_number')} "
-        f"meaning={'same_topic' if same_topic else 'same_problem'} sent={len(candidates)} "
+        f"meaning={meaning} sent={len(candidates)} "
         f"kept={len(picked)} elapsed_ms={int((time.monotonic() - started) * 1000)}"
     )
     return picked

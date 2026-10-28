@@ -906,6 +906,26 @@ def _list_header(
     return f"Found {total_count} {noun}{subject}; showing {range_start}-{range_end}."
 
 
+def _render_list_answer(
+    header: str, tickets: list[Mapping[str, Any]], *, shown_before: int, has_more: bool
+) -> str:
+    """The finished list answer: count line, blank line, then the numbered rows.
+
+    Numbering was the one part of a list the model still wrote itself, so it dropped
+    intermittently across the subagent and parent hops. Numbers continue from the
+    earlier pages ("showing 11-20" starts at 11); a lone result stays unnumbered.
+    """
+
+    # A row is one line: a newline inside a title would end its list item early.
+    rows = [" ".join(str(ticket["row"]).splitlines()) for ticket in tickets]
+    if not rows:
+        return header
+    if len(rows) == 1 and shown_before == 0 and not has_more:
+        return f"{header}\n\n{rows[0]}"
+    numbered = (f"{number}. {row}" for number, row in enumerate(rows, shown_before + 1))
+    return "\n\n".join([header, *numbered])
+
+
 def normalize_ticket_list(
     incidents: Iterable[Mapping[str, Any]],
     *,
@@ -953,6 +973,7 @@ def normalize_ticket_list(
     group = str((filters or {}).get("assignment_group") or "")
     if "," in group or _SYS_ID_RE.fullmatch(group):
         group = ""
+    header = _list_header(total_count, len(tickets), has_more, shown_before, group or None)
     return {
         "ok": True,
         "source": SOURCE,
@@ -966,7 +987,12 @@ def normalize_ticket_list(
         "total_count": total_count,
         # The finished COUNT LINE, same contract as each row's ``row``: the agent
         # prints it instead of composing one from the two integers above.
-        "header": _list_header(total_count, len(tickets), has_more, shown_before, group or None),
+        "header": header,
+        # The whole answer as one block: ``header``, a blank line, then the numbered
+        # ``row`` lines. Printed as is, like the change-request and similar answers.
+        "rendered_answer": _render_list_answer(
+            header, tickets, shown_before=shown_before, has_more=has_more
+        ),
         "limit": limit,
         "offset": offset,
         "next_offset": next_offset,
@@ -1653,6 +1679,8 @@ async def _list_classified_candidates(
     )
     if suppress_header:
         result["header"] = ""
+        # The model classifies these rows itself, so a block of every row would mislead.
+        result.pop("rendered_answer", None)
     return result
 
 
@@ -1692,6 +1720,17 @@ _SIMILAR_RESOLUTION_FAMILIES = frozenset(
 # parent's application or data source, then judge which share its topic; every other
 # team matches the symptom across applications.
 _APPLICATION_SIMILARITY_GROUPS = frozenset({"EXAMPLE PROD SUPPORT"})
+# Assignment groups that are one support team: a similar search from any of them
+# searches all of them (one comma-separated assignment_group, an OR live).
+_SIMILARITY_TEAM_GROUPS = (
+    frozenset(
+        {
+            "ACME OPS - SUPPORT TEAM",
+            "ACME OPS - SUPPORT TEAM L2",
+            "ACME OPS - SUPPORT TEAM L3",
+        }
+    ),
+)
 # A ticket raised by the monitoring tool, not a person: '(Monitor Alert) …', '*(AutoTicket) …'.
 _MONITORING_ALERT_RE = re.compile(r"\W*\((?:monitor alert|autoticket)\)", re.IGNORECASE)
 
@@ -1796,19 +1835,51 @@ def matches_similar_resolution_family(incident: Mapping[str, Any], failure_famil
     return bool(_SIMILAR_CONNECTIVITY_RE.search(text))
 
 
+# An auto-raised Azure Data Factory failure alert: '(AutoTicket) <pl-name> … AzureDataFactory
+# … DF_Failure …'. Its title never says "pipeline failed", and its description is a
+# monitoring note with a link, so the wording gate below cannot see it.
+_ADF_FAILURE_ALERT_TITLE_RE = re.compile(
+    r"\(autoticket\).*azuredatafactory[\w-]*failure", re.IGNORECASE
+)
+# A PII/masking/encryption problem is a security or config issue, not a failed run, even
+# on a pipeline ('Pipeline' category with a PII cause is not a pipeline failure).
+_PII_OR_CONFIG_ISSUE_RE = re.compile(r"\bPII\b|\bmasking\b|\bencrypt\w*|\bunencrypted\b", re.IGNORECASE)
+
+
 def is_pipeline_related_incident(incident: Mapping[str, Any]) -> bool:
     """Return whether the incident is a pipeline/ingest EXECUTION failure.
 
-    Same deterministic gate the similar-resolution workflow uses, reused so "list the
+    The deterministic gate the similar-resolution workflow uses, reused so "list the
     pipeline incidents for <source>" and "find similar pipeline incidents" agree about
     what counts as a pipeline incident — except a timeout or vendor outage, which gets
     no pipeline label here (stakeholder rule, for now) yet still pairs with its own
-    kind when finding similar incidents.
+    kind when finding similar incidents. This list ALSO counts what that gate cannot
+    read, and only this list does (the similar flow stays as it was):
+    - an auto-raised ADF failure alert, by its title;
+    - an incident whose configuration item is a 'PL-' pipeline, unless it reads as
+      missing data or is a PII/encryption issue (not a failed run).
+    Data-quality or missing-column wording rules out both.
     """
 
-    if _TIMEOUT_OR_VENDOR_OUTAGE_RE.search(_incident_search_text(incident)):
+    text = _incident_search_text(incident)
+    if _TIMEOUT_OR_VENDOR_OUTAGE_RE.search(text):
         return False
-    return matches_similar_resolution_family(incident, "pipeline")
+    if matches_similar_resolution_family(incident, "pipeline"):
+        return True
+    if _SIMILAR_NON_PIPELINE_RE.search(text):
+        return False
+    if _ADF_FAILURE_ALERT_TITLE_RE.search(_reference_value(incident.get("short_description"))):
+        return True
+    # The live wrapper serves the CI as cmdb_ci, the bundled fixture as configuration_item.
+    ci = (
+        _reference_display(incident.get("cmdb_ci"))
+        or _reference_display(incident.get("configuration_item"))
+    ).strip()
+    return (
+        bool(_PIPELINE_CI_RE.match(ci))
+        and not has_missing_data_evidence(incident)
+        and not _PII_OR_CONFIG_ISSUE_RE.search(text)
+    )
 
 
 # A snake_case technical identifier (feed/table/column name) — dataset-shaped
@@ -2039,6 +2110,15 @@ def _group_key(name: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", name.lower()))
 
 
+def _similarity_teams(group: str) -> list[str]:
+    """Every assignment group of ``group``'s support team, or just ``group``."""
+
+    for teams in _SIMILARITY_TEAM_GROUPS:
+        if _group_key(group) in {_group_key(team) for team in teams}:
+            return sorted(teams)
+    return [group]
+
+
 def _names_application(incident: Mapping[str, Any], name: str) -> bool:
     """Whether the title, description or CI names ``name`` as one run of whole words:
     'AB' finds 'AB Details' and 'AB14', never 'Cabin' or 'Cabin-based'."""
@@ -2198,7 +2278,7 @@ async def _similar_by_application(
         list(range(len(batch)))
         if alert
         else await similar_judge.pick_similar(
-            normalize_ticket_detail(incident)["ticket"], batch, same_topic=True
+            normalize_ticket_detail(incident)["ticket"], batch, meaning="topic"
         )
     )
     # No keyword list to fall back on: the whole app's history is no answer.
@@ -2333,13 +2413,12 @@ def _retry_group_spelling(list_tickets: Callable[..., Any]) -> Callable[..., Any
                 hit = (spelling, probe)
                 break
         if hit is None:
-            return {
-                **result,
-                "header": (
-                    f"No assignment group is named '{group}'. Group names must match "
-                    "exactly, including any ' - ', so please check the group's exact name."
-                ),
-            }
+            message = (
+                f"No assignment group is named '{group}'. Group names must match "
+                "exactly, including any ' - ', so please check the group's exact name."
+            )
+            # rendered_answer is what the agent prints, so it must say this too.
+            return {**result, "header": message, "rendered_answer": message}
         spelling, probe = hit
         if spelling == group:
             return result
@@ -3299,8 +3378,8 @@ async def servicenow_find_similar_resolutions(
         # so a generic symptom does not exhaust every team's history only to discard it
         # here — and a targeted query that only other teams match now falls back to
         # the broad same-team search instead of ending empty.
-        scope_by_group = same_assignment_group and bool(parent_group)
-        group_filter = {"assignment_group": parent_group} if scope_by_group else {}
+        teams = _similarity_teams(parent_group) if same_assignment_group and parent_group else []
+        group_filter = {"assignment_group": ",".join(teams)} if teams else {}
 
         async def exhaust_query(
             content: Mapping[str, str], ci_filter: str | None = None
@@ -3355,16 +3434,27 @@ async def servicenow_find_similar_resolutions(
         if fingerprint_tokens and not rows:
             rows, mode, degraded = await exhaust_query({"description_contains": subject})
 
-        candidates = [
+        mentioned = [
             row
             for row in rows
             if incident_matches_subject(row, subject)
             and (family != "general" or _incident_contains_phrase(row, subject))
-            and matches_similar_resolution_family(row, family)
             and (
-                not scope_by_group
+                not teams
                 or _reference_display(row.get("assignment_group")).strip().lower()
-                == parent_group.lower()
+                in {team.lower() for team in teams}
+            )
+        ]
+        # data_reconciliation keeps only its "never a match" words: its gate's "mismatch,
+        # row count …" dropped every real twin of a source/target mismatch (duplicates,
+        # nulls), so the model call alone decides, by its own meaning of "similar".
+        candidates = [
+            row
+            for row in mentioned
+            if (
+                not _SIMILAR_NON_RECONCILIATION_RE.search(_incident_search_text(row))
+                if family == "data_reconciliation"
+                else matches_similar_resolution_family(row, family)
             )
         ]
         # 'cannot install <name> package' found none of its twins, which name another
@@ -3387,17 +3477,34 @@ async def servicenow_find_similar_resolutions(
         parent_ticket = normalize_ticket_detail(incident)["ticket"]
         start = checked_before
         batch = candidate_tickets[start : start + _SIMILARITY_BATCH]
-        picked = await similar_judge.pick_similar(parent_ticket, batch, same_topic=False)
+        picked = await similar_judge.pick_similar(
+            parent_ticket, batch, meaning="data" if family == "data_reconciliation" else "problem"
+        )
         judged = picked is not None
-        if picked is None:  # failed: the keyword matches, as before the check existed
-            picked = list(range(len(batch)))
+        if picked is None:  # failed: the matches the family's word gate keeps
+            picked = [
+                index
+                for index, row in enumerate(candidates[start : start + _SIMILARITY_BATCH])
+                if matches_similar_resolution_family(row, family)
+            ]
         shown, end = _page_of_matches(picked, len(batch), start)
-        team = parent_group if scope_by_group else ""
+        team = ", ".join(teams)
+        scope = f"from the same team ({team})" if team else "across all teams"
         if candidates and not batch:
-            scope = f"from the same team ({team})" if team else "across all teams"
             header = f"All {len(candidates)} matching closed incidents {scope} have already been checked."
         else:
-            header = _similar_resolution_header(len(shown), team)
+            if shown or start:
+                header = _similar_resolution_header(len(shown), team)
+            # A new question that found nothing says why: no ticket names the subject,
+            # or none that does is the same problem.
+            elif mentioned:
+                header = (
+                    f"No similar closed incidents found {scope}: {len(mentioned)} "
+                    f"{'mentions' if len(mentioned) == 1 else 'mention'} '{subject}', but "
+                    "none describe the same problem."
+                )
+            else:
+                header = f"No other closed incident {scope} mentions '{subject}'."
             # Only when the answer is one page of several: small answers read as before.
             if start or end < len(candidates):
                 header += " " + _checked_line(start, end, len(candidates))

@@ -462,9 +462,9 @@ ServiceNow results:
   ask, delegate the search and report what actually came back rather than
   refusing.
 - When the subagent returns incidents, PRESERVE exactly what it hands back,
-  verbatim — including the list's leading count line, every ticket_url link, the
-  one-line-per-incident list shape, any single-incident summary, any full detail
-  card, and every timestamp
+  verbatim — including the list's leading count line, every row's number, every
+  ticket_url link, the one-line-per-incident list shape, any single-incident summary,
+  any full detail card, and every timestamp
   exactly as handed over. Timestamps arrive as `YYYY-MM-DD HH:MM:SS UTC`: keep
   each one in exactly that form, ` UTC` right after the time, with no bold, code
   span or other formatting around it. The UI finds that exact form and shows it

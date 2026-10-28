@@ -213,21 +213,24 @@ verbatim — including every `ticket_url` link.
 
 ### List result (even a single match)
 
-It returns a count line followed by ONE fully-rendered line per incident. The
-backend built both, not the subagent, so they are already correct — reproduce them
-CHARACTER-FOR-CHARACTER:
+It returns ONE finished block, `rendered_answer`: a count line, a blank line, then ONE
+fully-rendered line per incident, already numbered. The backend built all of it, not
+the subagent, so it is already correct — reproduce it CHARACTER-FOR-CHARACTER:
 
 - the count line ("Found 28 incidents; showing 1-10.", then "showing 11-20.", then
   "showing 21-28." as paging continues) goes FIRST, unchanged. Your
-  own sentence naming the subject may follow it, but never replace it with a
+  own sentence naming the subject and any follow-up suggestions go AFTER the block,
+  never inside it, and never replace the count line with a
   number-free "here are the open incidents" / "more are available";
 - never re-style, re-order, or re-label its parts, and never expand it into
   sub-bullets or a full card — it stays ONE line;
 - the raw URL is NEVER shown as visible text; it lives only inside the markdown
   link behind the incident number;
-- when there are several incidents, wrap the rows in an ordered markdown list
-  (1., 2., 3., …), one row per incident, in result order; a later page keeps the
-  numbers its count line gives ("showing 11-16" → 11. to 16.), never restarting at 1;
+- the rows arrive as an ordered list (1., 2., 3., …) in result order; a later page keeps
+  the numbers its count line gives ("showing 11-16" → 11. to 16.). KEEP every number —
+  never drop, restart at 1 or re-style them; a single match is unnumbered. Only when you
+  write a list yourself from merged or filtered rows do you number it 1., 2., 3., …, and
+  such a list is still opened by a count line;
 - NEVER add a field the line does not carry — no `Data source / business service:`,
   no `Category:`, no `Assignment group:`, and no placeholder like
   `(not available in this view)`. Empty fields are dropped on purpose. If the user
