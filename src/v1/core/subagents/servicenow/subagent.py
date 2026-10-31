@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from v1.core.middlewares.azure_links import AzureLinksMiddleware
 from v1.core.middlewares.user_context import SUBAGENT_GUIDANCE, UserContextMiddleware
 from v1.core.prompts import SERVICENOW_SUBAGENT_PROMPT
 from v1.core.tools import (
@@ -40,6 +41,11 @@ SERVICENOW_SUBAGENT = {
         calculator,
     ],
     # The task text is all a subagent otherwise sees, so "my incidents" needs the
-    # signed-in user's name to resolve (see the FIRST PERSON people rule).
-    "middleware": [UserContextMiddleware(guidance=SUBAGENT_GUIDANCE)],
+    # signed-in user's name to resolve (see the FIRST PERSON people rule). A
+    # ticket's alert link is kept as the ticket holds it; an Azure link the
+    # answer builds from a ticket's fields is checked like every subagent's.
+    "middleware": [
+        AzureLinksMiddleware(label="servicenow-ticket-agent's answer"),
+        UserContextMiddleware(guidance=SUBAGENT_GUIDANCE),
+    ],
 }

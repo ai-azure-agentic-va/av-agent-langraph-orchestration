@@ -2957,6 +2957,37 @@ def test_recovery_different_trigger_is_not_recovery() -> None:
         restore()
 
 
+def test_a_recovery_validation_reaches_the_model_one_field_per_line() -> None:
+    """The plain-text block rendered as one paragraph once copied into an answer
+    ('Pipeline Name : pl_load Failed Run ID : f …'); adf-agent's model reads it
+    laid out as markdown instead, one field or row per bullet."""
+    from v1.core.middlewares.tool_markdown import as_markdown
+    from v1.test.v1.utils.test_tool_markdown import lines_stay_apart
+
+    params = {"d": "1"}
+    runs = {
+        "f": _Run("f", "pl_load", "Failed", run_start=_ago(2),
+                  invoked_by=_InvokedBy("tr_a", "ScheduleTrigger"), parameters=params),
+        "s": _Run("s", "pl_load", "Succeeded", run_start=_ago(1),
+                  invoked_by=_InvokedBy("tr_b", "ScheduleTrigger"), parameters=dict(params)),
+    }
+    restore = _patch(_Settings({"fin": _FIN}), _FakeClient(runs=runs))
+    try:
+        markdown = as_markdown(
+            _run(adf.validate_pipeline_recovery.ainvoke({"failed_run_id": "f"}))
+        )
+    finally:
+        restore()
+    lines_stay_apart(markdown)
+    lines = markdown.split("\n")
+    assert "- **Pipeline Name:** pl_load" in lines
+    assert any(line.startswith("- **Run Started:** 20") for line in lines)
+    assert "- **Recovery Decision:** Not Recovered" in lines
+    # The rejected success stays one row, its reason nested below it.
+    assert any(line.startswith("  - runId=s | ") for line in lines)
+    assert "    - **differs on:** trigger (tr_a -> tr_b)" in lines
+
+
 def test_recovery_different_parameters_is_not_recovery() -> None:
     runs = {
         "f": _Run("f", "pl_load", "Failed", run_start=_ago(2), invoked_by=_TRIG, parameters={"d": "1"}),
@@ -5515,6 +5546,181 @@ def test_incident_run_id_not_found_names_only_the_factories_asked() -> None:
         restore()
 
 
+# An auto-raised alert ticket, shaped like the ones a monitoring integration
+# files: three GUIDs in the template, none of them a run. All made up.
+_ALERT_SUB = "0a0a0a0a-1b1b-4c2c-8d3d-4e4e4e4e4e4e"
+_ALERT_RG = "5f5f5f5f-6a6a-4b7b-9c8c-7d7d7d7d7d7d"
+_ALERT_TENANT = "8e8e8e8e-9f9f-4a0a-ab1b-2c2c2c2c2c2c"
+_ALERT_TICKET = (
+    "(Alert) pl_load _Failure\n"
+    "Configuration item: pl_load\n"
+    f"Subscription ID: {_ALERT_SUB}\n"
+    f"Resource Group: {_ALERT_RG}\n"
+    f"Azure link to the alert: https://portal.azure.com#@{_ALERT_TENANT}/blade/"
+    "Microsoft_Azure_Monitoring_Alerts/AlertDetails.ReactView/alertId/"
+    f"%2Fsubscriptions%2F{_ALERT_SUB}%2Fproviders%2FMicrosoft.AlertsManagement%2Falerts%2Fa1\n"
+)
+
+
+def _record_run_lookups(client: _FakeClient) -> list[str]:
+    """Every run id ``pipeline_runs.get`` is asked for, in order."""
+    asked: list[str] = []
+    real_get = client.pipeline_runs.get
+
+    async def _get(rg: str, factory: str, run_id: str) -> _Run:
+        asked.append(run_id)
+        return await real_get(rg, factory, run_id)
+
+    client.pipeline_runs.get = _get
+    return asked
+
+
+def test_incident_skips_an_alert_tickets_template_guids() -> None:
+    """The subscription, the 'Resource Group' GUID and the portal link's tenant
+    were each looked up as a run: three NOT FOUND paragraphs on every alert
+    ticket, and the three lookups _INCIDENT_MAX_CARDS allows all spent before
+    the run id an engineer pasted into the work notes was reached. That run
+    failed outside the window, so nothing else in the answer would show it.
+    """
+    run = "3d3d3d3d-4e4e-4f5f-8a6a-6b6b6b6b6b6b"
+    client = _FakeClient(
+        pipelines=["pl_load"],
+        runs={run: _failed_at(run, "pl_load", _TICKET_AT - timedelta(hours=3))},
+    )
+    asked = _record_run_lookups(client)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _correlate(
+            incident_text=_ALERT_TICKET + f"Work notes: failed again earlier, run {run}",
+            opened_at=_TICKET_TIME,
+        )
+        assert asked == [run]
+        assert f"RUN ID IN THE TICKET — run {run} (pl_load" in result
+        assert "NOT FOUND" not in result
+        assert "NOT looked up" not in result
+        for guid in (_ALERT_SUB, _ALERT_RG, _ALERT_TENANT):
+            assert guid not in result
+    finally:
+        restore()
+
+
+def test_incident_without_a_timestamp_is_not_rescued_by_template_guids() -> None:
+    """The missing-timestamp refusal is skipped only for a ticket carrying a run
+    id to fall back on — and an alert template's GUIDs are not one."""
+    client = _FakeClient(pipelines=["pl_load"])
+    asked = _record_run_lookups(client)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _correlate(incident_text=_ALERT_TICKET)
+        assert "Missing the ticket's opened/created timestamp" in result
+        assert asked == []
+        assert not client.run_queries
+    finally:
+        restore()
+
+
+def test_incident_looks_up_run_labelled_ids_before_unlabelled_ones() -> None:
+    """Past the lookup cap, the id the ticket calls a run is the one to keep."""
+    cap = adf._INCIDENT_MAX_CARDS
+    guids = [f"{i}{i}{i}{i}{i}{i}{i}{i}-2222-3333-4444-555555555555" for i in range(cap + 1)]
+    labelled = guids[-1]
+    client = _FakeClient(
+        pipelines=["pl_load"],
+        runs={labelled: _failed_at(labelled, "pl_load", _TICKET_AT - timedelta(hours=3))},
+    )
+    asked = _record_run_lookups(client)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _correlate(
+            incident_text=(
+                f"pl_load failed. Ids in the log: {', '.join(guids[:-1])}. Run ID: {labelled}"
+            ),
+            opened_at=_TICKET_TIME,
+        )
+        assert asked == [labelled, *guids[: cap - 1]]
+        assert f"RUN ID IN THE TICKET — run {labelled} (pl_load" in result
+        note = next(line for line in result.splitlines() if "NOT looked up" in line)
+        assert guids[cap - 1] in note and labelled not in note
+    finally:
+        restore()
+
+
+def test_incident_reads_a_qualified_label_from_the_fields_key() -> None:
+    """'Subscription ID (prod): x' puts a qualifier between the label and its
+    GUID, which hid the label, so the GUID was looked up as a run again. The
+    field's key still names it — and a qualified run label still goes first."""
+    run = "3d3d3d3d-4e4e-4f5f-8a6a-6b6b6b6b6b6b"
+    activity = "6b6b6b6b-7c7c-4d8d-9e9e-0f0f0f0f0f0f"
+    bare = "7c7c7c7c-8d8d-4e9e-af0f-1a1a1a1a1a1a"
+    client = _FakeClient(
+        pipelines=["pl_load"],
+        runs={run: _failed_at(run, "pl_load", _TICKET_AT - timedelta(hours=3))},
+    )
+    asked = _record_run_lookups(client)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _correlate(
+            incident_text=(
+                "(Alert) pl_load _Failure\n"
+                f"Subscription ID (prod): {_ALERT_SUB}\n"
+                f"Resource Group for prod: {_ALERT_RG}\n"
+                f"| Tenant [prod] | {_ALERT_TENANT} |\n"
+                f"Activity Run ID (retry): {activity}\n"
+                f"Reference: {bare}\n"
+                f"Run ID (retry): {run}\n"
+            ),
+            opened_at=_TICKET_TIME,
+        )
+        assert asked == [run, bare]
+        assert f"RUN ID IN THE TICKET — run {run} (pl_load" in result
+        for guid in (_ALERT_SUB, _ALERT_RG, _ALERT_TENANT, activity):
+            assert guid not in result
+    finally:
+        restore()
+
+
+def test_incident_never_looks_up_the_deployments_own_subscription() -> None:
+    """Unlabelled, a GUID still counts as a possible run — unless it is the
+    subscription a configured factory lives in. Every ADF link this agent
+    writes carries that one, so it arrives in pasted answers too."""
+    own = "9a9a9a9a-8b8b-4c7c-9d6d-5e5e5e5e5e5e"
+    client = _FakeClient(pipelines=["pl_load"])
+    asked = _record_run_lookups(client)
+    restore = _patch(_Settings({"fin": {**_FIN, "subscription_id": own}}), client)
+    try:
+        result = _correlate(incident_text=f"pl_load failed ({own})", opened_at=_TICKET_TIME)
+        assert asked == []
+        assert "RUN ID IN THE TICKET" not in result
+    finally:
+        restore()
+
+
+def test_incident_reads_a_pasted_run_id_in_any_letter_case() -> None:
+    """ADF spells run ids in lower case. An upper-case copy of a run the window
+    already ranked is that same run, not a second id to look up and card."""
+    guid = "4f2c1b6a-9d3e-4a71-b8c5-0e7a2d9f1c34"
+    client = _FakeClient(
+        pipelines=["pl_load"],
+        runs={guid: _failed_at(guid, "pl_load", _TICKET_AT - timedelta(minutes=4))},
+    )
+    asked = _record_run_lookups(client)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _correlate(
+            incident_text=f"pl_load failed, run {guid.upper()} (also quoted as {guid})",
+            opened_at=_TICKET_TIME,
+        )
+        assert asked == []
+        assert result.count("RUN ID IN THE TICKET") == 1
+        assert (
+            f"RUN ID IN THE TICKET — run {guid} (pl_load, factory 'adf-fin'): correlated above."
+            in result
+        )
+        assert guid.upper() not in result
+    finally:
+        restore()
+
+
 def test_incident_does_not_match_a_pipeline_name_inside_a_longer_one() -> None:
     """'pl_UC2_Trigger' must not be "mentioned" by a ticket saying
     'pl_UC2_TriggerMismatch' — that would attach a second pipeline's runs to the
@@ -6830,6 +7036,22 @@ def test_orchestrator_relays_the_factory_resource_name_and_the_utc_label() -> No
     # ServiceNow and ADF times now share one rule (keep the ' UTC' label: the UI
     # localizes that form), so neither block may forbid the label.
     assert "Same rule as for\n    ServiceNow times" in ADF_ROUTING_BLOCK
+
+
+def test_both_prompts_keep_a_users_own_time_out_of_the_utc_label() -> None:
+    """'Validate recovery for the failure at 4 am PDT': the answer wrote that as
+    '2026-06-02 04:00 UTC PDT', and the UI — which shows every '... UTC' time in
+    the viewer's zone — moved it to 21:00 the day before. Both layers restate
+    the user's time, and only the subagent passes it to a tool's date filter.
+    """
+    from v1.core.prompts.adf import ADF_SUBAGENT_PROMPT
+    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK
+
+    adf, routing = (" ".join(p.split()) for p in (ADF_SUBAGENT_PROMPT, ADF_ROUTING_BLOCK))
+    for prompt in (adf, routing):
+        assert "A time the USER gives ('4 am PDT') is not UTC: convert it (11:00 UTC)" in prompt
+        assert "quote it as written" in prompt
+    assert "before a date filter or a ' UTC' label" in adf
 
 
 def test_both_prompts_carry_the_adf_link_and_the_24_hour_caveat() -> None:

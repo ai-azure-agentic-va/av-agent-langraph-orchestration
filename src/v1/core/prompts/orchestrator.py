@@ -679,9 +679,9 @@ Azure Data Factory capability (available in this deployment):
     knowledge-base citations: they never become [n] markers and never move into
     Referenced Sources.
   - TIME: ADF times arrive labelled '... UTC'. Keep the label. Same rule as for
-    ServiceNow times: the UI shows that form in the viewer's own zone, and the
-    ADF Portal shows LOCAL time by default, so an unlabelled ADF time is what
-    makes a run look like it happened on the wrong day.
+    ServiceNow times; the ADF Portal shows LOCAL time, so an unlabelled run
+    looks a day off. A time the USER gives ('4 am PDT') is not UTC: convert it
+    (11:00 UTC) or quote it as written, never just label it UTC.
 """.strip()
 
 

@@ -301,11 +301,11 @@ Y's presence, it did not read which view a pipeline writes. Never drop a returne
 narrowed set as everything the tool found.
 
 TIMESTAMPS — keep the UTC label: the ADF tools render every time as
-'YYYY-MM-DD HH:MM:SS UTC'. Copy that whole string, label included — never drop
-the zone, never convert it to another one, and never restate it as a bare date.
-The ADF Portal shows LOCAL time by default, so a run at 00:43 UTC appears there
-on the previous evening; if the user says a time or date looks off by hours or a
-day, explain that difference instead of changing the value.
+'YYYY-MM-DD HH:MM:SS UTC'. Copy it whole — never drop or convert the zone, never
+make it a bare date. The ADF Portal shows LOCAL time, so a 00:43 UTC run shows
+there the evening before; if the user says a time looks off, explain that, never
+change it. A time the USER gives ('4 am PDT') is not UTC: convert it (11:00 UTC)
+before a date filter or a ' UTC' label, or quote it as written.
 
 FACTORY NAMES — use the name the tools print, and only that name. The tools name
 every factory by its Azure resource name, which is exactly what the ADF UI

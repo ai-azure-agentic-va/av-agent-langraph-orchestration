@@ -526,6 +526,20 @@ def test_file_listing_details() -> None:
             assert line not in out, (test_data["name"], line)
 
 
+def test_the_result_reaches_the_model_one_fact_per_line() -> None:
+    """adls-agent returns these facts verbatim; as plain lines they rendered as
+    one paragraph, so its model reads them laid out as markdown."""
+    from v1.core.middlewares.tool_markdown import as_markdown
+    from v1.test.v1.utils.test_tool_markdown import lines_stay_apart
+
+    markdown = as_markdown(_check(_FakeContainer({f"{FEED}/archive/x/PMT.csv": ON_DAY})))
+    lines_stay_apart(markdown)
+    lines = markdown.split("\n")
+    assert "- **SLA given:** none in the question" in lines
+    assert "- **archive:** 1 file(s)" in lines
+    assert any(line.startswith(f"  - {FEED}/archive/x/PMT.csv | ") for line in lines)
+
+
 def test_file_filter_matches_object_ids_by_contains() -> None:
     files = {
         f"{FEED}/archive/x/DAILY_PAYMENTS_A1B2C3_20261012.csv": ON_DAY,

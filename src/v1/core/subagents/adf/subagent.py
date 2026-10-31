@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from v1.core.middlewares.adf_result_keep import AdfResultKeepMiddleware
+from v1.core.middlewares.azure_links import AzureLinksMiddleware
 from v1.core.middlewares.citations import CitationsMiddleware
+from v1.core.middlewares.tool_markdown import ToolMarkdownMiddleware
 from v1.core.middlewares.user_context import SUBAGENT_GUIDANCE, UserContextMiddleware
 from v1.core.prompts import ADF_SUBAGENT_DESCRIPTION, ADF_SUBAGENT_PROMPT
 from v1.core.tools import ADF_TOOLS, ai_search_tool
@@ -34,10 +36,16 @@ ADF_SUBAGENT = {
     # "my pipelines" ask say it cannot filter by person rather than pass off every
     # run as the user's. The keep reminder rides on the ADF tools' results only
     # (never ai_search_tool's): the lines graded runs found missing were dropped
-    # here, before the orchestrator ever saw the answer.
+    # here, before the orchestrator ever saw the answer. Those results reach the
+    # model as markdown, so the lines it keeps render one per line; that layout
+    # comes first, and the keep reminder is added below it. The link check sits
+    # outer of AdfResultKeep, so it reads the answer once its copy check has put
+    # back a slipped run ID.
     "middleware": [
         CitationsMiddleware(),
+        AzureLinksMiddleware(label="adf-agent's answer"),
         UserContextMiddleware(guidance=SUBAGENT_GUIDANCE),
+        ToolMarkdownMiddleware(tool.name for tool in ADF_TOOLS),
         AdfResultKeepMiddleware(tool.name for tool in ADF_TOOLS),
     ],
 }

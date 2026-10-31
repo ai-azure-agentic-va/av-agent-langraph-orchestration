@@ -4909,6 +4909,81 @@ _INCIDENT_MAX_TEXT = 20_000  # guard against a pasted attachment dump
 # strongest correlation signal there is — an exact run, not a time guess.
 _GUID_RE = re.compile(r"\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b", re.IGNORECASE)
 
+# ...but a ticket's GUIDs are mostly NOT runs. An auto-raised alert ticket
+# carries three in its template alone — 'Subscription ID:', a 'Resource Group:'
+# holding a GUID, and the tenant in its portal link — and each was looked up as
+# a run: three NOT FOUND paragraphs on every such ticket, and the
+# _INCIDENT_MAX_CARDS lookups spent before a run id pasted further down (the
+# work notes) was reached. So each GUID is read with the label just before it.
+# A deny-list, not "skip unless labelled a run": an unlabelled GUID is still
+# looked up, because a real run id skipped costs more than a stray NOT FOUND.
+#
+# What may sit between a label and its GUID: 'Run ID: x', '"runId": "x"',
+# '| Tenant | x', '/subscriptions/x', 'Subscription ID – x'.
+_LABEL_GAP = r"""[\s:=*`'"(\[{|>/#–—-]*"""
+# Labels whose GUID is never a pipeline run. 'Triggered By' names the parent's
+# activity run or a trigger run, and '#@' is the tenant in a portal link.
+_NOT_RUN_WORDS = (
+    r"(?:subscription|tenant|directory|resource[\s_-]*group|workspace|client|object"
+    r"|app(?:lication)?|principal|correlation|operation|request|tracking"
+    r"|alert(?:[\s_-]*rule)?|activity(?:[\s_-]*run)?|trigger(?:[\s_-]*run)?)"
+    r"s?(?:[\s_-]*(?:id|guid|name)s?)?"
+    r"|triggered[\s_-]*by"
+)
+# 'run x', 'Run ID: x', 'pipelineRunId=x', and '/pipelineruns/x' in an ADF link.
+_RUN_WORDS = r"(?:pipeline[\s_-]*)?runs?(?:[\s_-]*ids?)?"
+_NOT_RUN_LABEL_RE = re.compile(
+    r"(?:(?<![a-z0-9])(?:" + _NOT_RUN_WORDS + r")" + _LABEL_GAP + r"|#@)\Z",
+    re.IGNORECASE,
+)
+_RUN_LABEL_RE = re.compile(r"(?<![a-z0-9])" + _RUN_WORDS + _LABEL_GAP + r"\Z", re.IGNORECASE)
+# A qualified label — 'Subscription ID (prod): x', 'Tenant for QA: x',
+# '| Run ID (retry) | x' — puts words between the label and its GUID, so the
+# two checks above see none. When the GUID is a field's whole value, its key
+# is read instead: up to 40 characters from the line start or the last
+# separator to the ':', '=' or '|' just ahead of the GUID. Longer is prose.
+_FIELD_KEY_RE = re.compile(r"""(?:\A|[\n|;,:=])([^\n|;,:=]{1,40})[:=|][\s*`'"]*\Z""")
+# Any label word in that key. A run word outranks the others ('Subscription
+# ID (used by run)' is looked up): a stray NOT FOUND is the cheaper mistake.
+_KEY_LABEL_RE = re.compile(
+    r"(?<![a-z0-9])(?:(?P<other>" + _NOT_RUN_WORDS + r")|(?P<run>" + _RUN_WORDS + r"))(?![a-z])",
+    re.IGNORECASE,
+)
+
+
+def _ticket_run_ids(text: str) -> list[str]:
+    """The GUIDs in a ticket that may be pipeline runs, run-labelled ones first.
+
+    Run-labelled first so the _INCIDENT_MAX_CARDS lookups go to them before any
+    unlabelled GUID. Lower-cased, as ADF spells run ids: one id pasted in two
+    cases is one lookup, and still matches a run the window search ranked.
+    """
+    # The deployment's own subscriptions are never runs, whatever the label;
+    # a pasted agent answer carries one in every ADF link it quotes.
+    own = {
+        str(entry.get("subscription_id", "")).strip().lower()
+        for entry in settings.adf_factory_mapping.values()
+    }
+    # GUID -> 2 run-labelled, 1 labelled as something else, 0 unlabelled. The
+    # strongest label any copy of a GUID carries wins.
+    kinds: dict[str, int] = {}
+    for match in _GUID_RE.finditer(text):
+        guid = match.group().lower()
+        before = text[max(0, match.start() - 80) : match.start()]
+        if _NOT_RUN_LABEL_RE.search(before):
+            kind = 1  # checked first: 'Activity Run ID' is not a pipeline run
+        elif _RUN_LABEL_RE.search(before):
+            kind = 2
+        else:
+            key = _FIELD_KEY_RE.search(before)
+            words = {m.lastgroup for m in _KEY_LABEL_RE.finditer(key.group(1))} if key else set()
+            kind = 2 if "run" in words else 1 if "other" in words else 0
+        kinds[guid] = max(kinds.get(guid, 0), kind)
+    runs = [guid for guid, kind in kinds.items() if kind == 2 and guid not in own]
+    bare = [guid for guid, kind in kinds.items() if kind == 0 and guid not in own]
+    return runs + bare
+
+
 # A token in the ticket that CLAIMS to be a pipeline. Deliberately narrow — the
 # 'pl_' naming convention only — because this feeds the "named but not in any
 # factory" line, and a looser pattern turns ordinary prose ('the pipeline_name
@@ -5052,9 +5127,10 @@ async def correlate_incident_with_pipeline_runs(
     time — closest failure first, with the gap and its direction spelled out —
     and (3) returns full activity-level detail for the closest ones, so the
     likely root cause is in the first answer instead of three tool calls later.
-    Any run GUID pasted into the ticket is looked up directly as well. When the
-    ticket names no pipeline this deployment has, it falls back to every failed
-    run in the window.
+    Any run GUID pasted into the ticket is looked up directly as well; one the
+    ticket labels as something else (subscription, tenant, resource group,
+    alert or correlation id) is skipped. When the ticket names no pipeline this
+    deployment has, it falls back to every failed run in the window.
 
     Args:
         incident_text:   The ticket's text — short description, description and
@@ -5097,7 +5173,7 @@ async def correlate_incident_with_pipeline_runs(
             anchor = _parse_moment(opened_at, "opened_at")
         except _InputError as exc:
             return str(exc)
-    ticket_run_ids = list(dict.fromkeys(_GUID_RE.findall(text)))
+    ticket_run_ids = _ticket_run_ids(text)
     if anchor is None and not ticket_run_ids:
         return (
             "[adf-agent] Missing the ticket's opened/created timestamp. Pass it as "
