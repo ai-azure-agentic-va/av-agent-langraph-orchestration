@@ -258,6 +258,8 @@ class _FakeClient:
         # False = the list page's body cannot be read as JSON, so no definition
         # rides on the inventory and discovery has to GET each one.
         list_wire: bool = True,
+        # Runs per page of a filtered run query; 0 = every match on one page.
+        run_page_size: int = 0,
     ) -> None:
         outer = self
         self._pipelines = pipelines or []
@@ -272,6 +274,7 @@ class _FakeClient:
         self._fail_on = fail_on
         self._created_run_id = created_run_id
         self._list_wire = list_wire
+        self._run_page_size = run_page_size
         self.trigger_calls: list[tuple[str, str]] = []
         self.create_run_calls: list[dict[str, Any]] = []
         # Every RunFilterParameters the tools sent, in order — the assertion
@@ -281,6 +284,11 @@ class _FakeClient:
         # took the deserialized model, which silently drops the type of any
         # activity this SDK generation cannot model.
         self.definition_cls: list[Any] = []
+        # The factory of every pipeline listing read, failed ones included —
+        # the seam for "one listing serves every call while it is cached".
+        self.list_calls: list[str] = []
+        # (factory, run id) of every run GET, failed ones included.
+        self.run_gets: list[tuple[str, str]] = []
 
         def _maybe_fail(call: str) -> None:
             if outer._fail_on == call:
@@ -289,6 +297,7 @@ class _FakeClient:
         class _Pipelines:
             def list_by_factory(self, rg: str, factory: str, raw_response_hook=None):
                 async def _gen():
+                    outer.list_calls.append(factory)
                     _maybe_fail("list_by_factory")
                     names = list(dict.fromkeys([*outer._pipelines, *outer._definitions]))
                     if raw_response_hook is not None:
@@ -367,6 +376,7 @@ class _FakeClient:
 
         class _PipelineRuns:
             async def get(self, rg: str, factory: str, run_id: str) -> _Run:
+                outer.run_gets.append((factory, run_id))
                 _maybe_fail("pipeline_runs.get")
                 try:
                     return outer._runs[run_id]
@@ -386,7 +396,15 @@ class _FakeClient:
                     page = min(len(outer.run_queries), len(outer._run_pages)) - 1
                     return outer._run_pages[page]
                 # No explicit pages: filter the in-memory runs like ADF would.
-                return _Value(_apply_fake_filters(list(outer._runs.values()), filter_parameters))
+                matched = _apply_fake_filters(list(outer._runs.values()), filter_parameters)
+                if not outer._run_page_size:
+                    return _Value(matched)
+                # Paged like ADF: the token says where the next page starts.
+                start = int(getattr(filter_parameters, "continuation_token", None) or 0)
+                end = start + outer._run_page_size
+                return _Value(
+                    matched[start:end], continuation_token=str(end) if end < len(matched) else None
+                )
 
         class _ActivityRuns:
             async def query_by_pipeline_run(
@@ -457,10 +475,14 @@ def _patch(
         return client or _FakeClient()
 
     adf._client = _fake_client
+    # Cached pipeline lists are keyed by factory, and these fakes reuse the same
+    # factory names with different pipelines from one test to the next.
+    adf._reset_adf_caches()
 
     def restore() -> None:
         adf.settings = saved_settings
         adf._client = saved_client
+        adf._reset_adf_caches()
 
     return restore
 
@@ -3823,6 +3845,112 @@ def test_runtime_estimate_names_the_factory_resource() -> None:
         restore()
 
 
+def _status_filters(query) -> list:
+    return [f for f in query.filters or [] if f.operand == "Status"]
+
+
+def test_the_estimate_reads_the_newest_runs_only_until_it_has_its_history() -> None:
+    """An every-minute pipeline paged 200 pages (50–117 s live) to average 30 runs."""
+    runs = {"a": _Run("a", "pl_x", "InProgress", run_start=_ago(hours=0.1), duration_in_ms=None)}
+    for i in range(100):
+        # Only the newest 30 take 2 s, so an older run in the average would show.
+        runs[f"h{i}"] = _Run(
+            f"h{i}",
+            "pl_x",
+            "Succeeded",
+            run_start=_ago(hours=i + 1),
+            duration_in_ms=2000 if i < 30 else 60_000,
+        )
+    client = _FakeClient(runs=runs, run_page_size=10)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(adf.get_pipeline_runtime_estimate.ainvoke({"pipeline_name": "pl_x"}))
+        assert "Historical Runs Used: 30" in result and "fewer than" not in result
+        assert "Historical Average Runtime: 2s" in result
+        assert "1 active run(s)" in result, "both queries read it; it is counted once"
+        assert "could not be fully paged" not in result
+        newest = [q for q in client.run_queries if not _status_filters(q)]
+        assert len(newest) == 4, "page 4 brings 39 completed runs; pages 5-11 are skipped"
+        (active,) = [q for q in client.run_queries if _status_filters(q)]
+        (status,) = _status_filters(active)
+        assert (status.operator, status.values) == ("In", ["Queued", "InProgress", "Canceling"])
+        assert {f.operator for f in active.filters if f.operand == "PipelineName"} == {"Equals"}
+    finally:
+        restore()
+
+
+def test_the_estimate_counts_an_active_run_older_than_the_runs_it_averages() -> None:
+    """A run Queued for days sits below every page the newest runs are read from."""
+    runs = {"stuck": _Run("stuck", "pl_x", "Queued", run_start=_ago(days=20), duration_in_ms=None)}
+    for i in range(50):
+        runs[f"h{i}"] = _Run(f"h{i}", "pl_x", "Succeeded", run_start=_ago(hours=i + 1))
+    client = _FakeClient(runs=runs, run_page_size=10)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(adf.get_pipeline_runtime_estimate.ainvoke({"pipeline_name": "pl_x"}))
+        assert "Current Status: 1 active run(s) — Queued" in result
+        assert "Current Run ID=stuck" in result
+        assert "Historical Runs Used: 30" in result
+    finally:
+        restore()
+
+
+def test_the_estimate_reports_a_failed_active_runs_query() -> None:
+    client = _FakeClient(runs={"h": _Run("h", "pl_x", "Succeeded", run_start=_ago(1))})
+    query = client.pipeline_runs.query_by_factory
+
+    async def _throttled_for_active_runs(rg: str, factory: str, filter_parameters=None):
+        if _status_filters(filter_parameters):
+            raise RuntimeError("(429) TooManyRequests")
+        return await query(rg, factory, filter_parameters=filter_parameters)
+
+    client.pipeline_runs.query_by_factory = _throttled_for_active_runs
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(adf.get_pipeline_runtime_estimate.ainvoke({"pipeline_name": "pl_x"}))
+        assert result == (
+            "[adf-agent] ERROR querying runs in factory 'adf-fin': (429) TooManyRequests"
+        )
+    finally:
+        restore()
+
+
+def test_a_run_query_stopped_once_it_has_enough_counts_as_complete() -> None:
+    runs = {f"r{i}": _Run(f"r{i}", "pl_x", "Succeeded", run_start=_ago(hours=i)) for i in range(50)}
+    client = _FakeClient(runs=runs, run_page_size=10)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+
+    def _page(max_pages: int, stop=None) -> tuple[int, bool]:
+        params = adf._runs_params("pl_x", _ago(days=45), _NOW)
+        read, complete = _run(
+            adf._page_runs(client, "rg-fin", "adf-fin", params, max_pages, stop=stop)
+        )
+        return len(read), complete
+
+    def _twenty(read: list) -> bool:
+        return len(read) >= 20
+
+    try:
+        assert _page(5, _twenty) == (20, True)
+        assert _page(2, _twenty) == (20, True), "the page at the cap held enough"
+        assert _page(2) == (20, False)
+        assert _page(9, lambda read: False) == (50, True)
+    finally:
+        restore()
+
+
+def test_only_completed_runs_with_a_start_time_make_the_estimate_history() -> None:
+    """A run with no start sorts last, so it cannot stand in for a newer one."""
+    dated = [
+        _Run(f"d{i}", "pl_x", "Succeeded", run_start=_ago(hours=i))
+        for i in range(adf._ESTIMATE_HISTORY_RUNS)
+    ]
+    undated = [_Run("u", "pl_x", "Succeeded")]
+    running = [_Run("a", "pl_x", "InProgress", run_start=_ago(0), duration_in_ms=None)]
+    assert adf._enough_history(dated)
+    assert not adf._enough_history(dated[1:] + undated + running)
+
+
 # --- UC4: analyze_pipeline_runtime -------------------------------------------
 
 
@@ -6177,8 +6305,13 @@ def test_a_named_factory_is_never_answered_from_another_copy() -> None:
         result = _run(
             adf.validate_pipeline_recovery.ainvoke({"pipeline_name": _PL100, "factory": "fin"})
         )
-        assert "Recovered" not in result and "adf-risk" not in result
-        assert risk.run_queries == []
+        assert f"No failed run found for pipeline '{_PL100}' in factory 'adf-fin'" in result
+        assert "Recovered" not in result
+        # adf-risk's copy is only NAMED, in the copies note: one probe, never the answer.
+        # (This used to assert no mention at all, which held only because the fake's
+        # GET cannot see a name-only pipeline; real ADF answers it and adds the note.)
+        assert "'adf-risk' (it has Failed runs in this window)" in result
+        assert len(risk.run_queries) == 1 and risk.definition_cls == []
     finally:
         restore()
 
@@ -6773,6 +6906,933 @@ def test_logging_leaves_every_tool_schema_and_signature_alone() -> None:
         assert hasattr(t.coroutine, "__wrapped__"), t.name
         assert inspect.signature(t.coroutine) == inspect.signature(t.coroutine.__wrapped__)
     assert set(adf.find_pipelines.args) == {"query", "factory"}
+
+
+# --- pipeline list cache ----------------------------------------------------------
+# QA: seven factories and no default, one of them with thousands of pipelines (slow
+# to list). Every call given only a pipeline name listed every factory again, so
+# "find the surveyco pipelines, then the failed ones" re-listed all seven once
+# per pipeline it went on to ask about.
+
+
+def _age_cached_lists(seconds: float) -> None:
+    """Make every cached pipeline list ``seconds`` older."""
+    for key, (fetched_at, listed) in list(adf._inventory_cache.items()):
+        adf._inventory_cache[key] = (fetched_at - seconds, listed)
+
+
+def test_one_list_per_factory_serves_a_find_and_every_name_only_call_after_it() -> None:
+    names = [f"pl-100-0{i}-ex-surveyco-load" for i in range(3)]
+    runs = {
+        f"r{i}": _Run(f"r{i}", n, "Failed", run_start=_ago(hours=i + 1))
+        for i, n in enumerate(names)
+    }
+    fin = _FakeClient(pipelines=["pl_fin_load"])
+    risk = _FakeClient(pipelines=names, runs=runs)
+    restore = _two_factories(fin, risk, default=None)
+    handler = _Capture()
+    adf.logger.addHandler(handler)
+    saved_level = adf.logger.level
+    adf.logger.setLevel(logging.INFO)
+    try:
+        found = _find("surveyco")
+        assert all(n in found for n in names)
+        for i, name in enumerate(names):
+            failed = _run(
+                adf.list_pipeline_runs.ainvoke({"pipeline_name": name, "status": "Failed"})
+            )
+            assert "NOTE: it is in factory 'adf-risk'" in failed and f"runId=r{i}" in failed
+        assert fin.list_calls == ["adf-fin"] and risk.list_calls == ["adf-risk"]
+        messages = [r.getMessage() for r in handler.records]
+        assert any(m.startswith("ADF inventory adf-risk: cached, 3 pipeline(s)") for m in messages)
+    finally:
+        restore()
+        adf.logger.removeHandler(handler)
+        adf.logger.setLevel(saved_level)
+
+
+def test_calls_made_together_wait_on_one_list_read() -> None:
+    """The model's parallel calls in one turn run concurrently: they share the read."""
+    fin = _FakeClient(pipelines=["pl_load"])
+    restore = _patch(_Settings({"fin": _FIN}), fin)
+    saved = adf._factory_inventory
+
+    async def _slow(*target):
+        await asyncio.sleep(0.05)
+        return await saved(*target)
+
+    async def _together() -> list[str]:
+        return await asyncio.gather(*(adf.find_pipelines.ainvoke({"query": "load"}) for _ in "ab"))
+
+    async def _one_gives_up() -> list:
+        target = ("fin", "sub-1", "rg-fin", "adf-fin")
+        quitter = asyncio.create_task(adf._cached_inventory(*target))
+        stayer = asyncio.create_task(adf._cached_inventory(*target))
+        await asyncio.sleep(0.01)
+        quitter.cancel()
+        return await stayer
+
+    adf._factory_inventory = _slow
+    try:
+        assert all("pl_load" in found for found in _run(_together()))
+        assert fin.list_calls == ["adf-fin"]
+        # A caller cancelled mid-read does not cancel the read for the one still waiting.
+        adf._reset_adf_caches()
+        assert [p.name for p in _run(_one_gives_up())] == ["pl_load"]
+        assert fin.list_calls == ["adf-fin", "adf-fin"]
+    finally:
+        adf._factory_inventory = saved
+        restore()
+
+
+def test_a_cache_time_of_zero_lists_on_every_call() -> None:
+    settings = _Settings({"fin": _FIN})
+    settings.adf_inventory_cache_seconds = 0
+    fin = _FakeClient(pipelines=["pl_load"])
+    restore = _patch(settings, fin)
+    try:
+        assert "pl_load" in _find("load") and "pl_load" in _find("load")
+        assert fin.list_calls == ["adf-fin", "adf-fin"] and not adf._inventory_cache
+    finally:
+        restore()
+
+
+def test_a_list_that_could_not_be_read_is_read_again_next_time() -> None:
+    fin = _FakeClient(pipelines=["pl_load"], fail_on="list_by_factory")
+    restore = _patch(_Settings({"fin": _FIN}), fin)
+    try:
+        assert "Could NOT search" in _find("load")
+        fin._fail_on = ""  # the 403 is fixed
+        assert "pl_load" in _find("load")
+        assert fin.list_calls == ["adf-fin", "adf-fin"]
+    finally:
+        restore()
+
+
+def test_a_pipeline_published_after_its_factory_was_listed_is_still_found() -> None:
+    """"No match" and "DOES NOT EXIST" are never answered from a list over 30 s old."""
+    fin = _FakeClient(pipelines=["pl_fin_load"])
+    risk = _FakeClient(pipelines=["pl_risk_load"])
+    restore = _two_factories(fin, risk, default=None)
+    try:
+        assert "pl_risk_load" in _find("load")
+        risk._pipelines.append("pl_risk_new")
+        _age_cached_lists(60)
+        assert "pl_risk_new" in _find("new")
+        risk._pipelines.append("pl_risk_newer")
+        _age_cached_lists(60)
+        runs = _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl_risk_newer"}))
+        assert "DOES NOT EXIST" not in runs and "NOTE: it is in factory 'adf-risk'" in runs
+        assert fin.list_calls == ["adf-fin"] * 3 and risk.list_calls == ["adf-risk"] * 3
+    finally:
+        restore()
+
+
+def test_a_pipeline_deleted_after_its_factory_was_listed_does_not_exist() -> None:
+    """A cached list says it exists but no run does: one GET settles which is true."""
+    fin = _FakeClient(pipelines=["pl_fin_load"])
+    risk = _FakeClient(definitions={n: _Definition([], name=n) for n in ("pl_gone", "pl_idle")})
+    restore = _two_factories(fin, risk, default=None)
+    try:
+        assert "pl_gone" in _find("gone")
+        _age_cached_lists(60)
+        idle = _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl_idle"}))
+        assert "DOES NOT EXIST" not in idle and "NOTE: it is in factory 'adf-risk'" in idle
+        assert risk.list_calls == ["adf-risk"]  # the GET confirmed it; nothing re-listed
+        del risk._definitions["pl_gone"]
+        gone = _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl_gone"}))
+        assert "'pl_gone' DOES NOT EXIST" in gone and "NOTE: it is in factory" not in gone
+    finally:
+        restore()
+
+
+def test_closing_the_adf_resources_drops_the_cached_lists() -> None:
+    fin = _FakeClient(pipelines=["pl_load"])
+    restore = _patch(_Settings({"fin": _FIN}), fin)
+    try:
+        _find("load")
+        assert adf._inventory_cache
+        _run(adf.close_adf_resources())
+        assert not adf._inventory_cache
+        _find("load")
+        assert fin.list_calls == ["adf-fin", "adf-fin"]
+    finally:
+        restore()
+
+
+def test_discovery_reads_definitions_afresh_after_a_find_cached_the_list() -> None:
+    """Cached lists carry no definitions, and discovery matches inside them."""
+    definitions = {
+        "pl_trig": _Definition(
+            name="pl_trig",
+            parameters={"SourceSystem": {"defaultValue": "LOANSYS", "type": "String"}},
+            activities=[],
+        )
+    }
+    runs = {"r": _Run("r", "pl_trig", "Succeeded", run_start=_ago(1), last_updated=_ago(1))}
+    client = _FakeClient(runs=runs, definitions=definitions)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        assert "pl_trig" in _find("trig")
+        cached = [p for _, listed in adf._inventory_cache.values() for p in listed]
+        assert cached and all(p.definition is None for p in cached)
+        result = _run(
+            adf.discover_pipelines_by_source_system.ainvoke({"source_system_name": "LOANSYS"})
+        )
+        assert 'parameters.SourceSystem.defaultValue="LOANSYS"' in result
+        # Matched in a fresh list's definitions, not with one GET per pipeline,
+        # and that list then serves the next call.
+        assert client.list_calls == ["adf-fin", "adf-fin"] and client.definition_cls == []
+        assert "pl_trig" in _find("trig")
+        assert client.list_calls == ["adf-fin", "adf-fin"]
+    finally:
+        restore()
+
+
+# --- run lookups --------------------------------------------------------------
+# A run id carries no factory, so with none named every factory was asked for it
+# in turn, even when the answer before had just listed that run and its factory.
+
+
+def _remote_run_setup(fin: _FakeClient | None = None):
+    """Default factory 'fin'; pl_Remote and its failed run r-risk live in 'risk'."""
+    risk = _FakeClient(
+        pipelines=["pl_Remote"],
+        runs={"r-risk": _Run("r-risk", "pl_Remote", "Failed", run_start=_ago(hours=1))},
+        activities={"r-risk": []},
+    )
+    fin = fin or _FakeClient(pipelines=["pl_fin_load"])
+    return fin, risk, _two_factories(fin, risk)
+
+
+def _list_remote_runs() -> str:
+    return _run(adf.list_pipeline_runs.ainvoke({"pipeline_name": "pl_Remote", "factory": "risk"}))
+
+
+def test_a_run_listed_earlier_is_fetched_from_its_own_factory_only() -> None:
+    fin, _, restore = _remote_run_setup()
+    try:
+        assert "runId=r-risk" in _list_remote_runs()
+        tree = _run(adf.get_pipeline_run_tree.ainvoke({"run_id": "r-risk"}))
+        details = _run(adf.get_pipeline_run_details.ainvoke({"run_id": "r-risk"}))
+        assert "Pipeline family (factory 'adf-risk')" in tree
+        assert details.startswith("[adf-agent] Run r-risk (factory 'adf-risk')")
+        assert fin.run_gets == []  # the default factory was never asked
+    finally:
+        restore()
+
+
+def test_a_run_seen_nowhere_yet_is_asked_of_every_factory_and_read_in_order() -> None:
+    """The default factory's error still decides, as when they were asked one at a time."""
+    _, risk, restore = _remote_run_setup(_FakeClient(fail_on="pipeline_runs.get"))
+    try:
+        result = _run(adf.get_pipeline_run_details.ainvoke({"run_id": "r-risk"}))
+        assert result.startswith("[adf-agent] ERROR fetching run 'r-risk' in factory 'adf-fin'")
+        assert risk.run_gets == [("adf-risk", "r-risk")]  # asked at the same time
+        # Once a listing has shown where it lives, that factory answers.
+        _list_remote_runs()
+        result = _run(adf.get_pipeline_run_details.ainvoke({"run_id": "r-risk"}))
+        assert result.startswith("[adf-agent] Run r-risk (factory 'adf-risk')")
+    finally:
+        restore()
+
+
+def test_a_run_found_early_does_not_wait_on_a_slower_factory() -> None:
+    guid = "11111111-2222-3333-4444-555555555555"
+    runs = {g: _Run(g, "pl_load", "Succeeded", run_start=_ago(hours=1)) for g in ("r1", guid)}
+    fin = _FakeClient(pipelines=["pl_load"], runs=runs, activities={"r1": [], guid: []})
+    risk = _FakeClient(pipelines=["pl_risk_load"])
+
+    async def _never_answers(rg: str, factory: str, run_id: str):
+        await asyncio.Event().wait()
+
+    risk.pipeline_runs.get = _never_answers
+    restore = _two_factories(fin, risk)
+    try:
+        details = _run(asyncio.wait_for(adf.get_pipeline_run_details.ainvoke({"run_id": "r1"}), 5))
+        assert details.startswith("[adf-agent] Run r1 (factory 'adf-fin')")
+        result = _run(
+            asyncio.wait_for(
+                adf.correlate_incident_with_pipeline_runs.ainvoke(
+                    {"incident_text": f"pl_load: see run {guid}", "opened_at": _TICKET_TIME}
+                ),
+                5,
+            )
+        )
+        assert f"RUN ID IN THE TICKET — run {guid} (pl_load, factory 'adf-fin'" in result
+    finally:
+        restore()
+
+
+def test_a_stopped_lookup_stops_asking_every_factory() -> None:
+    """Not only the factory being waited on: the others' GETs are cancelled too."""
+    guid = "11111111-2222-3333-4444-555555555555"
+    fin = _FakeClient(pipelines=["pl_load"])
+    risk = _FakeClient(pipelines=["pl_risk_load"])
+    asked: list[str] = []
+    cancelled: list[str] = []
+
+    def _hangs(factory: str):
+        async def get(rg: str, factory_name: str, run_id: str):
+            asked.append(factory)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(factory)
+                raise
+
+        return get
+
+    fin.pipeline_runs.get, risk.pipeline_runs.get = _hangs("fin"), _hangs("risk")
+
+    async def _cancelled_by_a_stop(call) -> list[str]:
+        task = asyncio.ensure_future(call)
+        while len(asked) < 2:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0.05)  # the GETs see their cancellation
+        # Read before the loop closes: closing it cancels whatever is left anyway.
+        return sorted(cancelled)
+
+    restore = _two_factories(fin, risk)
+    try:
+        for call in (
+            lambda: adf.get_pipeline_run_details.ainvoke({"run_id": "r1"}),
+            lambda: adf.correlate_incident_with_pipeline_runs.ainvoke(
+                {"incident_text": f"pl_load: see run {guid}", "opened_at": _TICKET_TIME}
+            ),
+        ):
+            asked.clear()
+            cancelled.clear()
+            assert _run(asyncio.wait_for(_cancelled_by_a_stop(call()), 5)) == ["fin", "risk"]
+    finally:
+        restore()
+
+
+def test_a_remembered_run_that_aged_out_is_asked_of_every_factory() -> None:
+    _, risk, restore = _remote_run_setup()
+    try:
+        _list_remote_runs()
+        del risk._runs["r-risk"]  # past ADF's 45 days
+        result = _run(adf.get_pipeline_run_details.ainvoke({"run_id": "r-risk"}))
+        assert result.startswith(
+            "[adf-agent] Run 'r-risk' was not found in any configured factory: "
+            "'adf-fin', 'adf-risk'."
+        )
+        # The remembered factory first, then every factory, as before.
+        assert risk.run_gets == [("adf-risk", "r-risk")] * 2
+        assert "r-risk" not in adf._run_factories
+    finally:
+        restore()
+
+
+def test_runs_a_family_walk_printed_are_fetched_from_that_factory() -> None:
+    """Even past the run budget: those are the ids the reader is told to pass back."""
+    runs = {
+        "parent": _Run("parent", "pl_orchestrator", "Failed"),
+        "child": _Run(
+            "child",
+            "pl_load",
+            "Failed",
+            invoked_by=_InvokedBy("Exec", "PipelineActivity", "parent"),
+        ),
+    }
+    activities = {
+        "parent": [
+            _Activity("Run pl_load", "ExecutePipeline", "Failed", output={"pipelineRunId": "child"})
+        ],
+        "child": [],
+    }
+    fin = _FakeClient()
+    risk = _FakeClient(runs=runs, activities=activities)
+    restore = _two_factories(fin, risk)
+    saved_budget = adf._TREE_MAX_RUNS
+    adf._TREE_MAX_RUNS = 1  # only the parent fits
+    try:
+        tree = _run(adf.get_pipeline_run_tree.ainvoke({"run_id": "parent", "factory": "risk"}))
+        assert "run budget reached at runId=child" in tree
+        details = _run(adf.get_pipeline_run_details.ainvoke({"run_id": "child"}))
+        assert details.startswith("[adf-agent] Run child (factory 'adf-risk')")
+        assert fin.run_gets == []
+    finally:
+        adf._TREE_MAX_RUNS = saved_budget
+        restore()
+
+
+def test_the_remembered_runs_are_bounded_and_dropped_on_close() -> None:
+    saved = adf._RUN_MEMO_MAX, adf._RUN_MEMO_PER_CALL
+    adf._RUN_MEMO_MAX, adf._RUN_MEMO_PER_CALL = 3, 2
+    adf._reset_adf_caches()
+    try:
+        adf._remember_runs("rg", "adf", ["a", "b", "c"])
+        assert list(adf._run_factories) == ["a", "b"]  # the first two of one call
+        adf._remember_runs("rg", "adf", ["c", "a"])
+        adf._remember_runs("rg", "adf", ["d"])
+        assert list(adf._run_factories) == ["c", "a", "d"]  # b, the oldest, went first
+        _run(adf.close_adf_resources())
+        assert not adf._run_factories
+    finally:
+        adf._RUN_MEMO_MAX, adf._RUN_MEMO_PER_CALL = saved
+        adf._reset_adf_caches()
+
+
+def test_a_run_tree_reads_its_root_only_once() -> None:
+    """The climb has just fetched the root, and the walk starts from that run.
+
+    Nor does the walk fetch again the runs the climb passed through on its way up.
+    """
+    runs = {
+        "parent": _Run("parent", "pl_orchestrator", "Failed"),
+        "child": _Run(
+            "child",
+            "pl_load",
+            "Failed",
+            invoked_by=_InvokedBy("Exec", "PipelineActivity", "parent"),
+        ),
+    }
+    activities = {
+        "parent": [
+            _Activity("Run pl_load", "ExecutePipeline", "Failed", output={"pipelineRunId": "child"})
+        ],
+        "child": [],
+    }
+    client = _FakeClient(runs=runs, activities=activities)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        for asked, gets in (("parent", ["parent", "child"]), ("child", ["child", "parent"])):
+            client.run_gets.clear()
+            tree = _run(adf.get_pipeline_run_tree.ainvoke({"run_id": asked}))
+            assert "family: 2 pipeline run(s) — 2 Failed" in tree
+            assert [run_id for _, run_id in client.run_gets] == gets
+    finally:
+        restore()
+
+
+# --- factories asked at once --------------------------------------------------
+# find, discovery and correlation worked through the factories one at a time, so
+# an answer waited on the sum of them rather than on the slowest. They now ask
+# every factory at once and read the answers back in the configured order.
+
+_OPS = {"subscription_id": "sub-3", "resource_group": "rg-ops", "factory_name": "adf-ops"}
+
+
+def _wrap_run_queries(client: _FakeClient, wrapper) -> None:
+    """Route each of ``client``'s run queries through ``wrapper(factory, query, answer)``."""
+    query_by_factory = client.pipeline_runs.query_by_factory
+
+    async def _query(rg: str, factory: str, filter_parameters=None):
+        return await wrapper(
+            factory, filter_parameters, lambda: query_by_factory(rg, factory, filter_parameters)
+        )
+
+    client.pipeline_runs.query_by_factory = _query
+
+
+def _hold_until_every_factory_asks(*clients: _FakeClient) -> list[str]:
+    """Hold each run query until every one of ``clients`` has been asked for one.
+
+    A tool asking one factory after another never gets its first answer, and the
+    caller's wait_for turns that into a failure instead of a hang.
+    """
+    asked: list[str] = []
+
+    async def _held(factory: str, query, answer):
+        asked.append(factory)
+        while len(set(asked)) < len(clients):
+            await asyncio.sleep(0.01)
+        return await answer()
+
+    for client in clients:
+        _wrap_run_queries(client, _held)
+    return asked
+
+
+def _loansys_factory(alias: str, **kwargs) -> _FakeClient:
+    """Two LOANSYS pipelines, each with a failed run at the ticket time."""
+    names = [f"pl_loansys_good_{alias}", f"pl_loansys_bad_{alias}"]
+    return _FakeClient(
+        definitions={
+            n: _Definition(name=n, description="loads LOANSYS", activities=[]) for n in names
+        },
+        runs={f"{n}-run": _failed_at(f"{n}-run", n, _TICKET_AT) for n in names},
+        activities={f"{n}-run": [] for n in names},
+        **kwargs,
+    )
+
+
+def _loansys_ticket(*aliases: str) -> str:
+    return "failed: " + ", ".join(f"pl_loansys_{k}_{a}" for a in aliases for k in ("good", "bad"))
+
+
+def test_find_discovery_and_correlation_ask_every_factory_at_once() -> None:
+    fin, risk = _loansys_factory("fin"), _loansys_factory("risk")
+    asked = _hold_until_every_factory_asks(fin, risk)
+    restore = _two_factories(fin, risk)
+    try:
+        for call in (
+            lambda: adf.find_pipelines.ainvoke({"query": "loansys"}),
+            lambda: adf.discover_pipelines_by_source_system.ainvoke(
+                {"source_system_name": "LOANSYS"}
+            ),
+            lambda: adf.correlate_incident_with_pipeline_runs.ainvoke(
+                {"incident_text": _loansys_ticket("fin", "risk"), "opened_at": _TICKET_TIME}
+            ),
+        ):
+            asked.clear()
+            result = _run(asyncio.wait_for(call(), 5))
+            assert "pl_loansys_good_fin-run" in result and "pl_loansys_good_risk-run" in result
+    finally:
+        restore()
+
+
+def test_answers_that_arrive_out_of_order_are_reported_in_factory_order() -> None:
+    """The first factory answers last; rows, errors and problems read as before."""
+    fin, risk = _loansys_factory("fin"), _loansys_factory("risk")
+    ops = _loansys_factory("ops", fail_on="list_by_factory")
+
+    async def _answer(factory: str, query, answer):
+        if factory == "adf-fin":
+            await asyncio.sleep(0.05)
+        name = _pipeline_filter(query)[0]
+        if "_bad_" in name:
+            raise RuntimeError(f"{factory} refused {name}")
+        return await answer()
+
+    for client in (fin, risk):
+        _wrap_run_queries(client, _answer)
+    settings = _Settings({"fin": _FIN, "ops": _OPS, "risk": _RISK})
+    restore = _patch(settings, clients_by_subscription={"sub-1": fin, "sub-2": risk, "sub-3": ops})
+
+    def _in_order(text: str, *parts: str) -> bool:
+        return all(part in text for part in parts) and sorted(parts, key=text.index) == list(parts)
+
+    try:
+        found = _find("loansys")
+        rows = {
+            n: line for line in found.splitlines() for n in ("bad_fin", "bad_risk") if n in line
+        }
+        assert "adf-fin refused pl_loansys_bad_fin" in rows["bad_fin"]
+        assert "adf-risk refused pl_loansys_bad_risk" in rows["bad_risk"]
+
+        discovered = _run(
+            adf.discover_pipelines_by_source_system.ainvoke({"source_system_name": "LOANSYS"})
+        )
+        assert _in_order(discovered, "runId=pl_loansys_good_fin-run", "runId=pl_loansys_good_risk-run")
+        assert _in_order(
+            discovered,
+            "adf-fin/pl_loansys_bad_fin: run-history lookup failed",
+            "adf-ops: could not list pipelines",
+            "adf-risk/pl_loansys_bad_risk: run-history lookup failed",
+        )
+
+        correlated = _correlate(incident_text=_loansys_ticket("fin", "risk"), opened_at=_TICKET_TIME)
+        assert _in_order(
+            correlated,
+            "could not list pipelines in factory 'adf-ops'",
+            "could not query runs in factory 'adf-fin' for 'pl_loansys_bad_fin'",
+            "could not query runs in factory 'adf-risk' for 'pl_loansys_bad_risk'",
+        )
+    finally:
+        restore()
+
+
+def test_one_gate_bounds_the_run_checks_in_flight_across_every_factory() -> None:
+    """Asked at once, but never more than the limit at once, whichever factory."""
+    fin, risk = _loansys_factory("fin"), _loansys_factory("risk")
+    in_flight: list[str] = []
+    peak: list[int] = []
+
+    async def _counted(factory: str, query, answer):
+        in_flight.append(factory)
+        peak.append(len(in_flight))
+        try:
+            await asyncio.sleep(0.01)
+            return await answer()
+        finally:
+            in_flight.remove(factory)
+
+    for client in (fin, risk):
+        _wrap_run_queries(client, _counted)
+    restore = _two_factories(fin, risk)
+    saved = adf._ADF_CONCURRENCY
+    adf._ADF_CONCURRENCY = 3  # four checks across two factories
+    try:
+        for call in (
+            lambda: adf.find_pipelines.ainvoke({"query": "loansys"}),
+            lambda: adf.discover_pipelines_by_source_system.ainvoke(
+                {"source_system_name": "LOANSYS"}
+            ),
+            lambda: adf.correlate_incident_with_pipeline_runs.ainvoke(
+                {"incident_text": _loansys_ticket("fin", "risk"), "opened_at": _TICKET_TIME}
+            ),
+        ):
+            peak.clear()
+            _run(call())
+            assert max(peak) == 3
+    finally:
+        adf._ADF_CONCURRENCY = saved
+        restore()
+
+
+def test_correlation_reads_every_card_at_once_and_prints_them_closest_first() -> None:
+    runs = {
+        f"f{i}": _failed_at(f"f{i}", "pl_load", _TICKET_AT + timedelta(minutes=i))
+        for i in range(adf._INCIDENT_MAX_CARDS)
+    }
+    activities = {r: [_Activity(f"copy_{r}", "Copy", "Failed")] for r in runs}
+    client = _FakeClient(pipelines=["pl_load"], runs=runs, activities=activities)
+    asked: list[str] = []
+    query = client.activity_runs.query_by_pipeline_run
+
+    async def _held(rg: str, factory: str, run_id: str, filter_parameters=None):
+        asked.append(run_id)
+        while len(asked) < len(runs):
+            await asyncio.sleep(0.01)
+        # The closest run's activities come back last.
+        await asyncio.sleep(0.02 * (len(runs) - int(run_id[1:])))
+        return await query(rg, factory, run_id, filter_parameters=filter_parameters)
+
+    client.activity_runs.query_by_pipeline_run = _held
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        result = _run(
+            asyncio.wait_for(
+                adf.correlate_incident_with_pipeline_runs.ainvoke(
+                    {"incident_text": "pl_load failed", "opened_at": _TICKET_TIME}
+                ),
+                5,
+            )
+        )
+        cards = result.split("  FULL DETAIL — run ")[1:]
+        assert [card.split(" ", 1)[0] for card in cards] == list(runs)
+        for run_id, card in zip(runs, cards):
+            assert [r for r in runs if f"copy_{r}" in card] == [run_id]
+    finally:
+        restore()
+
+
+# --- run families fetched ahead -------------------------------------------------
+# The run tree fetched each member, then its activity runs, only when the walk
+# reached it, so a family waited on every one of those calls in turn. A member is
+# now fetched as soon as its id is known, and the walk reads them in its own order.
+
+
+def _family(children: dict[str, list[str]]) -> _FakeClient:
+    """A run family; ``children`` maps a run to the child runs it starts, the root first."""
+    parents = {child: parent for parent, kids in children.items() for child in kids}
+    run_ids = list(dict.fromkeys([*children, *parents]))
+    return _FakeClient(
+        runs={
+            r: _Run(
+                r,
+                f"pl_{r}",
+                "Failed",
+                invoked_by=(
+                    _InvokedBy("Exec", "PipelineActivity", parents[r])
+                    if r in parents
+                    else _InvokedBy("tr_daily", "ScheduleTrigger")
+                ),
+            )
+            for r in run_ids
+        },
+        activities={
+            r: [
+                _Activity(f"Exec_{c}", "ExecutePipeline", "Failed", output={"pipelineRunId": c})
+                for c in children.get(r, [])
+            ]
+            for r in run_ids
+        },
+    )
+
+
+def _wrap_family_calls(client: _FakeClient, wrapper) -> None:
+    """Route each of ``client``'s run GETs and activity queries through ``wrapper``.
+
+    ``wrapper(kind, run_id, answer)`` gets "run" or "activities", the run id, and
+    the call to make for the answer.
+    """
+    get = client.pipeline_runs.get
+    query = client.activity_runs.query_by_pipeline_run
+
+    async def _get(rg: str, factory: str, run_id: str):
+        return await wrapper("run", run_id, lambda: get(rg, factory, run_id))
+
+    async def _query(rg: str, factory: str, run_id: str, filter_parameters=None):
+        return await wrapper(
+            "activities", run_id, lambda: query(rg, factory, run_id, filter_parameters)
+        )
+
+    client.pipeline_runs.get = _get
+    client.activity_runs.query_by_pipeline_run = _query
+
+
+def _members(tree: str) -> list[str]:
+    """The run id on every node line of a run tree, in order."""
+    nodes = [ln for ln in tree.splitlines() if ") → " in ln]
+    return [ln.split("(runId=", 1)[1].split(")", 1)[0] for ln in nodes]
+
+
+def test_a_family_s_runs_are_fetched_at_once() -> None:
+    """Every child run is asked for before any of them has answered."""
+    client = _family({"root": ["a", "b", "c"]})
+    asked: set[str] = set()
+
+    async def _held(kind: str, run_id: str, answer):
+        if run_id != "root":
+            asked.add(run_id)
+            while len(asked) < 3:
+                await asyncio.sleep(0.01)
+        return await answer()
+
+    _wrap_family_calls(client, _held)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        tree = _run(asyncio.wait_for(adf.get_pipeline_run_tree.ainvoke({"run_id": "root"}), 5))
+        assert _members(tree) == ["root", "a", "b", "c"]
+        assert "family: 4 pipeline run(s) — 4 Failed" in tree
+    finally:
+        restore()
+
+
+def test_the_runs_the_climb_fetched_are_not_fetched_again() -> None:
+    """Asked from a grandchild, its path up to the root is queried at once and read once."""
+    client = _family({"root": ["mid", "ok"], "mid": ["leaf"]})
+    queried: list[str] = []
+
+    async def _held(kind: str, run_id: str, answer):
+        if kind == "activities":
+            queried.append(run_id)
+            # A walk that waits for the root's activities before asking for mid's
+            # never gets an answer.
+            while not {"root", "mid", "leaf"} <= set(queried):
+                await asyncio.sleep(0.01)
+        return await answer()
+
+    _wrap_family_calls(client, _held)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        tree = _run(asyncio.wait_for(adf.get_pipeline_run_tree.ainvoke({"run_id": "leaf"}), 5))
+        assert _members(tree) == ["root", "mid", "leaf", "ok"]
+        # leaf by the lookup, mid and root by the climb, ok once the root named it
+        assert sorted(run_id for _, run_id in client.run_gets) == ["leaf", "mid", "ok", "root"]
+        assert sorted(queried) == ["leaf", "mid", "ok", "root"]
+    finally:
+        restore()
+
+
+def test_a_family_reads_the_same_whatever_order_its_runs_arrive_in() -> None:
+    """Fetched ahead or when the walk reaches them, runs print in the walk's order.
+
+    With a run budget of 5 the runs fetched ahead (the root's four children) are
+    not all the runs the walk shows (a's two children come before b), so this
+    reads both kinds — and with one call at a time, the walk's own fetches share
+    the gate with the fetches ahead.
+    """
+    shape = {"root": ["a", "b", "c", "d"], "a": ["a1", "a2"], "c": ["c1"]}
+    walk_order = ["root", "a", "a1", "a2", "b", "c", "c1", "d"]
+    trees = []
+    saved = adf._TREE_MAX_RUNS, adf._ADF_CONCURRENCY
+    try:
+        for concurrency, first_last in ((8, False), (8, True), (1, False)):
+            client = _family(shape)
+
+            async def _arriving(kind: str, run_id: str, answer, first_last=first_last):
+                if first_last:  # the walk's first runs answer last
+                    await asyncio.sleep(0.005 * (len(walk_order) - walk_order.index(run_id)))
+                return await answer()
+
+            _wrap_family_calls(client, _arriving)
+            restore = _patch(_Settings({"fin": _FIN}), client)
+            adf._TREE_MAX_RUNS, adf._ADF_CONCURRENCY = 5, concurrency
+            try:
+                tree = adf.get_pipeline_run_tree.ainvoke({"run_id": "root"})
+                trees.append(_run(asyncio.wait_for(tree, 5)))
+            finally:
+                restore()
+    finally:
+        adf._TREE_MAX_RUNS, adf._ADF_CONCURRENCY = saved
+    assert trees[1] == trees[0] and trees[2] == trees[0]
+    assert _members(trees[0]) == ["root", "a", "a1", "a2", "b"]
+    budget_lines = [ln for ln in trees[0].splitlines() if "[run budget reached at runId=" in ln]
+    assert [ln.split("at runId=")[1].split(" ")[0] for ln in budget_lines] == ["c", "d"]
+    assert "family: 5 pipeline run(s) — 5 Failed (partial" in trees[0]
+
+
+def test_a_member_that_could_not_be_read_is_reported_where_the_walk_reaches_it() -> None:
+    """A failed fetch ahead is reported in its place in the tree, whenever it failed."""
+    client = _family({"root": ["a", "b", "c"]})
+
+    async def _failing(kind: str, run_id: str, answer):
+        if (kind, run_id) in {("run", "a"), ("activities", "b")}:
+            await asyncio.sleep(0.05 if run_id == "a" else 0)  # the first to fail, last
+            raise RuntimeError(f"{run_id} denied: (403) AuthorizationFailed")
+        return await answer()
+
+    _wrap_family_calls(client, _failing)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        tree = _run(adf.get_pipeline_run_tree.ainvoke({"run_id": "root"}))
+        parts = [
+            "    ✗ runId=a: ERROR fetching: a denied: (403) AuthorizationFailed",
+            "    pl_b (runId=b) → Failed",
+            "      activities: ERROR querying: b denied: (403) AuthorizationFailed",
+            "    pl_c (runId=c) → Failed",
+        ]
+        assert all(part in tree for part in parts)
+        assert sorted(parts, key=tree.index) == parts
+        assert "family: 3 pipeline run(s) — 3 Failed" in tree  # a was never read
+    finally:
+        restore()
+
+
+def test_no_run_the_walk_cannot_show_is_fetched() -> None:
+    """Fetching ahead stops at the run budget and at the depth cap, as the walk does."""
+    calls: list[tuple[str, str]] = []
+
+    async def _recorded(kind: str, run_id: str, answer):
+        calls.append((kind, run_id))
+        await asyncio.sleep(0.01)  # time for a stray fetch ahead to make its call
+        return await answer()
+
+    wide = {"root": [f"c{i}" for i in range(1, 11)]}
+    deep = {"root": ["a"], "a": ["b"], "b": ["c"]}
+    handler = _Capture()
+    adf.logger.addHandler(handler)
+    saved = adf._TREE_MAX_RUNS, adf._TREE_MAX_DEPTH, adf.logger.level
+    adf.logger.setLevel(logging.INFO)
+    try:
+        for shape, asked, max_runs, max_depth, fetched in (
+            (wide, "root", 3, 8, ["c1", "c2", "root"]),
+            (deep, "root", 25, 2, ["a", "root"]),
+            # The climb fetched b, a and the root; b's child c is at depth 3.
+            (deep, "b", 25, 3, ["a", "b", "root"]),
+        ):
+            calls.clear()
+            handler.records.clear()
+            client = _family(shape)
+            _wrap_family_calls(client, _recorded)
+            restore = _patch(_Settings({"fin": _FIN}), client)
+            adf._TREE_MAX_RUNS, adf._TREE_MAX_DEPTH = max_runs, max_depth
+            try:
+                _run(adf.get_pipeline_run_tree.ainvoke({"run_id": asked}))
+            finally:
+                restore()
+            assert sorted(run_id for kind, run_id in calls if kind == "run") == fetched
+            assert sorted(run_id for kind, run_id in calls if kind == "activities") == fetched
+            # Counts a fetch ahead however soon it was cancelled, calls or not.
+            logged = [r.getMessage() for r in handler.records]
+            assert [m for m in logged if m.startswith("ADF run tree ")] == [
+                (
+                    f"ADF run tree adf-fin: {len(fetched)} run(s) fetched ahead, "
+                    "0 call(s) made as the walk reached a run"
+                )
+            ]
+    finally:
+        adf._TREE_MAX_RUNS, adf._TREE_MAX_DEPTH, level = saved
+        adf.logger.setLevel(level)
+        adf.logger.removeHandler(handler)
+
+
+def test_fetches_the_walk_did_not_use_are_cancelled() -> None:
+    """A run fetched ahead that the walk never reached does not outlive the answer."""
+    client = _family({"root": ["a", "b"], "a": ["a1"]})
+    cancelled: list[str] = []
+
+    async def _held(kind: str, run_id: str, answer):
+        if run_id == "b":
+            try:
+                await asyncio.Event().wait()  # never answers
+            except asyncio.CancelledError:
+                cancelled.append(run_id)
+                raise
+        return await answer()
+
+    async def _tree_then_settle() -> tuple[str, list[str]]:
+        tree = await adf.get_pipeline_run_tree.ainvoke({"run_id": "root"})
+        # Read here: asyncio.run cancels whatever is left once this returns.
+        await asyncio.sleep(0.01)
+        return tree, list(cancelled)
+
+    _wrap_family_calls(client, _held)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    saved = adf._TREE_MAX_RUNS
+    adf._TREE_MAX_RUNS = 3  # root, a and a1; b is fetched ahead but never shown
+    try:
+        tree, cancelled_then = _run(asyncio.wait_for(_tree_then_settle(), 5))
+        assert "run budget reached at runId=b" in tree
+        assert cancelled_then == ["b"]
+    finally:
+        adf._TREE_MAX_RUNS = saved
+        restore()
+
+
+def test_one_gate_bounds_a_family_s_calls_in_flight() -> None:
+    """Fetched ahead or when the walk reaches them, a family's calls share one gate."""
+    # The root and its eight children use up the run budget of 9 ahead, so the
+    # walk fetches g1 itself while the other children are still being fetched.
+    client = _family({"root": [f"c{i}" for i in range(1, 9)], "c1": ["g1"]})
+    in_flight: list[str] = []
+    peak: list[int] = []
+
+    async def _counted(kind: str, run_id: str, answer):
+        in_flight.append(run_id)
+        peak.append(len(in_flight))
+        try:
+            await asyncio.sleep(0.01)
+            return await answer()
+        finally:
+            in_flight.remove(run_id)
+
+    _wrap_family_calls(client, _counted)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    saved = adf._TREE_MAX_RUNS, adf._ADF_CONCURRENCY
+    adf._TREE_MAX_RUNS, adf._ADF_CONCURRENCY = 9, 3
+    try:
+        tree = _run(adf.get_pipeline_run_tree.ainvoke({"run_id": "root"}))
+        assert _members(tree) == ["root", "c1", "g1", "c2", "c3", "c4", "c5", "c6", "c7"]
+        assert "family: 9 pipeline run(s) — 9 Failed (partial" in tree
+        assert max(peak) == 3
+    finally:
+        adf._TREE_MAX_RUNS, adf._ADF_CONCURRENCY = saved
+        restore()
+
+
+def test_a_stopped_run_tree_cancels_its_fetches_ahead() -> None:
+    """Stopping the answer mid-walk does not leave the family's fetches running."""
+    client = _family({"root": ["a", "b", "c"]})
+    held: list[str] = []
+    cancelled: list[str] = []
+
+    async def _held(kind: str, run_id: str, answer):
+        if run_id == "root":
+            return await answer()
+        held.append(run_id)
+        try:
+            await asyncio.Event().wait()  # never answers
+        except asyncio.CancelledError:
+            cancelled.append(run_id)
+            raise
+
+    async def _stopped_mid_walk() -> list[str]:
+        tree = asyncio.ensure_future(adf.get_pipeline_run_tree.ainvoke({"run_id": "root"}))
+        while len(held) < 3:
+            await asyncio.sleep(0.01)
+        tree.cancel()
+        try:
+            await tree
+        except asyncio.CancelledError:
+            pass
+        # Read here: asyncio.run cancels whatever is left once this returns.
+        await asyncio.sleep(0.01)
+        return sorted(cancelled)
+
+    _wrap_family_calls(client, _held)
+    restore = _patch(_Settings({"fin": _FIN}), client)
+    try:
+        assert _run(asyncio.wait_for(_stopped_mid_walk(), 5)) == ["a", "b", "c"]
+    finally:
+        restore()
 
 
 # --- wiring -------------------------------------------------------------------

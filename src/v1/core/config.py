@@ -85,6 +85,17 @@ class Settings(BaseSettings):
             "explicitly."
         ),
     )
+    adf_inventory_cache_seconds: float = Field(
+        default=600.0,
+        alias="ADF_INVENTORY_CACHE_SECONDS",
+        description=(
+            "How long a factory's pipeline list is reused across ADF tool calls. "
+            "Listing a factory with thousands of pipelines is slow, and without "
+            "reuse every pipeline lookup by name lists every factory again. An answer "
+            "that a pipeline does NOT exist is always checked against a list at most "
+            "30 s old. 0 or less turns the reuse off."
+        ),
+    )
     # Azure Data Lake Storage (adls-agent)
     adls_agent_enabled: bool = Field(
         default=False,

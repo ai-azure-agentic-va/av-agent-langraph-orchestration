@@ -25,10 +25,12 @@ from __future__ import annotations
 import asyncio
 import difflib
 import functools
+import itertools
 import logging
 import re
 import time
-from collections import Counter
+from collections import Counter, OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
@@ -438,6 +440,68 @@ def _monitor_footer(
     return [f"{indent}in ADF Studio: [{label}](<{url}>)", f"{indent}({_MONITOR_WINDOW_HINT})"]
 
 
+# Which factory each run id was seen in. A run id carries no factory, so with
+# none named every factory was asked in turn, even for a run the previous answer
+# had just listed. A run never moves between factories, so a remembered one is
+# wrong only once the run ages out of ADF's history, and a miss there falls back
+# to asking every factory. Bounded, oldest out first; per call only the first
+# _RUN_MEMO_PER_CALL are noted, since an analytics query can page 20,000 runs
+# and the newest are the ones an answer prints.
+_RUN_MEMO_MAX = 20_000
+_RUN_MEMO_PER_CALL = 1_000
+# run id (casefolded) → (resource group, factory), both casefolded.
+_run_factories: OrderedDict[str, tuple[str, str]] = OrderedDict()
+
+
+def _remember_runs(rg: str, factory_name: str, run_ids) -> None:
+    """Note that each of ``run_ids`` lives in this factory."""
+    where = (rg.casefold(), factory_name.casefold())
+    for run_id in itertools.islice(filter(None, run_ids), _RUN_MEMO_PER_CALL):
+        key = str(run_id).casefold()
+        _run_factories[key] = where
+        _run_factories.move_to_end(key)
+    while len(_run_factories) > _RUN_MEMO_MAX:
+        _run_factories.popitem(last=False)
+
+
+async def _fetch_run(sub: str, rg: str, name: str, run_id: str):
+    """``(client, run)`` from one factory, None when it does not hold the run, else the error."""
+    try:
+        client = await _client(sub)
+        return client, await client.pipeline_runs.get(rg, name, run_id)
+    except ResourceNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - each caller words its own failure
+        return exc
+
+
+def _fetch_everywhere(run_id: str, targets) -> list[asyncio.Task]:
+    """Start ``_fetch_run`` in every target at once.
+
+    Callers await the tasks in ``targets`` order and stop at the first outcome
+    that settles their answer, so they say exactly what asking one factory at a
+    time said, in the time of the slowest factory they needed rather than the sum
+    of all of them. They cancel the rest when done.
+    """
+    return [asyncio.create_task(_fetch_run(sub, rg, name, run_id)) for _, sub, rg, name in targets]
+
+
+async def _remembered_run(run_id: str, targets):
+    """``_locate_run``'s answer from the factory ``run_id`` was seen in, or None."""
+    seen = _run_factories.get(run_id.casefold())
+    target = next((t for t in targets if (t[2].casefold(), t[3].casefold()) == seen), None)
+    if seen is None or target is None:
+        return None
+    alias, sub, rg, name = target
+    outcome = await _fetch_run(sub, rg, name, run_id)
+    if outcome is None:  # aged out of ADF's history
+        _run_factories.pop(run_id.casefold(), None)
+    if not isinstance(outcome, tuple):
+        return None
+    logger.info("ADF run %s: fetched from factory %s, where it was seen before", run_id, name)
+    return alias, sub, rg, name, *outcome
+
+
 async def _locate_run(run_id: str, factory: str):
     """Find which configured factory a run id lives in.
 
@@ -450,7 +514,9 @@ async def _locate_run(run_id: str, factory: str):
 
     An EXPLICIT alias is honoured and a miss there stays a miss — quietly
     answering about a different factory than the one asked for would be worse
-    than the error. Only an empty ``factory`` sweeps, default first.
+    than the error. Only an empty ``factory`` sweeps, default first: a run seen
+    before is fetched from its own factory, any other is asked of every factory
+    at once, and the answers are read in that order.
 
     Returns ``(alias, sub, rg, name, client, run)`` — the run itself comes back
     because locating it already fetched it — or a model-facing string naming
@@ -471,21 +537,27 @@ async def _locate_run(run_id: str, factory: str):
     if not explicit:
         default = _default_alias()
         targets = sorted(targets, key=lambda target: target[0] != default)
+        if located := await _remembered_run(run_id, targets):
+            return located
 
     missed: list[str] = []
-    for alias, sub, rg, name in targets:
-        try:
-            client = await _client(sub)
-            run = await client.pipeline_runs.get(rg, name, run_id)
-        except ResourceNotFoundError:
-            missed.append(alias)
-            continue
-        except Exception as exc:  # noqa: BLE001 - surfaced to the model as text
-            return (
-                f"[adf-agent] ERROR fetching run '{run_id}' in factory "
-                f"{_factory_label(alias)}: {_truncate(exc)}"
-            )
-        return alias, sub, rg, name, client, run
+    tasks = _fetch_everywhere(run_id, targets)
+    try:
+        for (alias, sub, rg, name), task in zip(targets, tasks):
+            outcome = await task
+            if outcome is None:
+                missed.append(alias)
+                continue
+            if isinstance(outcome, Exception):
+                return (
+                    f"[adf-agent] ERROR fetching run '{run_id}' in factory "
+                    f"{_factory_label(alias)}: {_truncate(outcome)}"
+                )
+            _remember_runs(rg, name, [run_id])
+            return alias, sub, rg, name, *outcome
+    finally:
+        for task in tasks:
+            task.cancel()
 
     searched = ", ".join(_factory_label(alias) for alias in missed)
     # Facts only: the subagent copies tool lines into its answer, and a hint to
@@ -572,8 +644,9 @@ async def _client(subscription_id: str) -> DataFactoryManagementClient:
 
 
 async def close_adf_resources() -> None:
-    """Close every cached ADF management client (idempotent)."""
+    """Close every cached ADF management client and drop the cached pipeline lists (idempotent)."""
     global _clients
+    _reset_adf_caches()
     clients, _clients = _clients, {}
     for subscription_id, client in clients.items():
         try:
@@ -709,7 +782,7 @@ def _normalize_status(status: str) -> str:
     )
 
 
-def _run_filters(pipeline_name: str, status: str) -> list[RunQueryFilter]:
+def _run_filters(pipeline_name: str, status: str | tuple[str, ...]) -> list[RunQueryFilter]:
     """Build a run-query filter for each server-supported criterion supplied.
 
     Only fields ADF's Pipeline Runs Query API actually filters on are sent:
@@ -717,25 +790,30 @@ def _run_filters(pipeline_name: str, status: str) -> list[RunQueryFilter]:
     operand (the old "TriggeredByName" matched nothing), so trigger matching is
     done client-side from each run's invocation info — see ``_extract_trigger_name``.
 
+    Several statuses go as ONE ``In`` filter: ADF ANDs the filters it is sent,
+    so an Equals filter per status would match nothing.
+
     ``values`` is the kwarg name on azure-mgmt-datafactory 9.2.0 (the pinned
     version); 10.x renamed it to ``values_property`` and rejects this one, so
     every run query here fails loudly on an unreviewed SDK bump — by design.
     """
     criteria = (
-        ("PipelineName", pipeline_name),
-        ("Status", status),
+        ("PipelineName", [pipeline_name]),
+        ("Status", [status] if isinstance(status, str) else list(status)),
     )
     return [
-        RunQueryFilter(operand=operand, operator="Equals", values=[value])
-        for operand, value in criteria
-        if value
+        RunQueryFilter(
+            operand=operand, operator="In" if len(values) > 1 else "Equals", values=values
+        )
+        for operand, values in criteria
+        if any(values)
     ]
 
 
 def _runs_params(
-    pipeline_name: str, after: datetime, before: datetime, status: str = ""
+    pipeline_name: str, after: datetime, before: datetime, status: str | tuple[str, ...] = ""
 ) -> RunFilterParameters:
-    """A RunFilterParameters for one pipeline/status over [after, before), newest first."""
+    """A RunFilterParameters for one pipeline/status(es) over [after, before), newest first."""
     return RunFilterParameters(
         last_updated_after=after,
         last_updated_before=before,
@@ -757,13 +835,22 @@ def _query_text(params) -> str:
 
 
 async def _page_runs(
-    client, rg: str, factory_name: str, params, max_pages: int, *, quiet: bool = False
+    client,
+    rg: str,
+    factory_name: str,
+    params,
+    max_pages: int,
+    *,
+    quiet: bool = False,
+    stop: Callable[[list], bool] | None = None,
 ) -> tuple[list, bool]:
     """Page a run query up to ``max_pages``; returns (runs, fully_paged).
 
     ``fully_paged`` is True only when ADF stopped handing back a continuation
     token before the cap — the signal callers use to decide whether a count is a
-    total or a lower bound.
+    total or a lower bound. ``stop`` ends the paging as soon as the runs read so
+    far are all its caller needs, and that counts as fully paged too: the pages
+    left cannot change that caller's answer.
 
     Every query is logged with what it asked for and what came back, because "no
     runs" is the answer users most often dispute and the one that is hardest to
@@ -777,7 +864,7 @@ async def _page_runs(
     runs = list(resp.value or [])
     token = getattr(resp, "continuation_token", None)
     pages = 1
-    while token and pages < max_pages:
+    while token and pages < max_pages and not (stop is not None and stop(runs)):
         params.continuation_token = token
         resp = await client.pipeline_runs.query_by_factory(
             rg, factory_name, filter_parameters=params
@@ -785,7 +872,17 @@ async def _page_runs(
         runs.extend(resp.value or [])
         token = getattr(resp, "continuation_token", None)
         pages += 1
-    complete = token is None
+    # Asked again rather than remembered from the loop: the page at the cap
+    # may be the one that held enough.
+    enough = token is not None and stop is not None and stop(runs)
+    complete = token is None or enough
+    _remember_runs(rg, factory_name, (getattr(run, "run_id", None) for run in runs))
+    if token is None:
+        outcome = "complete"
+    elif enough:
+        outcome = "stopped early, enough read"
+    else:
+        outcome = f"TRUNCATED at the {max_pages}-page cap"
     level = logging.DEBUG if quiet else (logging.INFO if complete else logging.WARNING)
     logger.log(
         level,
@@ -794,7 +891,7 @@ async def _page_runs(
         _query_text(params),
         len(runs),
         pages,
-        "complete" if complete else f"TRUNCATED at the {max_pages}-page cap",
+        outcome,
         (time.perf_counter() - started) * 1000,
     )
     return runs, complete
@@ -841,16 +938,26 @@ async def _latest_run(
 
 
 async def _latest_runs(
-    sub: str, rg: str, factory_name: str, names: list[str], after: datetime, before: datetime
+    sub: str,
+    rg: str,
+    factory_name: str,
+    names: list[str],
+    after: datetime,
+    before: datetime,
+    *,
+    gate: asyncio.Semaphore | None = None,
 ) -> tuple[dict, dict]:
     """``_latest_run`` for many pipelines of one factory, a bounded few at a time.
 
     Returns ``(latest, errors)``: name -> newest run (None when it has no run in
     the window), and name -> error text for the checks that failed. A failed
     check is NOT reported as "no run" — callers say they could not tell.
+    ``gate`` bounds the checks in flight; a caller checking several factories
+    at once passes one gate to all of them.
     """
     started = time.perf_counter()
-    gate = asyncio.Semaphore(_ADF_CONCURRENCY)
+    if gate is None:
+        gate = asyncio.Semaphore(_ADF_CONCURRENCY)
     client = await _client(sub)
 
     async def _one(name: str):
@@ -1129,6 +1236,113 @@ async def _factory_inventory(
     return pipelines
 
 
+# A factory's pipeline list is reused across tool calls for
+# ADF_INVENTORY_CACHE_SECONDS. With no default factory named and one of the
+# factories holding thousands of pipelines, listing them all is slow, and every
+# lookup by name listed every factory again: three follow-ups about pipelines the
+# previous answer had just located cost three full listings. A list that SHOWS a
+# pipeline is trusted while it is cached. An answer that rests on a pipeline NOT
+# being listed is re-checked against a list at most this many seconds old
+# (_reread_stale), and a listed pipeline whose run query comes back empty is
+# confirmed with one GET (_still_published), so a pipeline published or deleted
+# a minute ago is not answered from an old list.
+_INVENTORY_RECHECK_SECONDS = 30.0
+
+# (alias, subscription, resource group, factory) → (time.monotonic() at the end
+# of the read, pipelines). Kept WITHOUT definitions: those are each pipeline's
+# whole JSON, and only discovery reads them, so discovery lists afresh.
+_inventory_cache: dict[tuple, tuple[float, list[_PipelineInfo]]] = {}
+# The read in flight per key, so calls made together share one listing.
+_inventory_reads: dict[tuple, asyncio.Task] = {}
+
+
+def _inventory_ttl() -> float:
+    # getattr: a settings object without the field (the tests' fake) keeps the default.
+    return float(getattr(settings, "adf_inventory_cache_seconds", 600.0) or 0.0)
+
+
+def _inventory_age(target) -> float | None:
+    """Seconds since ``target``'s cached list was read; None when none is cached."""
+    entry = _inventory_cache.get(tuple(target))
+    return None if entry is None else time.monotonic() - entry[0]
+
+
+def _fresh_inventory(target) -> list[_PipelineInfo] | None:
+    """``target``'s cached list while it is within ADF_INVENTORY_CACHE_SECONDS, else None."""
+    age = _inventory_age(target)
+    if age is None or age > _inventory_ttl():
+        return None
+    return _inventory_cache[tuple(target)][1]
+
+
+def _forget_inventory(target) -> bool:
+    """Drop ``target``'s cached list; True when there was one."""
+    return _inventory_cache.pop(tuple(target), None) is not None
+
+
+def _store_inventory(key: tuple, task: asyncio.Task) -> None:
+    """Cache what a finished read listed. A failed read is not cached."""
+    # Read first, always: a failure nobody else awaited must not be logged as
+    # "exception was never retrieved".
+    failed = task.cancelled() or task.exception() is not None
+    if _inventory_reads.get(key) is not task:  # superseded, or reset while in flight
+        return
+    del _inventory_reads[key]
+    if not failed:
+        light = [replace(p, definition=None) for p in task.result()]
+        _inventory_cache[key] = (time.monotonic(), light)
+
+
+async def _cached_inventory(
+    alias: str,
+    sub: str,
+    rg: str,
+    factory_name: str,
+    *,
+    max_age: float | None = None,
+    definitions: bool = False,
+) -> list[_PipelineInfo]:
+    """``_factory_inventory``, reused while the cached list is younger than ``max_age``.
+
+    ``max_age`` defaults to ADF_INVENTORY_CACHE_SECONDS. Calls that need the
+    same list at the same time share one read. ``definitions=True`` reads
+    afresh, since the cache keeps none.
+    """
+    ttl = _inventory_ttl()
+    if ttl <= 0:
+        return await _factory_inventory(alias, sub, rg, factory_name)
+    key = (alias, sub, rg, factory_name)
+    age = _inventory_age(key)
+    limit = ttl if max_age is None else min(ttl, max_age)
+    if age is not None and age <= limit and not definitions:
+        cached = _inventory_cache[key][1]
+        logger.info(
+            "ADF inventory %s: cached, %d pipeline(s), age %.0f s", factory_name, len(cached), age
+        )
+        return cached
+    loop = asyncio.get_running_loop()
+    task = _inventory_reads.get(key)
+    # A task from another event loop cannot be awaited here; the tests run each
+    # call in a fresh loop.
+    if task is None or task.get_loop() is not loop:
+        task = loop.create_task(_factory_inventory(alias, sub, rg, factory_name))
+        _inventory_reads[key] = task
+        task.add_done_callback(functools.partial(_store_inventory, key))
+    # Shielded: one caller being cancelled must not cancel the read the others await.
+    return await asyncio.shield(task)
+
+
+def _reset_adf_caches() -> None:
+    """Forget every cached pipeline list and remembered run, and cancel the reads in flight."""
+    reads = list(_inventory_reads.values())
+    _inventory_reads.clear()
+    _inventory_cache.clear()
+    _run_factories.clear()
+    for task in reads:
+        if not task.done() and not task.get_loop().is_closed():
+            task.cancel()
+
+
 def _configured_targets() -> list[tuple[str, str, str, str]]:
     """Every usable configured factory, the default first.
 
@@ -1145,12 +1359,17 @@ def _configured_targets() -> list[tuple[str, str, str, str]]:
     return targets
 
 
-async def _inventories(targets: list) -> tuple[dict, dict]:
-    """``_factory_inventory`` for several factories at once: (alias -> list, alias -> error)."""
+async def _inventories(
+    targets: list, *, max_age: float | None = None, definitions: bool = False
+) -> tuple[dict, dict]:
+    """``_cached_inventory`` for several factories at once: (alias -> list, alias -> error)."""
 
     async def _one(alias: str, sub: str, rg: str, name: str):
         try:
-            return alias, await _factory_inventory(alias, sub, rg, name), None
+            listed = await _cached_inventory(
+                alias, sub, rg, name, max_age=max_age, definitions=definitions
+            )
+            return alias, listed, None
         except Exception as exc:  # noqa: BLE001 - reported per factory
             logger.warning(
                 "ADF inventory %s failed (%s): %s", name, type(exc).__name__, _truncate(exc)
@@ -1165,6 +1384,55 @@ async def _inventories(targets: list) -> tuple[dict, dict]:
         else:
             failed[alias] = error
     return found, failed
+
+
+async def _reread_stale(targets: list, inventories: dict, failed: dict) -> tuple[dict, dict] | None:
+    """Re-read the lists a NEGATIVE answer rests on that are over _INVENTORY_RECHECK_SECONDS old.
+
+    Returns ``(inventories, failed)`` updated and in ``targets`` order, or None
+    when every list read was already that fresh, so the answer stands. A
+    factory that could not be read is not retried.
+    """
+    stale = [
+        t
+        for t in targets
+        if t[0] in inventories and (_inventory_age(t) or 0.0) > _INVENTORY_RECHECK_SECONDS
+    ]
+    if not stale:
+        return None
+    logger.info("ADF inventory re-read before a negative answer: %s", [t[3] for t in stale])
+    fresh, errors = await _inventories(stale, max_age=_INVENTORY_RECHECK_SECONDS)
+    lists, problems = {**inventories, **fresh}, {**failed, **errors}
+    return (
+        {t[0]: lists[t[0]] for t in targets if t[0] in lists and t[0] not in errors},
+        {t[0]: problems[t[0]] for t in targets if t[0] in problems},
+    )
+
+
+async def _still_published(hit: _PipelineHit) -> bool:
+    """False only when ``hit`` came from a list over _INVENTORY_RECHECK_SECONDS old and ADF
+    no longer has it.
+
+    A cached list that names a pipeline can be wrong in one way that changes an
+    answer: the pipeline was deleted since, and an empty run list would then be
+    answered as an idle pipeline instead of a missing one. One GET settles it.
+    Any error other than a 404 keeps the list's answer.
+    """
+    target = (hit.alias, hit.sub, hit.rg, hit.factory_name)
+    if (_inventory_age(target) or 0.0) <= _INVENTORY_RECHECK_SECONDS:
+        return True
+    try:
+        await (await _client(hit.sub)).pipelines.get(hit.rg, hit.factory_name, hit.name)
+    except ResourceNotFoundError:
+        logger.info(
+            "ADF pipeline %r is no longer in %s; its cached list is dropped",
+            hit.name, hit.factory_name,
+        )
+        _forget_inventory(target)
+        return False
+    except Exception as exc:  # noqa: BLE001 - cannot tell, so the list stands
+        logger.info("ADF check that %r still exists skipped: %s", hit.name, _truncate(exc))
+    return True
 
 
 def _name_matches(pipelines: list[_PipelineInfo], wanted: str) -> tuple[list[_PipelineInfo], str]:
@@ -1273,7 +1541,11 @@ def _missing_pipeline_text(
 
 
 async def _locate_pipeline(
-    requested: str, factory: str, consequence: str = _MISSING_FROM_RUNS
+    requested: str,
+    factory: str,
+    consequence: str = _MISSING_FROM_RUNS,
+    *,
+    max_age: float | None = None,
 ) -> _PipelineHit | str | None:
     """Find the pipeline a caller meant, across every configured factory.
 
@@ -1298,9 +1570,7 @@ async def _locate_pipeline(
         return str(exc)
     others = [t for t in _configured_targets() if primary is None or t[0] != primary[0]]
     targets = [primary, *others] if primary else others
-    inventories, failed = await _inventories(targets)
-    if not inventories:
-        return None
+    inventories, failed = await _inventories(targets, max_age=max_age)
     by_alias = {t[0]: t for t in targets}
 
     def _hit(p: _PipelineInfo, how: str) -> _PipelineHit:
@@ -1329,46 +1599,64 @@ async def _locate_pipeline(
             + ["  Each is a separate pipeline, and which one is meant decides the answer."]
         )
 
-    matches, how = _name_matches(inventories.get(primary[0], []) if primary else [], wanted)
-    if len(matches) == 1:
-        return _hit(matches[0], how)
-    if matches:
-        return _choice(
-            matches,
-            f"'{wanted}' matches {len(matches)} pipelines in factory "
-            f"{_factory_label(primary[0])} once case and separators are ignored",
-        )
-
-    elsewhere: list[tuple[int, _PipelineInfo, str]] = []
-    for alias, *_ in others:
-        found, tier = _name_matches(inventories.get(alias, []), wanted)
-        elsewhere += [(_MATCH_TIERS.index(tier), p, tier) for p in found]
-    if elsewhere:
-        best = min(rank for rank, _, _ in elsewhere)
-        elsewhere = [(rank, p, tier) for rank, p, tier in elsewhere if rank == best]
-        if explicit:
-            logger.info(
-                "ADF pipeline %r not in named factory %s; found elsewhere", requested, primary[3]
+    def _decide() -> _PipelineHit | str | None:
+        if not inventories:
+            return None
+        matches, how = _name_matches(inventories.get(primary[0], []) if primary else [], wanted)
+        if len(matches) == 1:
+            return _hit(matches[0], how)
+        if matches:
+            return _choice(
+                matches,
+                f"'{wanted}' matches {len(matches)} pipelines in factory "
+                f"{_factory_label(primary[0])} once case and separators are ignored",
             )
+
+        elsewhere: list[tuple[int, _PipelineInfo, str]] = []
+        for alias, *_ in others:
+            found, tier = _name_matches(inventories.get(alias, []), wanted)
+            elsewhere += [(_MATCH_TIERS.index(tier), p, tier) for p in found]
+        if elsewhere:
+            best = min(rank for rank, _, _ in elsewhere)
+            elsewhere = [(rank, p, tier) for rank, p, tier in elsewhere if rank == best]
+            if explicit:
+                logger.info(
+                    "ADF pipeline %r not in named factory %s; found elsewhere",
+                    requested, primary[3],
+                )
+                return _choice(
+                    [p for _, p, _ in elsewhere],
+                    f"Pipeline '{wanted}' DOES NOT EXIST in factory {_factory_label(primary[0])}, "
+                    "the factory that was named — it exists in another configured factory",
+                )
+            if len({p.name.casefold() for _, p, _ in elsewhere}) == 1:
+                _, p, tier = elsewhere[0]
+                return _hit(p, tier)
             return _choice(
                 [p for _, p, _ in elsewhere],
-                f"Pipeline '{wanted}' DOES NOT EXIST in factory {_factory_label(primary[0])}, "
-                "the factory that was named — it exists in another configured factory",
+                f"Pipeline '{wanted}' is not in the default factory "
+                f"{_factory_label(primary[0])} and exists in more than one other factory"
+                if primary
+                else f"'{wanted}' matches more than one pipeline across the configured factories",
             )
-        if len({p.name.casefold() for _, p, _ in elsewhere}) == 1:
-            _, p, tier = elsewhere[0]
-            return _hit(p, tier)
-        return _choice(
-            [p for _, p, _ in elsewhere],
-            f"Pipeline '{wanted}' is not in the default factory "
-            f"{_factory_label(primary[0])} and exists in more than one other factory"
-            if primary
-            else f"'{wanted}' matches more than one pipeline across the configured factories",
-        )
 
-    searched = [t[0] for t in targets if t[0] in inventories]
-    logger.info("ADF pipeline %r not found in %s", requested, [_factory_name(a) for a in searched])
-    return _missing_pipeline_text(wanted, searched, failed, inventories, consequence)
+        searched = [t[0] for t in targets if t[0] in inventories]
+        logger.info(
+            "ADF pipeline %r not found in %s", requested, [_factory_name(a) for a in searched]
+        )
+        return _missing_pipeline_text(wanted, searched, failed, inventories, consequence)
+
+    # Every text answer (the pipeline is missing, is not in the factory named, or
+    # the name is ambiguous) rests on what a list did NOT show, so it is decided
+    # again on lists no older than _INVENTORY_RECHECK_SECONDS. _hit and _decide
+    # read the re-read lists through the closure.
+    located = _decide()
+    if isinstance(located, str):
+        reread = await _reread_stale(targets, inventories, failed)
+        if reread is not None:
+            inventories, failed = reread
+            located = _decide()
+    return located
 
 
 def _resolution_note(
@@ -1468,6 +1756,10 @@ async def _retarget(
     """
     if hit is None:
         hit = await _locate_pipeline(requested or pipeline_name, factory)
+    if isinstance(hit, _PipelineHit) and not await _still_published(hit):
+        hit = await _locate_pipeline(
+            requested or pipeline_name, factory, max_age=_INVENTORY_RECHECK_SECONDS
+        )
     if not isinstance(hit, _PipelineHit):
         return hit
     queried = (alias, pipeline_name)
@@ -1530,22 +1822,30 @@ async def _copies_note(
     For an answer from one factory's copy that no lookup has described: when
     that copy had runs, nothing said another factory publishes the same name,
     and its runs went unmentioned (QA-07: pl-100-00 is in example-data-factory and
-    fileShare-to-ADF). One GET per other factory, which ADF answers for any
-    casing, and a probe for ``status`` runs in the same window for each copy.
-    Without ``after`` (a definition, which has no window) nothing is probed.
-    A factory that can't be read is left out.
+    fileShare-to-ADF). A factory whose pipeline list is cached is checked in
+    that list; any other gets one GET, which ADF answers for any casing. Then a
+    probe for ``status`` runs in the same window for each copy. Without
+    ``after`` (a definition, which has no window) nothing is probed. A factory
+    that can't be read is left out.
     """
     if not pipeline_name:
         return ""
 
     async def _copy(other: str, sub: str, rg: str, factory_name: str):
-        try:
-            found = await (await _client(sub)).pipelines.get(rg, factory_name, pipeline_name)
-        except Exception as exc:  # noqa: BLE001 - no copy, or none that can be seen
-            if not isinstance(exc, ResourceNotFoundError):
-                logger.info("ADF copy check in %s skipped: %s", factory_name, _truncate(exc))
-            return None
-        name = getattr(found, "name", None) or pipeline_name
+        listed = _fresh_inventory((other, sub, rg, factory_name))
+        if listed is not None:
+            wanted = pipeline_name.casefold()
+            name = next((p.name for p in listed if p.name.casefold() == wanted), None)
+            if name is None:
+                return None
+        else:
+            try:
+                found = await (await _client(sub)).pipelines.get(rg, factory_name, pipeline_name)
+            except Exception as exc:  # noqa: BLE001 - no copy, or none that can be seen
+                if not isinstance(exc, ResourceNotFoundError):
+                    logger.info("ADF copy check in %s skipped: %s", factory_name, _truncate(exc))
+                return None
+            name = getattr(found, "name", None) or pipeline_name
         hit = _PipelineHit(other, sub, rg, factory_name, name, "", "exact")
         return hit, await _probe_runs(hit, after, before, status) if after else None
 
@@ -2108,8 +2408,12 @@ async def list_pipelines(
         alias, sub, rg, name = _resolve_factory(factory)
     except _InputError as exc:
         return str(exc)
+    target = (alias, sub, rg, name)
     try:
-        inventory = await _factory_inventory(alias, sub, rg, name)
+        inventory = await _cached_inventory(*target)
+        if not inventory and (_inventory_age(target) or 0.0) > _INVENTORY_RECHECK_SECONDS:
+            # "Has no pipelines" is a negative answer: never from an old list.
+            inventory = await _cached_inventory(*target, max_age=_INVENTORY_RECHECK_SECONDS)
     except Exception as exc:  # surface auth/permission errors to the model as text
         return (
             f"[adf-agent] ERROR listing pipelines in factory {_factory_label(alias)}: "
@@ -2290,20 +2594,28 @@ async def find_pipelines(query: str, factory: str = "") -> str:
     if not targets:
         return "[adf-agent] No Data Factory is configured (ADF_FACTORY_MAPPING is empty)."
 
+    order = {t[0]: i for i, t in enumerate(targets)}
+
+    def _ranked(inventories: dict) -> list:
+        ranked = []
+        for alias, pipelines in inventories.items():
+            for p in pipelines:
+                found = _find_rank(p, query, words)
+                if found is not None:
+                    folder, name = p.folder.casefold(), p.name.casefold()
+                    ranked.append((found[0], order[alias], folder, name, p, found[1]))
+        ranked.sort(key=lambda item: item[:4])
+        return ranked
+
     inventories, failed = await _inventories(targets)
+    ranked = _ranked(inventories)
+    # "No pipeline matches" is a negative answer: never from an old list.
+    if not ranked and (reread := await _reread_stale(targets, inventories, failed)):
+        inventories, failed = reread
+        ranked = _ranked(inventories)
     unread = "; ".join(f"{_factory_label(a)} ({error})" for a, error in failed.items())
     if not inventories:
         return f"[adf-agent] Could NOT search: no pipeline list could be read — {unread}"
-    order = {t[0]: i for i, t in enumerate(targets)}
-    ranked = []
-    for alias, pipelines in inventories.items():
-        for p in pipelines:
-            found = _find_rank(p, query, words)
-            if found is not None:
-                ranked.append(
-                    (found[0], order[alias], p.folder.casefold(), p.name.casefold(), p, found[1])
-                )
-    ranked.sort(key=lambda item: item[:4])
     searched = sum(len(v) for v in inventories.values())
     logger.info(
         "ADF find_pipelines %r: %d match(es) among %d pipeline(s) in %d factory(ies), "
@@ -2335,15 +2647,24 @@ async def find_pipelines(query: str, factory: str = "") -> str:
         now = datetime.now(timezone.utc)
         after = now - timedelta(days=_ACTIVE_RUN_DAYS)
         by_alias = {t[0]: t for t in targets}
-        latest: dict = {}
-        errors: dict = {}
-        for alias in {item[4].alias for item in shown}:
+        # Every factory's rows are checked at once, so the answer waits on the
+        # slowest factory rather than on each in turn. One gate still bounds the
+        # checks in flight for the whole answer.
+        gate = asyncio.Semaphore(_ADF_CONCURRENCY)
+
+        async def _checked(alias: str) -> tuple[str, dict, dict]:
             _, sub, rg, name = by_alias[alias]
             names = [item[4].name for item in shown if item[4].alias == alias]
             try:
-                runs, errs = await _latest_runs(sub, rg, name, names, after, now)
+                runs, errs = await _latest_runs(sub, rg, name, names, after, now, gate=gate)
             except Exception as exc:  # noqa: BLE001 - reported on the rows
                 runs, errs = {}, {n: _truncate(exc) for n in names}
+            return alias, runs, errs
+
+        latest: dict = {}
+        errors: dict = {}
+        aliases = dict.fromkeys(item[4].alias for item in shown)
+        for alias, runs, errs in await asyncio.gather(*(_checked(a) for a in aliases)):
             latest.update({(alias, n): r for n, r in runs.items()})
             errors.update({(alias, n): e for n, e in errs.items()})
 
@@ -2641,15 +2962,19 @@ _TREE_MAX_DEPTH = 8
 _TREE_MAX_RUNS = 25
 
 
-async def _climb_to_root(client, rg: str, factory_name: str, run_id: str, run=None):
+async def _climb_to_root(client, rg: str, factory_name: str, run_id: str, run=None) -> list:
     """Follow ``invoked_by.pipeline_run_id`` up to the run a trigger started.
 
     A failed run found via ``list_pipeline_runs`` is usually a CHILD, so the
     family can only be built after climbing to its root first. ``run`` lets a
     caller that already fetched the starting run skip re-fetching it.
+
+    Returns every run fetched on the way, the starting run first and the root
+    last, so the walk back down does not fetch them again.
     """
     if run is None:
         run = await client.pipeline_runs.get(rg, factory_name, run_id)
+    climbed = [run]
     visited = {run_id}
     while _is_child_run(run):
         parent_id = run.invoked_by.pipeline_run_id
@@ -2657,11 +2982,100 @@ async def _climb_to_root(client, rg: str, factory_name: str, run_id: str, run=No
             break
         visited.add(parent_id)
         run = await client.pipeline_runs.get(rg, factory_name, parent_id)
-    return run
+        climbed.append(run)
+    _remember_runs(rg, factory_name, visited)
+    return climbed
+
+
+class _RunFamily:
+    """One family's runs and activity runs, fetched ahead of ``_walk_run_tree``.
+
+    The walk goes one run at a time, depth first, because its run budget and its
+    lines follow that order. Fetching each run and then its activity runs as the
+    walk reached them made a 25-run family wait on ~50 calls in a row. Here a run
+    is fetched as soon as its id is known: the runs the climb fetched at once, and
+    a run's child runs as soon as its activity runs arrive. The walk takes each
+    run from here, so it prints exactly what it printed when it fetched them.
+
+    At most _TREE_MAX_RUNS runs are fetched ahead, the most the walk can show, and
+    none at or past _TREE_MAX_DEPTH, where it shows none. A run the walk reaches
+    that was not fetched ahead is fetched then, as before. One gate bounds every
+    call, ahead or not, to _ADF_CONCURRENCY in flight.
+    """
+
+    def __init__(self, client, rg: str, factory_name: str) -> None:
+        self._client = client
+        self._rg = rg
+        self._factory_name = factory_name
+        self._gate = asyncio.Semaphore(_ADF_CONCURRENCY)
+        self._ahead: dict[str, asyncio.Task] = {}
+        self._calls_in_turn = 0
+
+    def fetch_ahead(self, run_id: str, depth: int, run=None) -> None:
+        """Start fetching ``run_id``, reached at ``depth``, if the walk can show it."""
+        if run_id in self._ahead or depth >= _TREE_MAX_DEPTH or len(self._ahead) >= _TREE_MAX_RUNS:
+            return
+        self._ahead[run_id] = asyncio.create_task(self._fetch(run_id, depth, run))
+
+    async def _fetch(self, run_id: str, depth: int, run) -> tuple:
+        """``(run, activity runs)``; either is the exception fetching it raised instead."""
+        async with self._gate:
+            if run is None:
+                try:
+                    run = await self._client.pipeline_runs.get(self._rg, self._factory_name, run_id)
+                except Exception as exc:  # noqa: BLE001 - the walk reports it in place
+                    return exc, None
+            try:
+                acts = await _activity_runs_for(
+                    self._client, self._rg, self._factory_name, run, run_id
+                )
+            except Exception as exc:  # noqa: BLE001 - the walk reports it in place
+                return run, exc
+        for a in acts:
+            if child_run_id := _child_run_id(a):
+                self.fetch_ahead(child_run_id, depth + 1)
+        return run, acts
+
+    async def run(self, run_id: str):
+        """``run_id``'s run; raises what fetching it raised."""
+        ahead = self._ahead.get(run_id)
+        if ahead is None:
+            self._calls_in_turn += 1
+            async with self._gate:
+                return await self._client.pipeline_runs.get(self._rg, self._factory_name, run_id)
+        run, _ = await ahead
+        if isinstance(run, Exception):
+            raise run
+        return run
+
+    async def activities(self, run_id: str, run) -> list:
+        """``run``'s activity runs; raises what querying them raised."""
+        ahead = self._ahead.get(run_id)
+        if ahead is None:
+            self._calls_in_turn += 1
+            async with self._gate:
+                return await _activity_runs_for(
+                    self._client, self._rg, self._factory_name, run, run_id
+                )
+        _, acts = await ahead
+        if isinstance(acts, Exception):
+            raise acts
+        return acts
+
+    def close(self) -> None:
+        """Cancel the fetches the walk did not get to."""
+        for ahead in self._ahead.values():
+            ahead.cancel()
+        logger.info(
+            "ADF run tree %s: %d run(s) fetched ahead, %d call(s) made as the walk reached a run",
+            self._factory_name,
+            len(self._ahead),
+            self._calls_in_turn,
+        )
 
 
 async def _walk_run_tree(
-    client,
+    family: _RunFamily,
     sub: str,
     rg: str,
     factory_name: str,
@@ -2669,7 +3083,12 @@ async def _walk_run_tree(
     depth: int,
     budget: dict,
     stats: Counter,
+    run=None,
 ) -> list[str]:
+    # ``run`` is the run itself when the caller already has it (the root, which
+    # the climb just fetched), so it is not fetched a second time. Every other
+    # run, and every run's activity runs, come from ``family``.
+    #
     # ``sub`` is carried purely to build each node's link. A whole family lives
     # in ONE factory (Execute Pipeline cannot cross factories), so it is the same
     # triple at every depth — passed down rather than closed over so the walker
@@ -2704,16 +3123,17 @@ async def _walk_run_tree(
         ]
     budget["runs"] -= 1
 
-    try:
-        run = await client.pipeline_runs.get(rg, factory_name, run_id)
-    except Exception as exc:
-        # Linked despite the failure: the id came from the PARENT's activity, so
-        # the run is known to exist in this factory — the fetch is what broke,
-        # and Studio is where the reader confirms which of the two it was.
-        return [
-            f"{indent}✗ runId={run_id}: ERROR fetching: {_truncate(exc)} "
-            f"{_run_link(sub, rg, factory_name, run_id)}"
-        ]
+    if run is None:
+        try:
+            run = await family.run(run_id)
+        except Exception as exc:
+            # Linked despite the failure: the id came from the PARENT's activity,
+            # so the run is known to exist in this factory — the fetch is what
+            # broke, and Studio is where the reader confirms which of the two it was.
+            return [
+                f"{indent}✗ runId={run_id}: ERROR fetching: {_truncate(exc)} "
+                f"{_run_link(sub, rg, factory_name, run_id)}"
+            ]
 
     stats[run.status] += 1
     # Each node carries its times: "what happened in run X" lands here, and an
@@ -2731,7 +3151,7 @@ async def _walk_run_tree(
     ]
 
     try:
-        acts = await _activity_runs_for(client, rg, factory_name, run, run_id)
+        acts = await family.activities(run_id, run)
     except Exception as exc:
         lines.append(f"{indent}  activities: ERROR querying: {_truncate(exc)}")
         return lines
@@ -2760,9 +3180,12 @@ async def _walk_run_tree(
                 lines.append(f"{indent}      {error_line}")
         child_run_id = _child_run_id(a)
         if child_run_id:
+            # Noted even past the run budget: those ids are the ones the reader is
+            # told to pass back, and Execute Pipeline cannot cross factories.
+            _remember_runs(rg, factory_name, [child_run_id])
             lines.extend(
                 await _walk_run_tree(
-                    client, sub, rg, factory_name, child_run_id, depth + 1, budget, stats
+                    family, sub, rg, factory_name, child_run_id, depth + 1, budget, stats
                 )
             )
 
@@ -2806,7 +3229,7 @@ async def get_pipeline_run_tree(run_id: str, factory: str = "") -> str:
     alias, sub, rg, name, client, run = located
 
     try:
-        root = await _climb_to_root(client, rg, name, requested, run)
+        climbed = await _climb_to_root(client, rg, name, requested, run)
     except Exception as exc:
         # Linked, unlike the fetch errors elsewhere: _locate_run already FOUND
         # this run in this factory, so the failure is somewhere up the parent
@@ -2816,12 +3239,20 @@ async def get_pipeline_run_tree(run_id: str, factory: str = "") -> str:
             f"{_factory_label(alias)}: {_truncate(exc)} "
             f"{_run_link(sub, rg, name, requested)}"
         )
+    root = climbed[-1]
 
     budget = {"runs": _TREE_MAX_RUNS, "truncated": False}
     stats: Counter = Counter()
-    lines = await _walk_run_tree(
-        client, sub, rg, name, root.run_id, depth=0, budget=budget, stats=stats
-    )
+    family = _RunFamily(client, rg, name)
+    try:
+        # The root at depth 0, then each run climbed through, one level deeper.
+        for depth, member in enumerate(reversed(climbed)):
+            family.fetch_ahead(member.run_id, depth, member)
+        lines = await _walk_run_tree(
+            family, sub, rg, name, root.run_id, depth=0, budget=budget, stats=stats, run=root
+        )
+    finally:
+        family.close()
 
     header = f"[adf-agent] Pipeline family (factory {_factory_label(alias)})"
     if root.run_id != requested:
@@ -2985,6 +3416,10 @@ async def get_pipeline_structure(pipeline_name: str, factory: str = "") -> str:
             "findings separately."
         )
         hit = await _locate_pipeline(requested, factory, _MISSING_FROM_STRUCTURE)
+        if isinstance(hit, _PipelineHit) and not await _still_published(hit):
+            hit = await _locate_pipeline(
+                requested, factory, _MISSING_FROM_STRUCTURE, max_age=_INVENTORY_RECHECK_SECONDS
+            )
         if isinstance(hit, str):
             return hit + ("\n " + kb_tail if "DOES NOT EXIST" in hit else "")
         if hit is None:
@@ -3097,18 +3532,16 @@ async def discover_pipelines_by_source_system(
                 return None, _truncate(exc)
 
     # All factories listed at once: the sweep's cost is then the slowest
-    # factory's list, not the sum of them.
-    inventories, unlisted = await _inventories(targets)
-    for alias, sub, rg, factory_name in targets:
+    # factory's list, not the sum of them. Listed afresh, since cached lists
+    # carry no definitions.
+    inventories, unlisted = await _inventories(targets, definitions=True)
+
+    async def _scan(alias: str, sub: str, rg: str, factory_name: str) -> tuple:
+        """One factory's matches, their latest runs, and its failed definition reads."""
         started = time.perf_counter()
-        if alias in unlisted:
-            errors.append(f"{_factory_name(alias)}: could not list pipelines: {unlisted[alias]}")
-            continue
         client = await _client(sub)
         inventory = inventories[alias]
         pipeline_names = [p.name for p in inventory]
-
-        searched_definitions += len(pipeline_names)
         unread = [p.name for p in inventory if p.definition is None]
         fetched = await asyncio.gather(
             *(
@@ -3122,11 +3555,12 @@ async def discover_pipelines_by_source_system(
         )
         definitions = {p.name: (p.definition, None) for p in inventory}
         definitions.update(zip(unread, fetched))
+        unreadable: list[str] = []
         matches: list[tuple[str, list[str], bool]] = []
         for pipeline_name in pipeline_names:
             definition, error = definitions[pipeline_name]
             if error is not None:
-                errors.append(
+                unreadable.append(
                     f"definition lookup failed for {_factory_name(alias)}/{pipeline_name}: "
                     f"{error}"
                 )
@@ -3135,7 +3569,6 @@ async def discover_pipelines_by_source_system(
             name_hit = needle_lower in pipeline_name.lower()
             if needle_lower not in blob and not name_hit:
                 continue
-            matched_definitions += 1
             sections = _match_evidence(definition, needle_lower)
             if name_hit and "name" not in sections:
                 sections = ["name"] + sections
@@ -3167,6 +3600,22 @@ async def discover_pipelines_by_source_system(
             sum(1 for run, error in latest_runs if run is not None),
             (time.perf_counter() - started) * 1000,
         )
+        return unreadable, matches, latest_runs
+
+    # Every factory is searched at once through the one gate above, so the
+    # answer waits on the slowest factory rather than on each in turn. The
+    # results are read back in the configured order: rows and errors come out
+    # as they did when the factories were searched one at a time.
+    listed = [t for t in targets if t[0] not in unlisted]
+    scans = dict(zip((t[0] for t in listed), await asyncio.gather(*(_scan(*t) for t in listed))))
+    for alias, sub, rg, factory_name in targets:
+        if alias in unlisted:
+            errors.append(f"{_factory_name(alias)}: could not list pipelines: {unlisted[alias]}")
+            continue
+        unreadable, matches, latest_runs = scans[alias]
+        searched_definitions += len(inventories[alias])
+        matched_definitions += len(matches)
+        errors.extend(unreadable)
         for (pipeline_name, sections, view_hit), (latest, error) in zip(matches, latest_runs):
             if error is not None:
                 errors.append(
@@ -3791,6 +4240,9 @@ _ESTIMATE_MIN_HISTORY_RUNS = 3
 # before this cap, so the ceiling hides rows, never the number of them.
 _ESTIMATE_MAX_ACTIVE_ROWS = 10
 
+# The statuses an estimate counts as running, in the order ADF lists them.
+_ESTIMATE_ACTIVE_STATUSES = tuple(s for s in _RUN_STATUSES if s in _ACTIVE_STATUSES)
+
 # How a finished run reads in the "nothing is running" status line. Each terminal
 # state gets its own verb: "completed" must not be allowed to imply "succeeded"
 # (see _TERMINAL_STATUSES), and a cancellation is neither.
@@ -3851,6 +4303,55 @@ def _eta_clause(start: datetime, elapsed_ms: float, stats: dict) -> str:
     )
 
 
+def _enough_history(runs: list) -> bool:
+    """True once the newest runs read hold the completed runs an estimate averages.
+
+    Only runs with a start time count. One without sorts after every run that
+    has one, so it is averaged only when too few of those exist, and then the
+    query pages to the end anyway.
+    """
+    dated = [r for r in _completed_runs(runs) if getattr(r, "run_start", None) is not None]
+    return len(dated) >= _ESTIMATE_HISTORY_RUNS
+
+
+async def _estimate_runs(
+    client, rg: str, factory_name: str, pipeline_name: str, after: datetime, before: datetime
+) -> tuple[list, bool]:
+    """The runs an estimate uses, and whether they are all of them.
+
+    Paging the whole window to use about 30 runs took 50–117 s on an
+    every-minute pipeline. So two queries run at once. One reads every active
+    run in the window, to the end, so their count is exact. The other reads the
+    newest runs until the newest _ESTIMATE_HISTORY_RUNS completed ones are in
+    hand; runs come newest first, so no later page holds a newer one. A run both
+    return is kept once, as the newest-runs query read it.
+    """
+    newest, active = await asyncio.gather(
+        _page_runs(
+            client,
+            rg,
+            factory_name,
+            _runs_params(pipeline_name, after, before),
+            _ANALYTICS_MAX_PAGES,
+            stop=_enough_history,
+        ),
+        _query_all_runs(
+            client,
+            rg,
+            factory_name,
+            _runs_params(pipeline_name, after, before, _ESTIMATE_ACTIVE_STATUSES),
+        ),
+        return_exceptions=True,
+    )
+    for outcome in (newest, active):
+        if isinstance(outcome, BaseException):
+            raise outcome
+    (runs, newest_complete), (active_runs, active_complete) = newest, active
+    seen = {run.run_id for run in runs}
+    runs += [run for run in active_runs if run.run_id not in seen]
+    return runs, newest_complete and active_complete
+
+
 @tool
 async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -> str:
     """Report a pipeline's current state and, if running, estimate completion.
@@ -3881,7 +4382,7 @@ async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -
     now = datetime.now(timezone.utc)
     after = now - timedelta(days=_ADF_HISTORY_DAYS)
     try:
-        runs, complete = await _query_all_runs(client, rg, name, _runs_params(pipeline_name, after, now))
+        runs, complete = await _estimate_runs(client, rg, name, pipeline_name, after, now)
     except Exception as exc:
         return (
             f"[adf-agent] ERROR querying runs in factory {_factory_label(alias)}: "
@@ -3903,9 +4404,7 @@ async def get_pipeline_runtime_estimate(pipeline_name: str, factory: str = "") -
             )
             try:
                 client = await _client(sub)
-                runs, complete = await _query_all_runs(
-                    client, rg, name, _runs_params(pipeline_name, after, now)
-                )
+                runs, complete = await _estimate_runs(client, rg, name, pipeline_name, after, now)
             except Exception as exc:
                 return (
                     f"{note}[adf-agent] ERROR querying runs in factory "
@@ -5190,29 +5689,33 @@ async def correlate_incident_with_pipeline_runs(
     by_alias = {alias: (sub, rg, name) for alias, sub, rg, name in targets}
 
     # --- Step 1: which of the ticket's names are REAL pipelines, and where ----
-    known: dict[str, list[str]] = {}
-    real_names: set[str] = set()
-    problems: list[str] = []
     wanted = {_squash(n) for n in explicit}
     squashed = _squash(text)
-    for alias, sub, rg, name in targets:
-        try:
-            client = await _client(sub)
-            names = [p.name async for p in client.pipelines.list_by_factory(rg, name) if p.name]
-        except Exception as exc:  # noqa: BLE001 - surfaced to the model as text
-            problems.append(
-                f"    - could not list pipelines in factory {_factory_label(alias)}: "
-                f"{_truncate(exc)} — nothing was correlated there."
-            )
-            continue
-        real_names.update(names)
-        known[alias] = sorted(
-            n for n in names if _squash(n) in wanted or _mentions(text, n, squashed)
-        )
-
-    real_squashed = {_squash(n) for n in real_names}
     claimed = list(dict.fromkeys(_CLAIMED_PIPELINE_RE.findall(text) + explicit))
-    absent = [c for c in claimed if _squash(c) not in real_squashed]
+
+    def _step1(inventories: dict, unlisted: dict) -> tuple[dict, list, list]:
+        known: dict[str, list[str]] = {}
+        problems: list[str] = []
+        real_squashed: set[str] = set()
+        for alias, *_ in targets:
+            if alias in unlisted:
+                problems.append(
+                    f"    - could not list pipelines in factory {_factory_label(alias)}: "
+                    f"{unlisted[alias]} — nothing was correlated there."
+                )
+                continue
+            names = [p.name for p in inventories[alias]]
+            real_squashed.update(map(_squash, names))
+            known[alias] = sorted(
+                n for n in names if _squash(n) in wanted or _mentions(text, n, squashed)
+            )
+        return known, problems, [c for c in claimed if _squash(c) not in real_squashed]
+
+    inventories, unlisted = await _inventories(targets)
+    known, problems, absent = _step1(inventories, unlisted)
+    # "Not in Data Factory" is a negative answer: never from an old list.
+    if absent and (reread := await _reread_stale(targets, inventories, unlisted)):
+        known, problems, absent = _step1(*reread)
     # "Not in Data Factory" is only known when every factory's list was read.
     searched = "any searched factory" if len(known) == len(targets) else (
         "the factories that could be read"
@@ -5227,28 +5730,42 @@ async def correlate_incident_with_pipeline_runs(
     if anchor is not None:
         after = anchor - timedelta(minutes=before_m)
         before = anchor + timedelta(minutes=after_m)
-        for alias, sub, rg, name in targets:
-            if alias not in known:  # its pipeline list failed above
-                continue
-            # A factory-wide sweep only when the ticket named nothing real
-            # ANYWHERE; otherwise a factory that matched no name stays quiet
-            # instead of burying the match in unrelated failures.
-            queries = known[alias] or ([""] if sweep else [])
-            for pipe in queries:
+        # A factory-wide sweep only when the ticket named nothing real
+        # ANYWHERE; otherwise a factory that matched no name stays quiet
+        # instead of burying the match in unrelated failures. A factory whose
+        # pipeline list failed above is not queried at all.
+        queries = [
+            (alias, sub, rg, name, pipe)
+            for alias, sub, rg, name in targets
+            if alias in known
+            for pipe in known[alias] or ([""] if sweep else [])
+        ]
+        gate = asyncio.Semaphore(_ADF_CONCURRENCY)
+
+        async def _failed_runs(sub: str, rg: str, name: str, pipe: str) -> tuple:
+            async with gate:
                 try:
                     client = await _client(sub)
-                    runs, complete = await _query_all_runs(
-                        client, rg, name, _runs_params(pipe, after, before, "Failed")
-                    )
+                    params = _runs_params(pipe, after, before, "Failed")
+                    return await _query_all_runs(client, rg, name, params), None
                 except Exception as exc:  # noqa: BLE001 - surfaced to the model as text
-                    scope = f" for '{pipe}'" if pipe else ""
-                    problems.append(
-                        f"    - could not query runs in factory {_factory_label(alias)}"
-                        f"{scope}: {_truncate(exc)}"
-                    )
-                    continue
-                truncated = truncated or not complete
-                hits.extend((alias, r) for r in runs if r.status == "Failed")
+                    return None, exc
+
+        # Every query starts at once, with the gate bounding how many are in
+        # flight. The answers are read back in the order the queries used to run
+        # in, so the hits and the problem lines come out as before.
+        outcomes = await asyncio.gather(*(_failed_runs(*q[1:]) for q in queries))
+        for (alias, *_, pipe), (result, exc) in zip(queries, outcomes):
+            if exc is not None:
+                scope = f" for '{pipe}'" if pipe else ""
+                problems.append(
+                    f"    - could not query runs in factory {_factory_label(alias)}"
+                    f"{scope}: {_truncate(exc)}"
+                )
+                continue
+            runs, complete = result
+            truncated = truncated or not complete
+            hits.extend((alias, r) for r in runs if r.status == "Failed")
 
     ranked: list[tuple[str, object]] = []
     seen_ids: set = set()
@@ -5388,8 +5905,13 @@ async def correlate_incident_with_pipeline_runs(
                 "window, further from the ticket time."
             )
 
+    carded = ranked[:_INCIDENT_MAX_CARDS]
+    # Every card's activity query runs at once; the cards still print closest first.
+    blocks = await asyncio.gather(
+        *(_activity_block(*by_alias[alias], run, "    ") for alias, run in carded)
+    )
     carded_ids = set()
-    for alias, run in ranked[:_INCIDENT_MAX_CARDS]:
+    for (alias, run), block in zip(carded, blocks):
         sub, rg, name = by_alias[alias]
         carded_ids.add(getattr(run, "run_id", None))
         out.append("")
@@ -5402,7 +5924,7 @@ async def correlate_incident_with_pipeline_runs(
             f"{_run_link(sub, rg, name, run.run_id)}"
         )
         out.extend(_run_fields(run, "    "))
-        out.extend(await _activity_block(sub, rg, name, run, "    "))
+        out.extend(block)
     if len(ranked) > _INCIDENT_MAX_CARDS:
         # Says un-EXPANDED, never un-examined: these runs were fetched, ranked and
         # (up to the row cap) printed above. Without the line the asymmetry between
@@ -5443,55 +5965,62 @@ async def correlate_incident_with_pipeline_runs(
             )
             continue
         asked: list[str] = []
-        for alias, sub, rg, name in targets:
-            try:
-                client = await _client(sub)
-                run = await client.pipeline_runs.get(rg, name, run_id)
-            except ResourceNotFoundError:
-                asked.append(_factory_label(alias))
-                continue  # not this factory's run; try the next one
-            except Exception as exc:  # noqa: BLE001 - surfaced to the model as text
-                # No link: this is a per-factory probe in a search that is still
-                # running, and the next factory may well hold the run. A link to
-                # the factory that just errored would name the wrong one.
-                problems.append(
-                    f"    - could not fetch run '{run_id}' in factory "
-                    f"{_factory_label(alias)}: {_truncate(exc)}"
-                )
-                continue
-            gap = f", failed {_gap_text(_failure_moment(run), anchor)}" if anchor else ""
-            # Built inside the loop, from the factory the search actually landed
-            # in — this is the branch that RESOLVES which factory owns a GUID
-            # pasted into a ticket, so any other triple would undo that work.
-            out.append(
-                f"  RUN ID IN THE TICKET — run {run_id} ({run.pipeline_name}, factory "
-                f"{_factory_label(alias)}, {run.status}{gap if run.status == 'Failed' else ''}) "
-                f"{_run_link(sub, rg, name, run_id)}"
-            )
-            out.extend(_run_fields(run, "    "))
-            out.extend(await _activity_block(sub, rg, name, run, "    "))
-            break
-        else:
-            # Deliberately unlinked: every configured factory was asked and none
-            # owns this id, so there is no factory a link could be built from.
-            # Guessing one would manufacture the "the run does not exist" page
-            # that this message is carefully NOT claiming. The factories asked
-            # are named on this line: an answer that dropped the 'factories
-            # searched' header said "not found" with no scope (UC8-05, run l5).
-            # One whose lookup failed is not among them; it is under the
-            # lookups that did not complete.
-            if asked:
+        # Every factory is asked at once and the answers read in order, so the
+        # lines below are the ones asking them one at a time gave.
+        tasks = _fetch_everywhere(run_id, targets)
+        try:
+            for (alias, sub, rg, name), task in zip(targets, tasks):
+                outcome = await task
+                if outcome is None:
+                    asked.append(_factory_label(alias))
+                    continue  # not this factory's run; try the next one
+                if isinstance(outcome, Exception):
+                    # No link: this is a per-factory probe in a search that is still
+                    # running, and the next factory may well hold the run. A link to
+                    # the factory that just errored would name the wrong one.
+                    problems.append(
+                        f"    - could not fetch run '{run_id}' in factory "
+                        f"{_factory_label(alias)}: {_truncate(outcome)}"
+                    )
+                    continue
+                _, run = outcome
+                _remember_runs(rg, name, [run_id])
+                gap = f", failed {_gap_text(_failure_moment(run), anchor)}" if anchor else ""
+                # Built inside the loop, from the factory the search actually landed
+                # in — this is the branch that RESOLVES which factory owns a GUID
+                # pasted into a ticket, so any other triple would undo that work.
                 out.append(
-                    f"  RUN ID IN THE TICKET — {run_id}: NOT FOUND in {', '.join(asked)}. "
-                    f"ADF keeps runs for about {_ADF_HISTORY_DAYS} days, so a run older than "
-                    "that, or one in a factory this deployment does not search, is not found "
-                    "either; this does not show that the run never existed."
+                    f"  RUN ID IN THE TICKET — run {run_id} ({run.pipeline_name}, factory "
+                    f"{_factory_label(alias)}, {run.status}"
+                    f"{gap if run.status == 'Failed' else ''}) {_run_link(sub, rg, name, run_id)}"
                 )
+                out.extend(_run_fields(run, "    "))
+                out.extend(await _activity_block(sub, rg, name, run, "    "))
+                break
             else:
-                out.append(
-                    f"  RUN ID IN THE TICKET — {run_id}: could NOT be looked up; the lookup "
-                    "failed in every factory (listed below)."
-                )
+                # Deliberately unlinked: every configured factory was asked and none
+                # owns this id, so there is no factory a link could be built from.
+                # Guessing one would manufacture the "the run does not exist" page
+                # that this message is carefully NOT claiming. The factories asked
+                # are named on this line: an answer that dropped the 'factories
+                # searched' header said "not found" with no scope (UC8-05, run l5).
+                # One whose lookup failed is not among them; it is under the
+                # lookups that did not complete.
+                if asked:
+                    out.append(
+                        f"  RUN ID IN THE TICKET — {run_id}: NOT FOUND in {', '.join(asked)}. "
+                        f"ADF keeps runs for about {_ADF_HISTORY_DAYS} days, so a run older than "
+                        "that, or one in a factory this deployment does not search, is not found "
+                        "either; this does not show that the run never existed."
+                    )
+                else:
+                    out.append(
+                        f"  RUN ID IN THE TICKET — {run_id}: could NOT be looked up; the lookup "
+                        "failed in every factory (listed below)."
+                    )
+        finally:
+            for task in tasks:
+                task.cancel()
     if len(ticket_run_ids) > _INCIDENT_MAX_CARDS:
         # The worst of the caps: a run id the ticket itself pasted appears nowhere
         # else in this answer, so a reader cannot tell it was even seen.
