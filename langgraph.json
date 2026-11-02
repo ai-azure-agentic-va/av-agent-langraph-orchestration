@@ -1,6 +1,7 @@
 {
   "$schema": "https://langgra.ph/schema.json",
   "python_version": "3.11",
+  "api_version": "0.16.9",
   "dependencies": ["."],
   "graphs": {
     "chat": "v1.core.agent:build_agent"

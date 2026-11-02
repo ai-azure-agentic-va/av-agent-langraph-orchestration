@@ -51,6 +51,11 @@ _EXHAUST_PAGE_SIZE = 50
 # under this many rows. Both sets are re-read in full on every page.
 _TITLE_UNION_MAX_ROWS = 300
 
+# The most rows one similar-incident search reads. A term past it sits on most of the
+# team's history ('Missing data' was on nearly all of one team's closed tickets: many
+# calls and three minutes, to judge the newest 50), so the search stops at page one.
+_SIMILAR_MAX_ROWS = 500
+
 # Page size when the caller omits limit. Env-tunable via SERVICENOW_DEFAULT_LIMIT
 # (teammates found 25-row pages too big); clamped to [1, MAX_TICKET_LIMIT] and
 # falling back to 10 on an unset or non-numeric value.
@@ -637,7 +642,11 @@ async def _fetch_incident(
 
 
 def _list_row(
-    ticket: Mapping[str, Any], state_display: str, assignee: str, resolver: str
+    ticket: Mapping[str, Any],
+    state_display: str,
+    assignee: str,
+    resolver: str,
+    when: tuple[str, str | None],
 ) -> str:
     """Render the one-line LIST ROW the agent prints verbatim.
 
@@ -660,6 +669,7 @@ def _list_row(
         segments.append(ticket["short_description"])
     for label, value in (
         ("State", state_display),
+        when,
         ("Priority", priority),
         ("Assigned to", assignee),
         # The resolver only when it is someone else. This slot used to print the
@@ -729,11 +739,19 @@ def _ticket_base(incident: Mapping[str, Any]) -> dict[str, Any]:
         # summary/list/detail row so the agent can always hand back a clickable link.
         "ticket_url": _reference_value(incident.get("ticket_url")) or None,
     }
+    # Every row carries ONE date: when a resolved/closed ticket was closed (its resolve
+    # time while it has no close time yet), else when it was opened. The full
+    # '<date> <time> UTC' value, which the UI shows in the viewer's own zone.
+    if ticket["status"] in ("resolved", "closed"):
+        closed = _incident_timestamp(incident.get("closed_at"))
+        when = ("Closed at", closed) if closed else ("Resolved at", _incident_timestamp(incident.get("resolved_at")))
+    else:
+        when = ("Opened at", ticket["opened_at"])
     # The finished LIST ROW rides every row so the agent prints instead of composing.
     # ``status`` above is the canonical slug ('in_progress'); the row wants the
     # server's own display value ('In Progress'), so read it straight off the record.
     ticket["row"] = _list_row(
-        ticket, _reference_value(incident.get("state")), assignee, resolver
+        ticket, _reference_value(incident.get("state")), assignee, resolver, when
     )
     return ticket
 
@@ -1522,14 +1540,24 @@ def _build_field_filters(
     return filters
 
 
+class _TooManyMatches(Exception):
+    """A capped exhaust stopped early: ``count`` rows match its filters."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__(count)
+        self.count = count
+
+
 async def _exhaust_incidents(
-    client: ServiceNowClient, filters: Mapping[str, Any] | None
+    client: ServiceNowClient, filters: Mapping[str, Any] | None, *, max_rows: int | None = None
 ) -> tuple[list[Mapping[str, Any]], str | None, bool]:
     """Page through EVERY row matching filters, ignoring the normal per-call page cap.
 
     Missing-data mode has already paid the cost to exhaust the broad query — it must
     not stop at the first page (the default-sized page) and silently miss a
-    later-page match.
+    later-page match. With ``max_rows``, more matches than that raise
+    :class:`_TooManyMatches` at the first page that shows it (page one when the
+    wrapper reports total_count).
     """
 
     rows: list[Mapping[str, Any]] = []
@@ -1544,6 +1572,9 @@ async def _exhaust_incidents(
         degraded = degraded or bool(envelope.get("degraded"))
         page = list(envelope.get("incidents", []))
         rows.extend(page)
+        matches = max(envelope.get("total_count") or 0, len(rows))
+        if max_rows is not None and matches > max_rows:
+            raise _TooManyMatches(matches)
         nxt = envelope.get("next_offset")
         if not envelope.get("has_more") or not isinstance(nxt, int) or nxt <= offset:
             break
@@ -1951,6 +1982,22 @@ def derive_similarity_fingerprint(
     return tuple(identifiers[:3])
 
 
+# A data ticket's own label for where its data comes from: 'Source System: X; Issue: …'
+# in the title, 'Source: X\nIssue: …' in the description. Ends at ';', a line break
+# (real or a literal '\n') or the next 'Label:'.
+_SOURCE_LABEL_RE = re.compile(
+    r"\bsource(?:\s+system)?\s*:\s*(?P<name>[^;:\n\\]+?)\s*(?=[;\n\\]|\s\w+\s*:|$)", re.IGNORECASE
+)
+
+
+def _parent_source_name(incident: Mapping[str, Any]) -> str:
+    for field in ("short_description", "description"):
+        match = _SOURCE_LABEL_RE.search(_reference_value(incident.get(field)))
+        if match:
+            return match["name"]
+    return ""
+
+
 # A model-literalized recipe placeholder ("segment-placeholder", "<subject>", ...)
 # must never reach the ServiceNow client as a real filter value.
 _PLACEHOLDER_FILTER_RE = re.compile(
@@ -2233,12 +2280,20 @@ async def _similar_by_application(
     # ('LSP', or the spaced name monitoring alerts glue together) falls through to the
     # next ('Ledger'). The app name sits in the title of some tickets and only the
     # description of others: both searches, merged. One URL with both would AND them.
-    mode, pool = None, []
+    # A name on more than _SIMILAR_MAX_ROWS tickets ('AB' inside every 'Cabin') is no
+    # filter at all: the next, longer name is tried instead.
+    asked, mode, pool, too_many = app, None, [], 0
     for app in names:
-        pages = await asyncio.gather(
-            _exhaust_incidents(client, {"description_contains": app, **filters}),
-            _exhaust_incidents(client, {"short_description_contains": app, **filters}),
-        )
+        try:
+            pages = await asyncio.gather(
+                *(
+                    _exhaust_incidents(client, {field: app, **filters}, max_rows=_SIMILAR_MAX_ROWS)
+                    for field in ("description_contains", "short_description_contains")
+                )
+            )
+        except _TooManyMatches as exc:
+            too_many = max(too_many, exc.count)
+            continue
         seen = {number}
         for rows, page_mode, page_degraded in pages:
             mode, degraded = mode or page_mode, degraded or page_degraded
@@ -2255,6 +2310,12 @@ async def _similar_by_application(
             break
     else:
         app = names[0]
+    if not pool and too_many:
+        raise ServiceNowToolInputError(
+            f"'{asked}' is on {too_many} closed incidents of {group or 'the team'}, too many "
+            f"to check. Retry once with the application's full name exactly as {number}'s "
+            "text writes it."
+        )
     # An automated monitoring alert's twins are the SAME alert, which the monitoring
     # tool titles identically every time.
     # Judged by topic, a Health Check Failure took the app's Memory and Availability
@@ -3234,9 +3295,10 @@ async def servicenow_find_similar_resolutions(
     This is the only tool for the combined "summarize INC and find resolution notes for
     similar incidents" workflow. It validates the source and family against the fetched
     parent, forces Resolved/Closed history (Cancelled is never surfaced),
-    exhausts the matching closed history internally, and applies deterministic source/
-    family filtering — so a genuine match buried past the first broad page is never
-    missed and the returned candidate set is always complete. A model call then keeps
+    searches the parent's own file/dataset names first, then its data source, and its
+    error words only when those find nothing, exhausts the matching closed history
+    internally, and applies deterministic source/family filtering — so a genuine match
+    buried past the first broad page is never missed. A model call then keeps
     the matches that are really similar (up to 50 judged per call, newest first), and
     an answer shows at most 10 of them; when more remain, it offers to look for more —
     a NEW call with checked_before."""
@@ -3318,20 +3380,20 @@ async def servicenow_find_similar_resolutions(
                 "the words that say what went wrong instead."
             )
         hit = None
-        if family == "general":
-            # The team's or app's own name rides on every ticket the team owns, so as
-            # the subject it matched most of their history (14 rows for 3 real twins).
-            # ponytail: catches names in the group/CI only; an app named only in the
-            # title text is left to the prompt's subject rule.
-            owner_words = set(
-                re.findall(
-                    r"[a-z0-9]+",
-                    " ".join(
-                        _reference_display(incident.get(field)).lower()
-                        for field in ("assignment_group", "cmdb_ci", "configuration_item")
-                    ),
-                )
+        # The team's or app's own name rides on every ticket the team owns, so as a
+        # search term it matched most of their history (14 rows for 3 real twins).
+        # ponytail: catches names in the group/CI only; an app named only in the title
+        # text is left to the prompt's subject rule.
+        owner_words = set(
+            re.findall(
+                r"[a-z0-9]+",
+                " ".join(
+                    _reference_display(incident.get(field)).lower()
+                    for field in ("assignment_group", "cmdb_ci", "configuration_item")
+                ),
             )
+        )
+        if family == "general":
             subject_words = set(re.findall(r"[a-z0-9]+", subject.lower()))
             if subject_words and subject_words <= owner_words:
                 raise ServiceNowToolInputError(
@@ -3392,11 +3454,13 @@ async def servicenow_find_similar_resolutions(
                     **_status_filters(statuses),
                 }
             ]
-            # A symptom phrase often lives only in the alert's title. The pattern
-            # families keep their tuned description-only retrieval.
-            if family == "general":
+            # A symptom phrase or source name often lives only in the alert's title. The
+            # identifier set and the pattern families keep their description-only retrieval.
+            if family == "general" and "description_contains" in content:
                 filter_sets += _title_twins(filter_sets)
-            pages = await asyncio.gather(*(_exhaust_incidents(client, filters) for filters in filter_sets))
+            pages = await asyncio.gather(
+                *(_exhaust_incidents(client, filters, max_rows=_SIMILAR_MAX_ROWS) for filters in filter_sets)
+            )
             mode: str | None = None
             degraded = False
             # A closed parent matches its own search and was listed as its own match.
@@ -3414,49 +3478,106 @@ async def servicenow_find_similar_resolutions(
                     rows.append(row)
             return rows, mode, degraded
 
-        # A targeted fingerprint query has already paid for a much smaller, exact
-        # historical result set. Only fall back to the broad source/family search
-        # when the targeted query truly finds nothing — never re-run both. A general
-        # parent has no fingerprint: its identifiers are hosts and paths, and the
-        # symptom phrase IS the query.
-        fingerprint_tokens = () if family == "general" else derive_similarity_fingerprint(incident, family)
-        rows, mode, degraded = await exhaust_query(
+        # SOURCE FIRST, THE ERROR LAST: the parent's dataset/file identifiers, then the
+        # data source it names, and only when neither finds a match, its symptom phrase.
+        # That phrase can be the team's own ticket template: 'Missing data' was on nearly all
+        # of one team's closed tickets, while the parent's two file names found its
+        # twins in one call. Each step is searched only when the one before found none.
+        # (A server alert's identifiers are paths; the host is never one, see the
+        # fingerprint.)
+        fingerprint_tokens = derive_similarity_fingerprint(incident, family)
+        # A data family's subject IS a source word; every family then tries the source
+        # the parent's text labels ('Source System: X') unless it only names the team.
+        sources = [] if family == "general" else [subject]
+        label = _parent_source_name(incident)
+        if (
+            label.lower() not in {name.lower() for name in [*sources, subject]}
+            and not set(re.findall(r"[a-z0-9]+", label.lower())) <= owner_words
+        ):
+            sources.append(label)
+        # (query, CI narrowing, the word each row must hold, held as one phrase)
+        steps: list[tuple[dict[str, str], str | None, str | None, bool]] = []
+        if fingerprint_tokens:
             # EVERY token, each as its own term: the live wrapper matches a value as
             # one contiguous piece of text, so tokens joined into ONE value ('a_b c_d')
-            # matched nothing there (the mock's word-split matching hid it).
-            {"description_contains_and": ",".join(fingerprint_tokens)}
-            if fingerprint_tokens
-            else {"description_contains": subject},
-            # The CI narrowing rides with the targeted query only: the broad query is
-            # the "found nothing" safety net and must not inherit a second narrowing.
-            ci_filter=pipeline_ci_filter if fingerprint_tokens else None,
-        )
-        if fingerprint_tokens and not rows:
-            rows, mode, degraded = await exhaust_query({"description_contains": subject})
+            # matched nothing there (the mock's word-split matching hid it). The CI
+            # narrowing rides with this targeted query only: the later steps are the
+            # "found nothing" safety net and must not inherit a second narrowing. Its
+            # rows hold the parent's own files, so they need not word the error alike.
+            steps.append(
+                ({"description_contains_and": ",".join(fingerprint_tokens)}, pipeline_ci_filter, None, False)
+            )
+        # A source's rows are checked for the source as a whole word ('adf' is not in
+        # 'ADFS'); the judge, not the error wording, decides which share the problem.
+        steps += [({"description_contains": name}, None, name, False) for name in sources]
+        if family == "general":
+            steps.append(({"description_contains": subject}, None, subject, True))
 
-        mentioned = [
-            row
-            for row in rows
-            if incident_matches_subject(row, subject)
-            and (family != "general" or _incident_contains_phrase(row, subject))
-            and (
-                not teams
-                or _reference_display(row.get("assignment_group")).strip().lower()
-                in {team.lower() for team in teams}
+        mode: str | None = None
+        degraded = False
+        mentioned: list[Mapping[str, Any]] = []
+        mentioned_term = subject
+        candidates: list[Mapping[str, Any]] = []
+        too_many: tuple[str, int] | None = None
+        found_by = None
+        for content, ci_filter, term, phrase in steps:
+            try:
+                rows, step_mode, step_degraded = await exhaust_query(content, ci_filter)
+            except _TooManyMatches as exc:
+                too_many = (next(iter(content.values())), exc.count)
+                logger.info(
+                    f"servicenow.similar parent={normalized_number} skipped={content} matches={exc.count}"
+                )
+                continue
+            # Only the LAST search decides a "too many" refusal: a later one that ran
+            # and found nothing gets the honest empty answer instead.
+            too_many = None
+            mode, degraded = mode or step_mode, degraded or step_degraded
+            mentioned_term = term or ", ".join(fingerprint_tokens)
+            mentioned = [
+                row
+                for row in rows
+                if (term is None or incident_matches_subject(row, term))
+                and (not phrase or _incident_contains_phrase(row, term))
+                and (
+                    not teams
+                    or _reference_display(row.get("assignment_group")).strip().lower()
+                    in {team.lower() for team in teams}
+                )
+            ]
+            # data_reconciliation keeps only its "never a match" words: its gate's
+            # "mismatch, row count …" dropped every real twin of a source/target mismatch
+            # (duplicates, nulls), so the model call alone decides, by its own meaning.
+            candidates = [
+                row
+                for row in mentioned
+                if (
+                    not _SIMILAR_NON_RECONCILIATION_RE.search(_incident_search_text(row))
+                    if family == "data_reconciliation"
+                    else matches_similar_resolution_family(row, family)
+                )
+            ]
+            if candidates:
+                found_by = content
+                break
+        scope = f"from the same team ({', '.join(teams)})" if teams else "across all teams"
+        if not candidates and not degraded and family != "general":
+            # The source search is a data family's last step; the error is searched
+            # only under 'general', which takes the words that say what went wrong.
+            raise ServiceNowToolInputError(
+                f"No closed incident {scope} matched {normalized_number}'s source "
+                + " or ".join(f"'{name}'" for name in sources)
+                + (f" or its identifiers ({', '.join(fingerprint_tokens)})" if fingerprint_tokens else "")
+                + ". Retry once with failure_family='general' and the words that say what "
+                f"went wrong, copied exactly from {normalized_number}'s text."
             )
-        ]
-        # data_reconciliation keeps only its "never a match" words: its gate's "mismatch,
-        # row count …" dropped every real twin of a source/target mismatch (duplicates,
-        # nulls), so the model call alone decides, by its own meaning of "similar".
-        candidates = [
-            row
-            for row in mentioned
-            if (
-                not _SIMILAR_NON_RECONCILIATION_RE.search(_incident_search_text(row))
-                if family == "data_reconciliation"
-                else matches_similar_resolution_family(row, family)
+        if not candidates and too_many:
+            term, count = too_many
+            raise ServiceNowToolInputError(
+                f"'{term}' is on {count} closed incidents {scope}, too many to tell which "
+                f"are the same problem, and {normalized_number}'s source names matched none. "
+                "Retry once with a longer run of its words that says what went wrong."
             )
-        ]
         # 'cannot install <name> package' found none of its twins, which name another
         # package. Only on an empty result: 'Access request' or 'sent to the wrong queue'
         # is the problem itself and finds its twins as typed.
@@ -3489,7 +3610,6 @@ async def servicenow_find_similar_resolutions(
             ]
         shown, end = _page_of_matches(picked, len(batch), start)
         team = ", ".join(teams)
-        scope = f"from the same team ({team})" if team else "across all teams"
         if candidates and not batch:
             header = f"All {len(candidates)} matching closed incidents {scope} have already been checked."
         else:
@@ -3500,11 +3620,11 @@ async def servicenow_find_similar_resolutions(
             elif mentioned:
                 header = (
                     f"No similar closed incidents found {scope}: {len(mentioned)} "
-                    f"{'mentions' if len(mentioned) == 1 else 'mention'} '{subject}', but "
+                    f"{'mentions' if len(mentioned) == 1 else 'mention'} '{mentioned_term}', but "
                     "none describe the same problem."
                 )
             else:
-                header = f"No other closed incident {scope} mentions '{subject}'."
+                header = f"No other closed incident {scope} mentions '{mentioned_term}'."
             # Only when the answer is one page of several: small answers read as before.
             if start or end < len(candidates):
                 header += " " + _checked_line(start, end, len(candidates))
@@ -3520,7 +3640,7 @@ async def servicenow_find_similar_resolutions(
         logger.info(
             f"servicenow.similar parent={normalized_number} family={family} "
             f"candidates={len(candidates)} checked={f'{start + 1}-{end}' if end > start else 'none'} "
-            f"judged={judged} matched={len(picked)} shown={len(shown)}"
+            f"judged={judged} matched={len(picked)} shown={len(shown)} found_by={found_by}"
         )
         return {
             "ok": True,

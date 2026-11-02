@@ -1,6 +1,6 @@
 [project]
 name = "deepagent-copilotkit-agui-backend"
-version = "3.1.3"
+version = "3.2.0"
 description = "FastAPI + LangGraph DeepAgent + CopilotKit AG-UI + Postgres checkpointer demo"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,20 +9,26 @@ dependencies = [
   # — it does NOT read uv.lock — so `>=` ranges let each rebuild float to whatever
   # PyPI ships that day (that is how prod drifted from local/CI). Exact pins make
   # the build reproducible. Bump deliberately, then run `uv lock` to keep this list
-  # in sync with uv.lock. langgraph-api / langgraph-runtime-inmem / grpcio / protobuf
-  # are supplied by the `langchain/langgraph-api` base image (the Dockerfile pins that
-  # image BY DIGEST — that digest IS the effective langgraph-api lock, currently
-  # 0.14.2), NOT pinned here. Do NOT re-add langgraph-api as a dependency below:
-  # listing it forces `uv pip install -c /api/constraints.txt -e .` to re-resolve it
-  # against the base constraints, which is unsatisfiable (langgraph-api's grpcio
-  # requirement vs the base image's grpcio pin) and breaks the ACR build. Lock the
-  # minor via the base-image digest, not here. (This resolves fine locally only
-  # because there is no /api/constraints.txt outside the image.)
+  # in sync with uv.lock.
+  #
+  # langgraph-api and langgraph-cli are NOT dependencies of this project. Do NOT add
+  # either one below (or to any requirements file), directly or via
+  # `langgraph-cli[inmem]`, whose `inmem` extra pulls langgraph-api and
+  # langgraph-runtime-inmem in with it.
+  # - langgraph-api (with its grpcio / protobuf) is supplied by the
+  #   `langchain/langgraph-api` base image. The Dockerfile pins that image BY DIGEST,
+  #   and that digest IS the langgraph-api lock (currently 0.16.9). Listing it here
+  #   forces `uv pip install -c /api/constraints.txt -e .` to re-resolve it against the
+  #   base constraints, which is unsatisfiable (langgraph-api's grpcio requirement vs
+  #   the base image's grpcio pin) and breaks the ACR build. (It resolves fine locally
+  #   only because there is no /api/constraints.txt outside the image.)
+  # - langgraph-cli is a development tool (`langgraph dev`, `langgraph dockerfile`).
+  #   Run it ad hoc with the same langgraph-api version as the image; see README.md.
   #
   # Pin <0.137: FastAPI 0.137 made include_router() insert a lazy `_IncludedRouter`
   # (a BaseRoute with no `.app`). langgraph_api's apply_middleware() walks app.routes
   # and wraps route.app, so with enable_custom_route_auth it raises "route ... has no
-  # app". Still unfixed as of the pinned langgraph-api 0.14.2 (verified against
+  # app". Still unfixed as of the pinned langgraph-api 0.16.9 (verified against
   # /api/langgraph_api/server.pyc in the image) — KEEP this cap; re-check on each bump.
   "fastapi==0.136.3",
   "uvicorn[standard]==0.52.1",
@@ -77,14 +83,16 @@ dependencies = [
   "aiohttp==3.14.3",
   "langsmith==0.14.0",
   "pydantic==2.13.4",
-  "pyjwt[crypto]==2.13.0",
+  # Floor set by the base image: langgraph-api 0.16.9 requires pyjwt>=2.15.0 and the
+  # image ships 2.15.1. The Docker install would otherwise DOWNGRADE it below the
+  # floor (/api/constraints.txt only says >=2.13.0).
+  "pyjwt[crypto]==2.15.1",
   # Cap <8.0: the `langchain/langgraph-api` base image's constraints.txt pins
   # redis>=6.4.0,<8.0 (its worker uses redis-py 7.x), and the Docker install is
   # constrained by it — so an 8.x pin makes the ACR build unsatisfiable. Local
   # uv.lock floats to 8.x because it ignores the base constraints; pin within range.
   "redis==7.4.1",
   "tenacity==9.1.4",
-  "langgraph-cli[inmem]==0.4.31",
   # HTML -> Markdown for the read_url tool. beautifulsoup4 is markdownify's parser
   # dependency; pinned explicitly since the deploy image installs from pyproject
   # (not uv.lock), so a floating transitive would drift the build.

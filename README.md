@@ -20,10 +20,14 @@ Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv).
 
 ```bash
 uv sync --frozen        # install dependencies
-uv run langgraph dev    # run the LangGraph server locally (graph: "chat")
+# run the LangGraph server locally (graph: "chat")
+uv run --with "langgraph-cli[inmem]==0.4.31" --with "langgraph-api==0.16.9" langgraph dev
 ```
 
-The server entry points are declared in `langgraph.json`.
+The server entry points are declared in `langgraph.json`. `langgraph-cli` and
+`langgraph-api` are development tools, not project dependencies: the deployed
+image gets `langgraph-api` from its `langchain/langgraph-api` base image (see the
+`Dockerfile`), so keep the `langgraph-api` version above in step with it.
 
 ## Configuration
 

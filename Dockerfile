@@ -1,14 +1,18 @@
 # Pin the base image by digest: the version tag still floats forward on every base
-# rebuild, and this digest is the ONLY effective langgraph-api lock. langgraph-api
-# cannot be pinned from pyproject.toml (listing it makes the app install re-resolve
-# it against /api/constraints.txt, which is unsatisfiable on the grpcio pin — see the
-# note in pyproject.toml). Refresh the digest deliberately when bumping the version.
+# rebuild, and this digest is the ONLY effective langgraph-api lock. This image is
+# the ONLY place langgraph-api comes from: neither it nor langgraph-cli belongs in
+# pyproject.toml (listing it makes the app install re-resolve it against
+# /api/constraints.txt, which is unsatisfiable on the grpcio pin — see the note in
+# pyproject.toml). Refresh the digest deliberately when bumping the version, and keep
+# `api_version` in langgraph.json in step so `langgraph dockerfile` emits the same tag.
 #
-# 0.14.2-py3.11 (digest resolved 2026-09-23) ships langgraph-api 0.14.2,
-# langgraph-checkpoint 4.2.0, langgraph-sdk 0.4.4 — same Debian 13 / Python 3.11.16
-# and a byte-identical /api/constraints.txt as the 0.14.3 digest it replaces, whose
-# aget_delta_channel_history bytecode it also matches exactly (so the fix below
-# holds). Do NOT go below 0.14.1: THE 0.13.0 -> 0.14.x BUMP IS LOAD-BEARING, do not
+# 0.16.9-py3.11 (digest resolved 2026-10-30) ships langgraph-api 0.16.9,
+# langgraph-checkpoint 4.3.0, langgraph-sdk 0.4.8, pyjwt 2.15.1 on Python 3.11.18.
+# Its /api/constraints.txt differs from 0.14.2's only by OpenTelemetry pins and
+# looser sse-starlette / uvicorn floors, and its aget_delta_channel_history still
+# has no _DeltaSnapshot branch (so the fix below holds). langgraph-api 0.16.9 needs
+# pyjwt>=2.15.0, which pyproject.toml pins to match. Do NOT go below 0.14.1:
+# THE 0.13.0 -> 0.14.x BUMP IS LOAD-BEARING, do not
 # roll it back independently of the ChatAgentState change in src/v1/core/agent.py:
 # the platform serves /threads/{id}/state and /history from its OWN compiled checkpointer
 # (/storage/langgraph_runtime_postgres/checkpoint.pyc), NOT from the pip-installed
@@ -18,7 +22,7 @@
 # ChatAgentState used to work around; 0.14.1+ drops that branch entirely (verified by
 # disassembly: _DeltaSnapshot / DELTA_CHANNEL_SUPPORT no longer appear in the
 # function). Reverting only the digest re-breaks every long thread.
-FROM langchain/langgraph-api:0.14.2-py3.11@sha256:b3af10222c64095fe3f1a9509407ee9a789226036a1fac8de8a2286041e51219
+FROM langchain/langgraph-api:0.16.9-py3.11@sha256:682f029f701fae214613fe781af013a2f75f3bbe25a13d1b9faa98573aeb16ce
 
 
 
