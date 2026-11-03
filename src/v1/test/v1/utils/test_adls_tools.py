@@ -182,18 +182,59 @@ def test_status_follows_the_landing_folder() -> None:
 def test_arrival_and_sla_are_reported_as_facts() -> None:
     test_cases = [
         {
-            "name": "sla_shown_as_given",
+            "name": "sla_late_shown_with_minutes",
             "args": {"sla_time": "6:00 AM ET"},
             "expected": [
-                "  SLA given    : 6:00 AM ET",
+                "  SLA given    : 6:00 AM ET → 6:00 AM ET",
                 "  business date: 2026-10-12 (America/New_York)",
                 "  arrived      : 2026-10-12 06:25 EDT (10:25 UTC)",
+                "  SLA status   : Late by 25 min",
             ],
+            "absent": [],
+        },
+        {
+            "name": "sla_on_time_at_exact_minute",
+            "args": {"sla_time": "6:25 AM ET"},
+            "expected": [
+                "  SLA given    : 6:25 AM ET → 6:25 AM ET",
+                "  SLA status   : On time",
+            ],
+            "absent": ["Late by"],
         },
         {
             "name": "no_sla_given",
             "args": {},
             "expected": ["  SLA given    : none in the question"],
+            "absent": ["SLA status"],
+        },
+        {
+            "name": "no_timezone_is_et_on_time",
+            "args": {"sla_time": "1800"},
+            "expected": [
+                "  SLA given    : 1800 → 6:00 PM ET (no timezone given, read as ET)",
+                "  SLA status   : On time",
+            ],
+            "absent": ["Late by"],
+        },
+        {
+            "name": "central_shows_the_et_equivalent",
+            "args": {"sla_time": "7:00 AM CST"},
+            "expected": [
+                "  SLA given    : 7:00 AM CST → 7:00 AM CT (8:00 AM ET)",
+                "  arrived      : 2026-10-12 06:25 EDT (10:25 UTC; 05:25 CDT)",
+                "  SLA status   : On time",
+            ],
+            "absent": ["Late by"],
+        },
+        {
+            "name": "pacific_shows_the_et_equivalent",
+            "args": {"sla_time": "5 AM PT"},
+            "expected": [
+                "  SLA given    : 5 AM PT → 5:00 AM PT (8:00 AM ET)",
+                "  arrived      : 2026-10-12 06:25 EDT (10:25 UTC; 03:25 PDT)",
+                "  SLA status   : On time",
+            ],
+            "absent": ["Late by"],
         },
     ]
     files = {f"{FEED}/archive/x/DAILY_PAYMENTS_20261012.csv": ON_DAY}
@@ -201,7 +242,39 @@ def test_arrival_and_sla_are_reported_as_facts() -> None:
         out = _check(_FakeContainer(files), **test_data["args"])
         for line in test_data["expected"]:
             assert line in out, (test_data["name"], line, out)
-        assert "late" not in out.lower() and "on time" not in out.lower(), test_data["name"]
+        for line in test_data["absent"]:
+            assert line not in out, (test_data["name"], line, out)
+
+
+def test_sla_formats() -> None:
+    test_cases = [
+        ("18:00", "6:00 PM ET"),
+        ("1800", "6:00 PM ET"),
+        ("6 PM", "6:00 PM ET"),
+        ("6:00pm", "6:00 PM ET"),
+        ("6:00", "6:00 AM ET"),
+        ("600", "6:00 AM ET"),
+        ("12 AM", "12:00 AM ET"),
+        ("6:00 a.m. EST", "6:00 AM ET"),
+        ("6:00 Eastern Time", "6:00 AM ET"),
+        ("6:00 AM ET on 2026-10-15", "6:00 AM ET"),
+        ("7:00 AM CT", "7:00 AM CT (8:00 AM ET)"),
+        ("12 PM", "12:00 PM ET"),
+        ("6 AM daily", "6:00 AM ET (no timezone given, read as ET)"),
+    ]
+    day = datetime(2026, 10, 15).date()
+    for given, expected in test_cases:
+        assert f"→ {expected}" in adls._sla_line(adls._parse_sla(given, day)), given
+    after_dst = datetime(2026, 11, 3).date()
+    assert "(8:00 AM ET)" in adls._sla_line(adls._parse_sla("7:00 AM CT", after_dst))
+
+
+def test_winter_times_use_standard_time() -> None:
+    winter = datetime(2025, 11, 4, 14, 0, tzinfo=UTC)
+    files = {f"{FEED}/archive/x/DAILY_PAYMENTS_20251104.csv": winter}
+    out = _check(_FakeContainer(files), date="2025-11-04", sla_time="7:00 AM CT")
+    assert "  SLA given    : 7:00 AM CT → 7:00 AM CT (8:00 AM ET)" in out, out
+    assert "  arrived      : 2025-11-04 09:00 EST (14:00 UTC; 08:00 CST)" in out, out
 
 
 def test_daylight_saving_days_use_the_local_day() -> None:
@@ -251,12 +324,57 @@ def test_rejected_inputs_never_touch_storage() -> None:
         {
             "name": "unknown_url_account",
             "args": {"path": "abfss://adls@other.dfs.core.windows.net/lnd/a"},
-            "expected": "is not a configured Data Lake account",
+            "expected": "Wrong storage account: 'other.dfs.core.windows.net'",
         },
         {
             "name": "wrong_url_container",
             "args": {"path": "abfss://raw@stlake.dfs.core.windows.net/lnd/a"},
-            "expected": "is not a configured Data Lake account",
+            "expected": "Container 'raw' is not one this agent reads",
+        },
+        {
+            "name": "landing_container_cannot_escape",
+            "args": {"path": "abfss://lnd@stlake.dfs.core.windows.net/../raw/a"},
+            "expected": "'.' and '..' are not permitted",
+        },
+        {
+            "name": "unsupported_sla_timezone",
+            "args": {"sla_time": "6 AM MT"},
+            "expected": "Timezone 'MT' isn't supported. Please give the SLA in ET, CT or PT.",
+        },
+        {
+            "name": "utc_sla_is_not_supported",
+            "args": {"sla_time": "12:00 UTC"},
+            "expected": "Timezone 'UTC' isn't supported",
+        },
+        {
+            "name": "unreadable_sla",
+            "args": {"sla_time": "soonish"},
+            "expected": "Could not read the SLA 'soonish'",
+        },
+        {
+            "name": "pm_hour_over_12",
+            "args": {"sla_time": "13 PM"},
+            "expected": "Could not read the SLA '13 PM'",
+        },
+        {
+            "name": "am_hour_zero",
+            "args": {"sla_time": "0:30 AM"},
+            "expected": "Could not read the SLA '0:30 AM'",
+        },
+        {
+            "name": "minute_over_59",
+            "args": {"sla_time": "6:75"},
+            "expected": "Could not read the SLA '6:75'",
+        },
+        {
+            "name": "placeholder_url",
+            "args": {"path": "abfss://lnd@[account].dfs.core.windows.net/loansys/payments"},
+            "expected": "is not a valid URL",
+        },
+        {
+            "name": "placeholder_https_url",
+            "args": {"path": "https://[storage-account].blob.core.windows.net/adls/lnd"},
+            "expected": "is not a valid URL",
         },
         {
             "name": "bad_date_format",
@@ -307,12 +425,25 @@ def test_configuration_gaps_are_reported() -> None:
             "settings": _Settings(timezone="Mars/Olympus_Mons"),
             "expected": "ADLS_BUSINESS_TIMEZONE 'Mars/Olympus_Mons' is not a valid timezone",
         },
+        {
+            "name": "blank_allow_list_entries",
+            "settings": _Settings(allowed=["", " / "]),
+            "expected": "ADLS_ALLOWED_PATH_PREFIXES is empty",
+        },
+        {
+            "name": "unknown_default_account",
+            "settings": _Settings(default="other"),
+            "expected": "No usable Data Lake account is configured",
+        },
     ]
     for test_data in test_cases:
         container = _FakeContainer({})
         out = _check(container, settings=test_data["settings"])
         assert test_data["expected"] in out, (test_data["name"], out)
         assert container.list_calls == 0, test_data["name"]
+    two_accounts = _Settings(mapping={"a": _ACCOUNT, "b": _ACCOUNT}, default="b")
+    out = _check(_FakeContainer({}), settings=two_accounts)
+    assert f"  landing path : {FEED} (account b, container adls)" in out, out
 
 
 def test_path_forms_resolve_to_the_same_feed() -> None:
@@ -340,6 +471,18 @@ def test_path_forms_resolve_to_the_same_feed() -> None:
             "name": "url_to_the_file",
             "path": f"abfss://adls@stlake.dfs.core.windows.net/{FEED}/inbound/PMT.csv",
             "filter": "PMT.csv",
+        },
+        {
+            "name": "landing_container",
+            "path": "abfss://lnd@stlake.dfs.core.windows.net/loansys/daily_payments",
+        },
+        {
+            "name": "landing_container_abfs_inbound",
+            "path": "abfs://lnd@stlake.dfs.core.windows.net/loansys/daily_payments/inbound",
+        },
+        {
+            "name": "landing_container_https",
+            "path": "https://stlake.dfs.core.windows.net/lnd/loansys/daily_payments",
         },
     ]
     files = {f"{FEED}/archive/x/DAILY_PAYMENTS_20261012.csv": ON_DAY}
@@ -414,6 +557,14 @@ def test_capped_listing_is_a_partial_result_not_a_miss() -> None:
     assert "File received; still being processed" in out, out
     assert "note         : Partial result — archive could not be fully read" in out, out
     assert "  archive: none in the first 3 entries (the rest was not read)" in out, out
+
+    many = {f"{FEED}/archive/F_{i}.csv": ON_DAY for i in range(5)}
+    saved, adls._MAX_LISTED = adls._MAX_LISTED, 3
+    try:
+        out = _check(_FakeContainer(many))
+    finally:
+        adls._MAX_LISTED = saved
+    assert "    (listing stopped after 3 entries; results may be incomplete)" in out, out
 
 
 def test_refusals_failures_and_outcomes_are_logged() -> None:
@@ -588,6 +739,32 @@ def test_file_filter_matches_object_ids_by_contains() -> None:
             ],
             "absent": ["Incorrect path", "  file         :"],
         },
+        {
+            "name": "question_mark_wildcard",
+            "pattern": "?aily_payments_a1b2c3_*",
+            "expected": [f"  file         : {FEED}/archive/x/DAILY_PAYMENTS_A1B2C3_20261012.csv"],
+            "absent": ["OTHER_20261012.csv"],
+        },
+        {
+            "name": "bracket_wildcard",
+            "pattern": "[o]ther_*",
+            "expected": [f"  file         : {FEED}/error/OTHER_20261012.csv"],
+            "absent": ["DAILY_PAYMENTS_A1B2C3_20261012.csv"],
+        },
+        {
+            "name": "wildcard_must_match_the_whole_name",
+            "pattern": "*a1b2c3",
+            "expected": [
+                "status       : File not found for this date — no file matching '*a1b2c3'"
+            ],
+            "absent": ["  file         :"],
+        },
+        {
+            "name": "folder_names_are_not_matched",
+            "pattern": "loansys",
+            "expected": ["status       : File not found for this date — no file matching 'loansys'"],
+            "absent": ["  file         :"],
+        },
     ]
     for test_data in test_cases:
         out = _check(_FakeContainer(files), file_pattern=test_data["pattern"])
@@ -597,11 +774,176 @@ def test_file_filter_matches_object_ids_by_contains() -> None:
             assert line not in out, (test_data["name"], line)
 
 
+def test_existence_is_checked_only_when_the_folders_list_nothing() -> None:
+    not_found = (
+        "File not found for this date — no file under inbound, error or archive was last "
+        f"modified on {DAY}"
+    )
+    test_cases = [
+        {
+            "name": "a_listed_folder_proves_the_path",
+            "files": {f"{FEED}/archive/x/OLD.csv": DAY_BEFORE},
+            "failing": (),
+            "status": not_found,
+            "calls": 3,
+        },
+        {
+            "name": "feed_with_empty_landing_folders_exists",
+            "files": {f"{FEED}/readme.txt": DAY_BEFORE},
+            "failing": (),
+            "status": not_found,
+            "calls": 4,
+        },
+        {
+            "name": "nothing_under_the_path",
+            "files": {},
+            "failing": (),
+            "status": (
+                f"Incorrect path — nothing exists under '{FEED}/'. The landing path given is "
+                "wrong, not the file missing; ask the user to check the path."
+            ),
+            "calls": 4,
+        },
+        {
+            "name": "unreadable_path_is_not_an_incorrect_path",
+            "files": {},
+            "failing": (f"{FEED}/",),
+            "status": "Partial result — no file found in the folders that could be read",
+            "calls": 4,
+        },
+    ]
+    for test_data in test_cases:
+        container = _FakeContainer(test_data["files"], test_data["failing"])
+        lines = _check(container).splitlines()
+        assert f"  status       : {test_data['status']}" in lines, (test_data["name"], lines)
+        assert container.list_calls == test_data["calls"], (test_data["name"], container.list_calls)
+
+
+def test_the_whole_report_is_laid_out_exactly() -> None:
+    newer = f"{FEED}/archive/20261012/DAILY_PAYMENTS_20261012_v2.csv"
+    older = f"{FEED}/archive/20261012/DAILY_PAYMENTS_20261012.csv"
+    files = {
+        older: ON_DAY,
+        newer: ON_DAY + timedelta(minutes=40),
+        f"{FEED}/archive/20261011/DAILY_PAYMENTS_20261011.csv": DAY_BEFORE,
+    }
+    out = _check(
+        _FakeContainer(files, (f"{FEED}/error/",)),
+        sla_time="5:00 AM CT",
+        file_pattern="daily_payments",
+    )
+    assert out == "\n".join(
+        [
+            "[adls-agent] File arrival check",
+            f"  landing path : {FEED} (account datalake, container adls)",
+            "  business date: 2026-10-12 (America/New_York)",
+            "  SLA given    : 5:00 AM CT → 5:00 AM CT (6:00 AM ET)",
+            "  file filter  : name contains 'daily_payments' (case-insensitive)",
+            "  status       : File received and processed successfully",
+            "  arrived      : 2026-10-12 07:05 EDT (11:05 UTC; 06:05 CDT)",
+            "  SLA status   : Late by 65 min",
+            f"  file         : {newer}",
+            (
+                "  note         : Partial result — error could not be fully read, so the file "
+                "may also be there"
+            ),
+            "",
+            "Folders checked:",
+            "  archive: 2 file(s)",
+            (
+                f"    - {newer} | 152 bytes | created 2026-10-12 07:05 EDT (11:05 UTC) "
+                "| lastModified 2026-10-12 07:05 EDT (11:05 UTC)"
+            ),
+            (
+                f"    - {older} | 152 bytes | created 2026-10-12 06:25 EDT (10:25 UTC) "
+                "| lastModified 2026-10-12 06:25 EDT (10:25 UTC)"
+            ),
+            "  error: could not be read (AuthorizationPermissionMismatch, HTTP 403)",
+            "  inbound: none",
+        ]
+    ), out
+
+
+def test_landing_folder_is_cut_from_the_path() -> None:
+    test_cases = [
+        {"name": "any_case", "path": f"{FEED}/ARCHIVE/20261012/", "prefix": FEED, "filter": ""},
+        {
+            "name": "last_landing_folder_wins",
+            "path": "lnd/inbound/feed/error/F.csv",
+            "prefix": "lnd/inbound/feed",
+            "filter": "F.csv",
+        },
+        {
+            "name": "only_the_last_segment_names_a_file",
+            "path": f"{FEED}/inbound/v1.2/sub",
+            "prefix": FEED,
+            "filter": "",
+        },
+        {"name": "allow_list_entry_itself", "path": "lnd/archive", "prefix": "lnd", "filter": ""},
+    ]
+    for test_data in test_cases:
+        out = _check(_FakeContainer({}), path=test_data["path"])
+        assert f"  landing path : {test_data['prefix']} (account" in out, (test_data["name"], out)
+        if test_data["filter"]:
+            assert f"name contains '{test_data['filter']}'" in out, (test_data["name"], out)
+        else:
+            assert "file filter" not in out, (test_data["name"], out)
+
+
+def test_clients_are_cached_per_endpoint_and_closed() -> None:
+    made, closed = [], []
+
+    class _Client:
+        def __init__(self, account_url: str, credential: object) -> None:
+            made.append(account_url)
+            self.url = account_url
+
+        def get_container_client(self, filesystem: str) -> tuple[str, str]:
+            return self.url, filesystem
+
+        async def close(self) -> None:
+            closed.append(self.url)
+            if self.url == "https://b":
+                raise RuntimeError("close failed")
+
+    saved = adls.BlobServiceClient
+    adls.BlobServiceClient = _Client
+    try:
+        assert adls._container("https://a", "fs1") == ("https://a", "fs1")
+        assert adls._container("https://a", "fs2") == ("https://a", "fs2")
+        adls._container("https://b", "fs1")
+        assert made == ["https://a", "https://b"], made
+        asyncio.run(adls.close_adls_resources())
+        assert sorted(closed) == ["https://a", "https://b"], closed
+        asyncio.run(adls.close_adls_resources())
+        assert len(closed) == 2, closed
+        adls._container("https://a", "fs1")
+        assert made == ["https://a", "https://b", "https://a"], made
+    finally:
+        asyncio.run(adls.close_adls_resources())
+        adls.BlobServiceClient = saved
+
+
+def test_an_unexpected_failure_does_not_end_the_turn() -> None:
+    def _broken(account_url: str, filesystem: str) -> None:
+        raise RuntimeError("client could not be built")
+
+    saved_settings, saved_container = adls.settings, adls._container
+    adls.settings, adls._container = _Settings(), _broken
+    try:
+        out = asyncio.run(adls.check_file_arrival.ainvoke({"path": FEED, "date": DAY}))
+    finally:
+        adls.settings, adls._container = saved_settings, saved_container
+    assert out == "[adls-agent] The check failed unexpectedly, so nothing could be confirmed.", out
+
+
 def test_relative_dates() -> None:
     today = datetime.now(ET).date()
     test_cases = [
         {"name": "empty_is_today", "date": "", "expected": today},
         {"name": "today", "date": "today", "expected": today},
+        {"name": "todays_possessive", "date": "today's", "expected": today},
+        {"name": "for_today_punct", "date": "for today.", "expected": today},
         {"name": "yesterday", "date": "Yesterday", "expected": today - timedelta(days=1)},
     ]
     for test_data in test_cases:

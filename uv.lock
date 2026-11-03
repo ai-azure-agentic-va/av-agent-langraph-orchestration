@@ -605,7 +605,7 @@ wheels = [
 
 [[package]]
 name = "deepagent-copilotkit-agui-backend"
-version = "3.2.1"
+version = "3.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

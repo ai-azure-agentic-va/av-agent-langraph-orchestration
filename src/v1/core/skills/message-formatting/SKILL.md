@@ -117,14 +117,14 @@ When your reply carries an `adls-agent` result:
   status: Processed successfully (archive), Processing failed (error), Still
   being processed (inbound), Not found for this date, Incorrect path, or
   Partial result.
-- **Then one fact per line:** SLA given (or "none given"), created and
-  lastModified (both, labeled), size, and the folders checked.
+- **Then one fact per line:** SLA given (or "none given"), SLA status (`On time`
+  or `Late by N min`, when an SLA was given), created and lastModified (both,
+  labeled), size, and the folders checked.
+- Copy the tool's `SLA given`, `SLA status`, and `arrived` values whole (ET
+  equivalent, "read as ET" note, CT or PT arrival time).
 - Keep paths, file names, byte counts and timestamps verbatim. No tables.
 - **Incorrect path:** say the path is incorrect, quote it, and ask the user to
   check it. Never call it a missing file and never suggest another path.
-- **No verdict:** show the arrival time next to the SLA and say the DQ
-  timeliness process decides on time or late. Never answer yes or no about
-  timeliness.
 
 ## Citations — reusing `[n]` markers
 

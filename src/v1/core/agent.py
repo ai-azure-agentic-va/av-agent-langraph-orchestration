@@ -23,7 +23,6 @@ from langchain_openai import AzureChatOpenAI
 from langgraph.errors import GraphBubbleUp
 
 from v1.core.config import get_settings
-from v1.core.middlewares.adls_verdict_guard import AdlsVerdictGuardMiddleware
 from v1.core.middlewares.azure_links import AzureLinksMiddleware
 from v1.core.middlewares.citations import CitationsMiddleware
 from v1.core.middlewares.model_error_guard import ModelErrorGuardMiddleware
@@ -350,8 +349,6 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             # subagent. Sits inner of deepagents' SubAgentMiddleware so it sees
             # the assembled request.
             SubagentAccessMiddleware(),
-            # No on-time/late verdicts on ADLS answers.
-            *([AdlsVerdictGuardMiddleware()] if settings.adls_enabled else []),
             # Each ADF Studio / Azure portal link in the answer is one a tool
             # result or the user holds, the run's own link, or gone. Outer of
             # ContextEditing, so a cleared result still counts as held.
