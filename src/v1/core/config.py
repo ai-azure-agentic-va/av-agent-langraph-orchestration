@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Any
 from pydantic import Field, AliasChoices, BeforeValidator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from v1.utils.helper import _split_csv
@@ -102,12 +102,14 @@ class Settings(BaseSettings):
         alias="ADLS_AGENT_ENABLED",
         description="Turns the adls-agent on. Off by default; also needs ADLS_ACCOUNT_MAPPING.",
     )
-    adls_account_mapping: dict[str, dict[str, str]] = Field(
+    adls_account_mapping: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
         alias="ADLS_ACCOUNT_MAPPING",
         description=(
-            'Alias -> ADLS Gen2 account, e.g. {"datalake": {"account_url": '
-            '"https://acct.dfs.core.windows.net", "filesystem": "adls"}}. '
+            'Alias -> ADLS Gen2 account, e.g. {"lakedev": {"account_url": '
+            '"https://acct.dfs.core.windows.net", "containers": {"lnd": ["loansys", "savings"]}}}. '
+            'Paths can also be one comma-separated string; "*" allows the whole container. '
+            'The older {"filesystem": "adls"} form uses ADLS_ALLOWED_PATH_PREFIXES. '
             "Empty (default) turns the ADLS subagent off."
         ),
     )
@@ -123,8 +125,8 @@ class Settings(BaseSettings):
         default_factory=list,
         alias="ADLS_ALLOWED_PATH_PREFIXES",
         description=(
-            "Comma-separated folder prefixes the adls-agent may list, e.g. 'lnd/'. "
-            "Empty (default) refuses every path."
+            "Comma-separated folder prefixes for accounts set up with \"filesystem\", "
+            "e.g. 'lnd/'. Empty (default) refuses every path in them."
         ),
     )
     adls_business_timezone: str = Field(

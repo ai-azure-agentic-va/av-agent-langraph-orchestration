@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -17,6 +19,16 @@ DAY_BEFORE = datetime(2026, 10, 11, 23, 0, tzinfo=UTC)  # 19:00 EDT on the 11th
 LATE_EVENING = datetime(2026, 10, 13, 3, 30, tzinfo=UTC)  # 23:30 EDT on the 12th
 
 _ACCOUNT = {"account_url": "https://stlake.dfs.core.windows.net", "filesystem": "adls"}
+_MULTI = {
+    "lakedev": {
+        "account_url": "https://stlakedev.dfs.core.windows.net",
+        "containers": {"lnd": ["loansys", "savings/"], "raw": "sales, hr"},
+    },
+    "opsdev": {
+        "account_url": "https://stopsdev.blob.core.windows.net",
+        "containers": {"lnd": ["*"]},
+    },
+}
 
 
 class _Settings:
@@ -61,6 +73,7 @@ class _FakeContainer:
         self._files = files
         self._failing = failing_prefixes
         self.list_calls = 0
+        self.opened: list[tuple[str, str]] = []
 
     def _entries(self) -> list[_FakeBlob]:
         folders = {
@@ -95,6 +108,7 @@ def _patch(settings: _Settings, container: _FakeContainer):
     adls.settings = settings
 
     def _fake_container(account_url: str, filesystem: str) -> _FakeContainer:
+        container.opened.append((account_url, filesystem))
         return container
 
     adls._container = _fake_container
@@ -411,7 +425,7 @@ def test_configuration_gaps_are_reported() -> None:
         {
             "name": "several_accounts_no_default",
             "settings": _Settings(mapping={"a": _ACCOUNT, "b": _ACCOUNT}),
-            "expected": "No usable Data Lake account is configured",
+            "expected": "Several storage accounts are configured (a, b)",
         },
         {
             "name": "misconfigured_account",
@@ -434,6 +448,11 @@ def test_configuration_gaps_are_reported() -> None:
             "name": "unknown_default_account",
             "settings": _Settings(default="other"),
             "expected": "No usable Data Lake account is configured",
+        },
+        {
+            "name": "star_in_shared_prefix_list_is_not_a_wildcard",
+            "settings": _Settings(allowed=["*"]),
+            "expected": "outside the permitted landing folders (*)",
         },
     ]
     for test_data in test_cases:
@@ -496,6 +515,205 @@ def test_path_forms_resolve_to_the_same_feed() -> None:
         else:
             assert "File received and processed successfully" in out, test_data["name"]
             assert "file filter" not in out, test_data["name"]
+
+
+def test_each_account_reads_its_own_containers_and_paths() -> None:
+    url = _ACCOUNT["account_url"]
+    shared = _Settings(
+        mapping={
+            "lnd": {"account_url": url, "filesystem": "lnd"},
+            "raw": {"account_url": url, "filesystem": "raw"},
+        }
+    )
+    bad_default = _Settings(mapping=_MULTI, allowed=[], default="lake-dev")
+    test_cases = [
+        {
+            "name": "url_names_account_and_container",
+            "args": {"path": "abfss://lnd@stlakedev.dfs.core.windows.net/loansys/daily_payments"},
+            "expected": "loansys/daily_payments (account lakedev, container lnd)",
+            "opened": ("https://stlakedev.blob.core.windows.net", "lnd"),
+        },
+        {
+            "name": "uppercase_url_host",
+            "args": {"path": "abfss://lnd@STLAKEDEV.DFS.CORE.WINDOWS.NET/loansys/daily_payments"},
+            "expected": "loansys/daily_payments (account lakedev, container lnd)",
+            "opened": ("https://stlakedev.blob.core.windows.net", "lnd"),
+        },
+        {
+            "name": "whole_container_allowed",
+            "args": {"path": "https://stopsdev.blob.core.windows.net/lnd/any/feed"},
+            "expected": "any/feed (account opsdev, container lnd)",
+            "opened": ("https://stopsdev.blob.core.windows.net", "lnd"),
+        },
+        {
+            "name": "comma_separated_paths",
+            "args": {"path": "abfss://raw@stlakedev.dfs.core.windows.net/hr/payroll"},
+            "expected": "hr/payroll (account lakedev, container raw)",
+            "opened": ("https://stlakedev.blob.core.windows.net", "raw"),
+        },
+        {
+            "name": "account_alias_and_container_in_path",
+            "args": {"path": "lnd/savings/settlement", "account": "lakedev"},
+            "expected": "savings/settlement (account lakedev, container lnd)",
+            "opened": ("https://stlakedev.blob.core.windows.net", "lnd"),
+        },
+        {
+            "name": "account_by_storage_name",
+            "args": {"path": "lnd/any/feed", "account": "STOPSDEV"},
+            "expected": "any/feed (account opsdev, container lnd)",
+            "opened": ("https://stopsdev.blob.core.windows.net", "lnd"),
+        },
+        {
+            "name": "container_found_from_its_paths",
+            "args": {"path": "sales/daily", "account": "lakedev"},
+            "expected": "sales/daily (account lakedev, container raw)",
+            "opened": ("https://stlakedev.blob.core.windows.net", "raw"),
+        },
+        {
+            "name": "default_account",
+            "settings": _Settings(mapping=_MULTI, allowed=[], default="opsdev"),
+            "args": {"path": "lnd/any/feed"},
+            "expected": "any/feed (account opsdev, container lnd)",
+            "opened": ("https://stopsdev.blob.core.windows.net", "lnd"),
+        },
+        {
+            "name": "old_style_account_next_to_new_ones",
+            "settings": _Settings(mapping={"datalake": _ACCOUNT, **_MULTI}),
+            "args": {"path": "abfss://lnd@stlake.dfs.core.windows.net/loansys/daily_payments"},
+            "expected": f"{FEED} (account datalake, container adls)",
+            "opened": ("https://stlake.blob.core.windows.net", "adls"),
+        },
+        {
+            "name": "guessed_account_name_with_one_account",
+            "settings": _Settings(),
+            "args": {"account": "adls"},
+            "expected": f"{FEED} (account datalake, container adls)",
+            "opened": ("https://stlake.blob.core.windows.net", "adls"),
+        },
+        {
+            "name": "url_wins_over_an_unknown_account_name",
+            "args": {
+                "path": "abfss://lnd@stlakedev.dfs.core.windows.net/loansys/daily_payments",
+                "account": "prod",
+            },
+            "expected": "loansys/daily_payments (account lakedev, container lnd)",
+            "opened": ("https://stlakedev.blob.core.windows.net", "lnd"),
+        },
+        {
+            "name": "aliases_sharing_one_account",
+            "settings": shared,
+            "args": {"path": f"abfss://raw@stlake.dfs.core.windows.net/{FEED}"},
+            "expected": f"{FEED} (account raw, container raw)",
+            "opened": ("https://stlake.blob.core.windows.net", "raw"),
+        },
+        {
+            "name": "aliases_sharing_one_account_named",
+            "settings": shared,
+            "args": {"path": f"abfss://raw@stlake.dfs.core.windows.net/{FEED}", "account": "raw"},
+            "expected": f"{FEED} (account raw, container raw)",
+            "opened": ("https://stlake.blob.core.windows.net", "raw"),
+        },
+        {
+            "name": "bad_default_does_not_block_a_url",
+            "settings": bad_default,
+            "args": {"path": "abfss://lnd@stlakedev.dfs.core.windows.net/loansys/daily_payments"},
+            "expected": "loansys/daily_payments (account lakedev, container lnd)",
+            "opened": ("https://stlakedev.blob.core.windows.net", "lnd"),
+        },
+        {
+            "name": "bad_default_does_not_block_a_named_account",
+            "settings": bad_default,
+            "args": {"path": "lnd/any/feed", "account": "opsdev"},
+            "expected": "any/feed (account opsdev, container lnd)",
+            "opened": ("https://stopsdev.blob.core.windows.net", "lnd"),
+        },
+    ]
+    for test_data in test_cases:
+        container = _FakeContainer({})
+        settings = test_data.get("settings") or _Settings(mapping=_MULTI, allowed=[])
+        out = _check(container, settings=settings, **test_data["args"])
+        assert f"  landing path : {test_data['expected']}" in out, (test_data["name"], out)
+        assert container.opened == [test_data["opened"]], (test_data["name"], container.opened)
+
+
+def test_unclear_accounts_and_containers_are_asked_not_guessed() -> None:
+    one = "https://stone.dfs.core.windows.net"
+    test_cases = [
+        {
+            "name": "several_accounts_none_named",
+            "args": {},
+            "expected": "Several storage accounts are configured (lakedev, opsdev)",
+        },
+        {
+            "name": "unknown_account",
+            "args": {"account": "prod"},
+            "expected": "Unknown storage account 'prod'",
+        },
+        {
+            "name": "url_and_account_disagree",
+            "args": {
+                "path": "abfss://lnd@stlakedev.dfs.core.windows.net/loansys/daily_payments",
+                "account": "opsdev",
+            },
+            "expected": "The URL is on account 'lakedev', not 'opsdev'",
+        },
+        {
+            "name": "url_on_an_unlisted_account",
+            "args": {"path": "abfss://lnd@stother.dfs.core.windows.net/loansys/daily_payments"},
+            "expected": "Wrong storage account: 'stother.dfs.core.windows.net'",
+        },
+        {
+            "name": "unlisted_container",
+            "args": {"path": "abfss://gold@stlakedev.dfs.core.windows.net/loansys/daily_payments"},
+            "expected": "Container 'gold' is not one this agent reads",
+        },
+        {
+            "name": "path_outside_the_account_list",
+            "args": {"path": "lnd/wires/feed", "account": "lakedev"},
+            "expected": (
+                "'lnd/wires/feed' is outside the permitted landing folders "
+                "(lnd/loansys, lnd/savings, raw/hr, raw/sales)"
+            ),
+        },
+        {
+            "name": "path_fits_two_containers",
+            "settings": _Settings(
+                mapping={"one": {"account_url": one, "containers": {"lnd": "*", "raw": "*"}}},
+                allowed=[],
+            ),
+            "args": {"path": "loansys/daily_payments"},
+            "expected": "fits more than one container (lnd, raw)",
+        },
+        {
+            "name": "account_without_paths",
+            "settings": _Settings(
+                mapping={"one": {"account_url": one, "containers": {"lnd": []}}}, allowed=[]
+            ),
+            "args": {},
+            "expected": "No landing paths are listed for account 'one'",
+        },
+        {
+            "name": "long_path_list_is_shortened",
+            "settings": _Settings(
+                mapping={
+                    "one": {
+                        "account_url": one,
+                        "containers": {"lnd": [f"p{i:02d}" for i in range(12)]},
+                    }
+                },
+                allowed=[],
+            ),
+            "args": {"path": "wires/feed"},
+            "expected": "lnd/p08, lnd/p09 and 2 more). Nothing was read.",
+        },
+    ]
+    for test_data in test_cases:
+        container = _FakeContainer({})
+        settings = test_data.get("settings") or _Settings(mapping=_MULTI, allowed=[])
+        out = _check(container, settings=settings, **test_data["args"])
+        assert out.startswith("[adls-agent]"), (test_data["name"], out)
+        assert test_data["expected"] in out, (test_data["name"], out)
+        assert container.list_calls == 0, test_data["name"]
 
 
 def test_listing_problems_are_reported_not_hidden() -> None:
@@ -591,7 +809,7 @@ def test_refusals_failures_and_outcomes_are_logged() -> None:
                     logging.INFO,
                     (
                         f"ADLS file arrival check: account=datalake path='{FEED}' "
-                        "date=2026-10-12 sla='6:00 AM ET' filter=''"
+                        "date=2026-10-12 sla='6:00 AM ET' filter='' container=adls"
                     ),
                 ),
                 (
@@ -994,6 +1212,21 @@ def test_subagent_needs_the_flag_and_an_account() -> None:
         assert dict(s.unconfigured_capabilities).get("adls-agent") == test_data["missing"], (
             test_data
         )
+
+
+def test_settings_accept_accounts_with_container_path_lists() -> None:
+    from v1.core.config import Settings
+
+    saved = os.environ.get("ADLS_ACCOUNT_MAPPING")
+    os.environ["ADLS_ACCOUNT_MAPPING"] = json.dumps(_MULTI)
+    try:
+        mapping = Settings(_env_file=None).adls_account_mapping
+    finally:
+        if saved is None:
+            os.environ.pop("ADLS_ACCOUNT_MAPPING", None)
+        else:
+            os.environ["ADLS_ACCOUNT_MAPPING"] = saved
+    assert mapping == _MULTI, mapping
 
 
 def _main() -> int:

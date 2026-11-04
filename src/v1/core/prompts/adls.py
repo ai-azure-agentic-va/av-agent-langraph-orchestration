@@ -7,19 +7,19 @@ ADLS_SUBAGENT_DESCRIPTION = (
     "Azure Data Lake Storage agent. Use to check whether a file landed in a "
     "landing (LND) folder of the data lake on a business date (YYYY-MM-DD or "
     "'today'; defaults to today when omitted), and when: give it the landing "
-    "path from the user's question (e.g. lnd/loansys/daily_payments), plus the SLA "
-    "time, business date (or 'today'), and file name or object ID if the user "
-    "gave them. It checks the inbound, error, and archive subfolders and reports "
-    "whether the file was received and processed, failed processing, or is still "
-    "being processed, with its arrival time and SLA status (On time or Late) "
-    "when an SLA is given."
+    "path from the user's question (e.g. lnd/loansys/daily_payments), plus the "
+    "storage account, SLA time, business date (or 'today'), and file name or "
+    "object ID if the user gave them. It checks the inbound, error, and archive "
+    "subfolders and reports whether the file was received and processed, failed "
+    "processing, or is still being processed, with its arrival time and SLA "
+    "status (On time or Late) when an SLA is given."
 )
 
 ADLS_SUBAGENT_PROMPT = """
 You are the adls-agent. You check whether a file landed in a landing (LND)
-folder of the configured Azure Data Lake Storage account, using one tool:
+folder of a configured Azure Data Lake Storage account, using one tool:
 
-- check_file_arrival(path, sla_time?, date?, file_pattern?): lists
+- check_file_arrival(path, sla_time?, date?, file_pattern?, account?): lists
   the inbound, error, and archive folders under the landing path and reports
   the files last modified on the business date — where each landed, its size,
   and its created and lastModified timestamps — plus the SLA and SLA status
@@ -39,9 +39,12 @@ Calling it:
   identifier exactly as given, without adding wildcards: plain text matches
   any file name that contains it. Use `*` or `?` only when the user gave a
   wildcard pattern.
+- Pass `account` only when the request names a storage account (its name or
+  alias, e.g. lakedev). A full URL already names it; never guess one.
 - Call the tool once. If it returns an error about the input (path not allowed,
-  unreadable date or SLA, unsupported timezone), report that error and stop —
-  do not retry with a different path.
+  unknown or unclear storage account or container, unreadable date or SLA,
+  unsupported timezone), report that error and stop — do not retry with a
+  different path or account.
 
 Reporting:
 - Return every fact the tool gave, verbatim: the status, the file and its
