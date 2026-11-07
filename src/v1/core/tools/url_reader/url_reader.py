@@ -201,7 +201,8 @@ async def read_url_tool(url: str) -> str:
     Use this to read the content behind a link — for example a URL found in a
     ServiceNow incident's description or work notes, or a link the user gives you
     — when answering the question needs what that page actually says. Pass a
-    single absolute http/https URL.
+    single absolute http/https URL exactly as given; never guess or construct one.
+    Not for browsing the open web for general questions, which stay out of scope.
 
     Only public web pages can be read; internal, private, or non-web URLs are
     refused. Long pages are truncated. Returns the page as Markdown, or a short

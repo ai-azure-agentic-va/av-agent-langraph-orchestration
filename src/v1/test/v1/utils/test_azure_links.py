@@ -40,7 +40,7 @@ import v1.core.agent as agent_mod
 import v1.core.middlewares.azure_links as links
 import v1.core.tools.adf.tools as adf_tools
 from v1.core.middlewares import AzureLinksMiddleware
-from v1.core.middlewares.subagent_access import TASK_TOOL_NAME
+from v1.core.middlewares.access_control import TASK_TOOL_NAME
 from v1.core.tools.ai_search import ai_search as ai_search_mod
 
 SUB = "00000000-0000-4000-8000-000000000000"
@@ -396,19 +396,6 @@ def test_a_subagent_holds_its_tools_results_only() -> None:
     assert _through(message, conversation, whole_conversation=True) is message
 
 
-def test_a_general_purpose_answer_is_not_held() -> None:
-    from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
-
-    assert GENERAL_PURPOSE_SUBAGENT["name"] in links.UNCHECKED_SUBAGENTS
-
-    result = f"Failed run [open run](<{_url(CHILD)}>)"
-    answer = f"It did not recover.\n[open run](<{_url(CHILD)}>)"
-    checked = _checked(answer, _task(result), whole_conversation=True)
-    assert checked.content == answer
-    unchecked = _checked(answer, _task(result, "general-purpose"), whole_conversation=True)
-    assert unchecked.content == "It did not recover."
-
-
 def test_a_resource_group_with_parentheses_keeps_its_link() -> None:
     rg = "rg-data(dev)"
     turn = _turn(_recovery(rg))
@@ -690,7 +677,6 @@ def test_the_orchestrator_checks_its_answer_against_the_whole_conversation() -> 
     checker = stack[kinds.index("AzureLinksMiddleware")]
     assert checker.whole_conversation is True
     # Outer of ContextEditing: a result it clears from the model's view still counts.
-    assert kinds.index("SubagentAccessMiddleware") < kinds.index("AzureLinksMiddleware")
     assert kinds.index("AzureLinksMiddleware") < kinds.index("ContextEditingMiddleware")
 
 

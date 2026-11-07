@@ -1,6 +1,6 @@
 [project]
 name = "deepagent-copilotkit-agui-backend"
-version = "3.3.2"
+version = "3.4.0"
 description = "FastAPI + LangGraph DeepAgent + CopilotKit AG-UI + Postgres checkpointer demo"
 requires-python = ">=3.11"
 dependencies = [
@@ -98,6 +98,10 @@ dependencies = [
   # (not uv.lock), so a floating transitive would drift the build.
   "markdownify==1.2.3",
   "beautifulsoup4==4.15.0",
+  # The STTM workbooks (.xlsx) the sttm-agent builds. Pure Python; et-xmlfile is
+  # its only dependency, pinned for the same reason as beautifulsoup4 above.
+  "openpyxl==3.1.5",
+  "et-xmlfile==2.0.0",
 ]
 
 [build-system]

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "global": {
+    "blocked_tools": [
+      "ls",
+      "grep",
+      "write_file",
+      "edit_file",
+      "delete",
+      "glob"
+    ],
+    "blocked_subagents": []
+  },
+  "groups": {
+    "00000000-0000-0000-0000-000000000001": {
+      "display_name": "EXAMPLE-GROUP-INT",
+      "priority": 200,
+      "search_index": "example-rag-index",
+      "starter_prompts": [
+        {
+          "label": "Example",
+          "message": "What can you help me with?"
+        }
+      ],
+      "blocked_tools": [],
+      "blocked_subagents": []
+    },
+    "00000000-0000-0000-0000-000000000002": {
+      "display_name": "EXAMPLE-GROUP-EXT",
+      "priority": 100,
+      "search_index": "example-rag-index-ext",
+      "starter_prompts": [],
+      "blocked_tools": [
+        "read_url"
+      ],
+      "blocked_subagents": [
+        "adf-agent",
+        "sttm-agent"
+      ]
+    }
+  }
+}

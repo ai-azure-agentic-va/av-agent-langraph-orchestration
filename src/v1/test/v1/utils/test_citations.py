@@ -40,7 +40,7 @@ from test_patch_tool_calls import _AzureStandIn, _stand_in_model, _user
 import v1.core.agent as agent_mod
 from v1.core.middlewares import citations
 from v1.core.middlewares.citations import CitationsMiddleware
-from v1.core.middlewares.subagent_access import TASK_TOOL_NAME
+from v1.core.middlewares.access_control import TASK_TOOL_NAME
 from v1.core.subagents import ADF_SUBAGENT, SERVICENOW_SUBAGENT
 from v1.core.tools.ai_search import ai_search as ai_search_mod
 

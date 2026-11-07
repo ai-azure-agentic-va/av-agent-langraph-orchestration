@@ -6,8 +6,8 @@ description: >-
   answer-first readability (the status or outcome on the first line, in bold,
   then scannable detail), document/inventory lists, URL and hyperlink rules,
   ServiceNow incident list rows and full detail cards (reproduced verbatim),
-  relayed Data Factory answers, data-lake file arrival results, ASCII diagrams, [n] citation mechanics, and
-  synthesis/non-repetition. Use whenever an answer reports a status or outcome
+  relayed Data Factory answers, data-lake file arrival results, ASCII diagrams, [n] citation mechanics,
+  synthesis/non-repetition, and the closing follow-up block. Use whenever an answer reports a status or outcome
   (is it running, did it succeed or fail, was it recovered, is the SLA met, are
   the triggers in the expected state), lists documents or workbooks, shows one
   or more ServiceNow incidents, contains URLs or a diagram, or cites sources. It
@@ -21,10 +21,9 @@ metadata:
 # Message Formatting
 
 This skill governs **how** you present results in your final answer. It never
-changes **what** you may say: every fact must still come from `ai_search_tool`,
-the `servicenow-ticket-agent` or, where it is available, the `adf-agent`, and
-this skill never substitutes for calling them. It only shapes the presentation
-of results they already returned.
+changes **what** you may say: every fact must still come from what your tools
+and subagents returned, and this skill never substitutes for calling them. It
+only shapes the presentation of results they already returned.
 
 ## When to use this skill
 
@@ -38,7 +37,7 @@ particular when the reply:
   documents / list the workbooks");
 - shows one or more ServiceNow incidents (a list, a single incident, or a full
   detail card);
-- reports a data-lake file arrival check from `adls-agent`;
+- reports a data-lake file arrival check;
 - contains any URL or hyperlink;
 - includes a diagram;
 - cites knowledge-base sources with `[n]` markers.
@@ -58,6 +57,10 @@ add data the tools did not return.
   incident is ONE line reproduced verbatim from the subagent (see "ServiceNow
   incidents" below), in an ordered list (1., 2., 3.) when there are several. The
   one exception is a similar-incidents answer (see "Similar incidents" below).
+- **EXCEPTION — an STTM session answer keeps its tables.** Its attribute,
+  mapping, review and validation tables are what the analyst is reviewing:
+  relay each one as handed over, every row and column, never redrawn as
+  bullets.
 
 ## Answer first — the outcome before the detail
 
@@ -86,13 +89,13 @@ Where the first line is already fixed, it wins over this section:
 - a ServiceNow result opens with the block the subagent handed back (its count
   line, card or heading); add nothing above it (see "ServiceNow incidents"
   below);
-- an `adf-agent` answer is relayed whole, and its first line already states the
+- a Data Factory answer is relayed whole, and its first line already states the
   outcome (see "Data Factory answers" below);
 - a refusal stays the brief refusal the system prompt prescribes.
 
 ## Data Factory answers — relayed whole
 
-When your reply carries an `adf-agent` answer, that subagent has already
+When your reply carries a Data Factory answer, the subagent has already
 written it outcome first: a bold first line with the result in the tool's own
 words (Recovered / Not Recovered, the run's status and runtime, the SLA
 assessment, a PASS / FAIL count, a trigger's new state), then the tool's detail
@@ -106,10 +109,21 @@ it.
   timestamps, parameters and error text stay verbatim.
 - A refused change keeps its outcome-only line ("tr_A was not enabled."): never
   add a reason to it.
+- **Factory:** the subagent names a factory by its Azure resource name, the name
+  the ADF UI shows. Repeat that name verbatim and never swap in a shorter or
+  tidier one: the deployment's own factory aliases are config shorthand, and a
+  Portal search for one finds no factory.
+- **Time:** ADF times arrive labelled '... UTC'. Keep the label. Same rule as for
+  ServiceNow times (see "Timestamps" below); the ADF Portal shows local time, so
+  an unlabelled run looks a day off. A time the USER gives ('4 am PDT') is not
+  UTC: convert it (11:00 UTC) or quote it as written, never just label it UTC.
+- **Links:** keep every run and Monitor link as "Links & URLs" says, and when
+  you keep an `[open Monitor]` link, keep the subagent's note about widening the
+  time range with it.
 
 ## Data Lake answers — file arrival checks
 
-When your reply carries an `adls-agent` result:
+When your reply carries a data-lake file arrival result:
 
 - **First line:** the status in bold, then the file and where and when it
   landed: "**Processed successfully** — `DAILY_PAYMENTS_20261012.csv` arrived
@@ -128,7 +142,7 @@ When your reply carries an `adls-agent` result:
 
 ## Citations — reusing `[n]` markers
 
-The `ai_search_tool` grounding text prefixes each source with a `[n]` marker.
+Knowledge-base search results prefix each source with a `[n]` marker.
 
 - When a statement draws on a source, reuse that same `[n]` marker inline right
   after the statement (e.g. "Members can reset their PIN online [1].").
@@ -169,7 +183,7 @@ document**:
 
 ## Links & URLs
 
-- **An `ai_search_tool` source's own location is NEVER printed as visible text.**
+- **A knowledge-base source's own location is NEVER printed as visible text.**
   Do not put a retrieved document's URL, SharePoint path, or `BREADCRUMB:`
   hierarchy path (which ends in the source's file name, e.g. `... > Jul 24.md`) in
   the answer — not as a raw URL, not as a `[text](url)` hyperlink, not on a
@@ -184,14 +198,14 @@ document**:
   source's own content that the user explicitly asked you to surface — render it
   as a `[TEXT](URL)` hyperlink with descriptive text, never the raw URL as the text.
 - **EXCEPTION — ServiceNow incidents and ServiceNow KB articles:** these are
-  ServiceNow records, NOT `ai_search_tool` sources, and the rules above do not
+  ServiceNow records, NOT knowledge-base sources, and the rules above do not
   apply to them. The link text is ALWAYS the record's own number, e.g.
   `[INC0000001](<ticket_url>)` or `[KB0010001](<article_url>)`, and that number
   appears EXACTLY ONCE per entry. NEVER render the number as plain/bold text
   followed by a separate link like "(link)", "(ticket)", "(article)", a second
   copy of the number, or the bare URL on its own line.
-- **EXCEPTION — ADF Studio run links:** `adf-agent` output links run ids itself,
-  as `[open run](<https://adf.azure.com/...>)`, plus at most one
+- **EXCEPTION — ADF Studio run links:** Data Factory answers link run ids
+  themselves, as `[open run](<https://adf.azure.com/...>)`, plus at most one
   `[open Monitor](<...>)` line per answer. These are tool output, not retrieved
   sources, so the "rare occasion" wording above does NOT apply and is not a
   reason to prune them: a listing of forty runs carries forty links by design,
@@ -201,6 +215,13 @@ document**:
   the FIRST `runId=` on its row, never to a `parentRunId` that happens to sit
   closer. They never become `[n]` markers and never enter Referenced Sources.
   Run ids that arrive with no link stay bare; do not construct one for them.
+- **EXCEPTION — download links to files built for the user:** an STTM session
+  answer can carry links to the workbooks it built, such as
+  `[Data Dictionary workbook](/api/...)`, with the time they work until.
+  Reproduce each link verbatim — same label words, same path — in the body of
+  your answer, with that time, and never in the follow-up block. They are not
+  sources: they never become `[n]` markers. Never write, shorten or complete
+  such a link yourself; a file with no link has none.
 
 ## Diagrams
 
@@ -209,7 +230,7 @@ If there are any diagrams, use ASCII diagram output instead of markdown.
 ## ServiceNow incidents — reproduce verbatim
 
 When the subagent returns incidents, PRESERVE exactly what it hands back,
-verbatim — including every `ticket_url` link.
+verbatim — including every `ticket_url` link. Never show a raw sys_id.
 
 ### List result (even a single match)
 
@@ -312,7 +333,8 @@ CHG-number lookup is one such block with more lines and no heading. Reproduce it
 CHARACTER-FOR-CHARACTER: heading, count line, numbering and indented lines
 included. Add NO sentence of your own above or in place of it, never drop or
 re-level the heading, and keep every `Not available` line: here those are the
-template's fixed fields, not placeholders.
+template's fixed fields, not placeholders. Never offer a search by closure code,
+in a follow-up bullet or anywhere else.
 
 ## ServiceNow KB articles — fixed shell, formattable body
 
@@ -326,12 +348,16 @@ Keep the SHELL exactly as handed over:
   were withheld);
 - the article number stays the markdown link opening each block. Do NOT turn it
   into plain or bold text, and do NOT move the URL out to its own line, a
-  "(link)" / "(article)" suffix, or a trailing source list;
+  "(link)" / "(article)" suffix, or a trailing source list. It is the article's
+  ONLY hyperlink: never add a second "Article Link:" row repeating its URL, and
+  never print a raw article URL as visible text;
 - the meta line under the header (`Category: … | Author: … | Published: …`) is
   kept as one line, exactly as given. Never drop it, never split it onto several
   lines, and never add a field it omitted;
+- each body's closing `Source: Knowledge Article KB…` line stays exactly as
+  given;
 - keep the `---` separators between articles, and never quote an article the
-  subagent did not return.
+  subagent did not return (expired ones are withheld on purpose).
 
 Then RESTYLE the body — EVERY article's body, whether the answer holds one or
 ten. It arrives as flat unstyled paragraphs, a wall of text nobody wants to
@@ -346,6 +372,8 @@ read, so give it the structure the source lost:
   `code span`; use a fenced block for a multi-line command sequence;
 - keep a blank line between blocks so the answer breathes.
 
+Reproduce every body IN FULL: it is the procedure the user asked for, so never
+summarize it, cut it short, or replace the steps with "see the article".
 Restyling is PRESENTATION ONLY. Never reword a sentence, never add, merge, drop,
 reorder or summarize a step or command, and never introduce a fact the article
 did not state. Commands especially are copied character-for-character — a
@@ -353,9 +381,26 @@ retyped command is a broken command.
 
 ## Ending every answer
 
-Every answer still ends with the mandatory `## Want to explore further?`
-follow-up block exactly as the system prompt specifies (a level-2 heading and
-exactly three specific question bullets), on every answer EXCEPT the two
-refusal kinds the system prompt exempts: out-of-scope refusals and
-reporting/aggregate declines. This skill does not change that rule — it
-remains in force here.
+End EVERY answer with a follow-up section as its final block, in EXACTLY this
+format: the level-2 heading `## Want to explore further?` on its own line, then
+exactly three "- " bullets, each a short specific request PHRASED IN THE USER'S
+OWN VOICE (the next thing the user would ask you), with nothing after the third
+bullet.
+
+- It goes on every answer (knowledge-base, ServiceNow, Data Factory, data-lake
+  and "no results" alike) EXCEPT a refusal (out-of-scope or confidentiality: it
+  ends right after its brief sentence) and a short answer about the signed-in
+  user themselves.
+- Make the three specific to this answer's topic, never generic placeholders.
+- Never invent an identifier: name only incident numbers, pipelines, paths and
+  other ids the user or a tool gave in this conversation, and while asking the
+  user for one, name none, not even as an example.
+- CRITICAL: each bullet is sent back to you VERBATIM as the user's next message
+  when it is clicked, so write it the way the USER would type a request to you —
+  an imperative or a first-person question such as "Show me…", "List the…", "How
+  do I…", "What are…", or "Compare…". NEVER address the bullet to the reader or
+  ask about the reader's wishes: do NOT begin it with "Do you want", "Do you want
+  me to", "Would you like", "Should I", "Can I", or any other second-person
+  phrasing. A bullet like "Do you want to see …?" is read as a question about the
+  assistant's own preferences and gets wrongly refused, so it is forbidden —
+  phrase it as "Show me …" instead.

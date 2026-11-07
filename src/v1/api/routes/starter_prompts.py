@@ -4,12 +4,12 @@ Returns a list of suggested prompts the chat UI renders as one-click starters.
 Each entry has a short ``label`` (button text) and the ``message`` that is sent
 to the agent when the starter is selected.
 
-The set is group-scoped: ``TENANT_GROUP_STARTER_PROMPTS_MAPPING`` maps an Entra
-group object-id (or display name) to its own prompt list, mirroring how
-``TENANT_GROUP_INDEX_MAPPING`` scopes the search index. The caller's groups come
-from the authenticated principal that LangGraph stamps onto ``request.user``.
-Callers matching no mapped group get an empty list — there is no built-in
-fallback, so starter prompts are shown only to members of a mapped group.
+The set is group-scoped: each group in the access-control file
+(``v1.core.middlewares.access_control``) can carry its own ``starter_prompts``,
+the same way it scopes the search index. The caller's groups come from the
+authenticated principal that LangGraph stamps onto ``request.user``. A caller in
+several groups gets the highest-priority group's prompts. Callers in no group
+with prompts get an empty list — there is no built-in fallback.
 """
 
 from __future__ import annotations
@@ -19,11 +19,10 @@ import logging
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from v1.core.config import get_settings
-from v1.utils.group_routing import groups_from_request, resolve_for_groups
+from v1.core.middlewares.access_control import caller_access
+from v1.utils.group_routing import groups_from_request
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 class StarterPrompt(BaseModel):
@@ -49,18 +48,17 @@ def create_starter_prompts_router() -> APIRouter:
 
     @router.get("")
     async def get_starter_prompts(request: Request) -> StarterPromptsResponse:
-        groups = groups_from_request(request)
-        prompts = resolve_for_groups(
-            settings.tenant_group_starter_prompts_mapping, groups, []
-        )
+        access = caller_access(groups_from_request(request))
         logger.debug(
-            "starter-prompts routing: group_count=%d prompt_count=%d (groups_mapped=%d)",
-            len(groups),
-            len(prompts),
-            len(settings.tenant_group_starter_prompts_mapping),
+            "starter-prompts routing: matched_groups=%d prompt_count=%d",
+            len(access.groups),
+            len(access.starter_prompts),
         )
         return StarterPromptsResponse(
-            prompts=[StarterPrompt(**prompt) for prompt in prompts]
+            prompts=[
+                StarterPrompt(label=prompt.label, message=prompt.message)
+                for prompt in access.starter_prompts
+            ]
         )
 
     return router

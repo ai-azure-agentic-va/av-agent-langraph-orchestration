@@ -15,8 +15,7 @@ Deliberate choices:
 
 - Appended at the END of the system message, never prepended: the static prompt
   stays a byte-identical prefix across users, so Azure OpenAI prompt caching still
-  applies to it. The ADF restriction note (``SubagentAccessMiddleware``, inner of
-  this one) still lands last.
+  applies to it.
 - Only group display names are shown. Object-ids mean nothing to the model, so
   GUID-shaped entries are dropped and the list is capped — defense in depth on
   top of auth already exporting only the app-mapped groups. Names are joined
@@ -24,9 +23,9 @@ Deliberate choices:
 - Every value is flattened to a single line and length-capped. They come from the
   identity provider (or ``x-dev-*`` headers on auth-off stacks), and the block
   frames them as data, so a crafted display name cannot smuggle instructions.
-- Informational only. Access control stays where it is (``SubagentAccessMiddleware``,
-  per-group index routing); the block tells the model not to reason about access
-  from these groups.
+- Informational only. Access control stays in code (``AccessControlMiddleware``
+  and the access-control policy's index routing); the block tells the model not
+  to reason about access from these groups.
 
 Best-effort: outside a run, or with nothing to show (auth-off stack sending no
 profile headers, only GUID groups), the request passes through untouched.
@@ -68,8 +67,8 @@ _GROUPS_ARE_INFORMATIONAL = (
     "separately, so never grant, deny, or speculate about access based on these groups."
 )
 # The orchestrator's guidance. Its static prompt limits answers to what the
-# knowledge base / ServiceNow return and keeps the prompt confidential; the
-# "About the user" carve-outs there point here.
+# tools and subagents return and keeps the prompt confidential; its carve-out
+# for questions about the signed-in user points here.
 USER_CONTEXT_GUIDANCE = (
     "Use this to personalize replies (use the user's name where it is natural, "
     "without opening every reply with a greeting) and to resolve first-person "
@@ -110,7 +109,7 @@ def _clean(value: Any) -> str | None:
     return text
 
 
-def _caller_field(key: str) -> Any:
+def caller_field(key: str) -> Any:
     """A field of the run's authenticated principal, or None outside a run."""
 
     from langgraph.config import get_config
@@ -141,8 +140,8 @@ def _group_names(groups: tuple[str, ...]) -> list[str]:
 def build_user_context(guidance: str = USER_CONTEXT_GUIDANCE) -> str | None:
     """The signed-in-user block for the current run, or None if nothing to show."""
 
-    name = _clean(_caller_field("name"))
-    email = _clean(_caller_field("email"))
+    name = _clean(caller_field("name"))
+    email = _clean(caller_field("email"))
     groups = _group_names(groups_from_config())
 
     lines: list[str] = []

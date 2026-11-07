@@ -43,10 +43,9 @@ text, which the renderer would otherwise make part of the link.
 What counts as held: in a subagent, its tools' results only. Its task text is
 the orchestrator's writing, and a link the orchestrator made up there must not
 come back to it as a subagent's finding. In the orchestrator, every tool result
-but the answers of deepagents' general-purpose subagent (the one subagent that
-does not check its own links), its own earlier answers, checked as each was
-written, which keep a link once summarization drops the result it came from,
-and what the user wrote. Never a system prompt (the prompts'
+(each subagent checks the links in its own answer), its own earlier answers,
+checked as each was written, which keep a link once summarization drops the
+result it came from, and what the user wrote. Never a system prompt (the prompts'
 'https://adf.azure.com/...' is an example) or the summary that stands for the
 older turns.
 
@@ -74,10 +73,6 @@ from langchain.agents.middleware import (
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
-
-# deepagents adds this subagent with middleware of its own, so its answer is a
-# model's writing that nothing checked against its tools' results.
-UNCHECKED_SUBAGENTS = frozenset({"general-purpose"})
 
 _GUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _ANY_GUID = re.compile(_GUID, re.IGNORECASE)
@@ -444,18 +439,10 @@ def _held_texts(messages: list[AnyMessage], whole_conversation: bool) -> list[st
     """The texts a link may come from, tool results first: a run's own link wins
     over one an answer or the user wrote."""
 
-    unchecked = {
-        call["id"]
-        for message in messages
-        if isinstance(message, AIMessage)
-        for call in message.tool_calls or []
-        if call.get("name") == "task"
-        and (call.get("args") or {}).get("subagent_type") in UNCHECKED_SUBAGENTS
-    }
     results = [
         text
         for message in messages
-        if isinstance(message, ToolMessage) and message.tool_call_id not in unchecked
+        if isinstance(message, ToolMessage)
         for text in _strings(message.content)
     ]
     if not whole_conversation:

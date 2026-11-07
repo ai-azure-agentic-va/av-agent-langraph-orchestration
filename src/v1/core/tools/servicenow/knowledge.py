@@ -6,7 +6,15 @@ so it belongs with the rest of ServiceNow rather than at the orchestrator level.
 The ``ownership_group`` parameter is a SEARCH filter, not an access control — it
 is caller-supplied and therefore omittable. The corpus is open to every caller:
 the teams confirmed they want it shared, the same decision that leaves incidents
-unscoped (see :mod:`v1.core.middlewares.subagent_access`).
+unscoped.
+
+ServiceNow itself scopes nothing per caller: the integration authenticates with
+ONE service account, so the instance sees the application, never the signed-in
+person, and an unscoped ``/incidents`` query returns every team's records. The
+assignment / ownership groups on a record are a filterable field, not an ACL.
+Incidents and KB articles are open because the teams want them open. If that
+changes, the check belongs on the tools' shared ``/incidents`` call (or, for a
+whole capability, in the access-control policy), not in this filter.
 
 Three things this layer owns that the client does not:
 

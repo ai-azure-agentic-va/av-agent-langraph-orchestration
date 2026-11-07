@@ -14,22 +14,15 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     agent_max_steps: int = Field(default=50, alias="AGENT_MAX_STEPS")
 
-    tenant_group_index_mapping: dict[str, str] = Field(
-        default_factory=dict,
-        alias="TENANT_GROUP_INDEX_MAPPING",
+    access_control_config_path: str | None = Field(
+        default=None,
+        alias="ACCESS_CONTROL_CONFIG_PATH",
         description=(
-            "JSON object mapping Entra group IDs or names to Azure AI Search index names, "
-            'for example: {"group-id": "search-index"}'
-        ),
-    )
-    tenant_group_starter_prompts_mapping: dict[str, list[dict[str, str]]] = Field(
-        default_factory=dict,
-        alias="TENANT_GROUP_STARTER_PROMPTS_MAPPING",
-        description=(
-            "JSON object mapping Entra group IDs or names to a list of starter prompts "
-            "({label, message}) shown in the chat UI for members of that group, e.g. "
-            '{"group-id": [{"label": "...", "message": "..."}]}. Callers matching no '
-            "mapped group get no starter prompts (there is no built-in fallback)."
+            "Path to the access-control JSON file: per Entra group, the search index, "
+            "starter prompts, and blocked tools and subagents, plus tools and subagents "
+            "blocked for everyone (see v1.core.middlewares.access_control and "
+            "config/access-control.example.json). Required: unset, or a file that is "
+            "missing or invalid, fails startup."
         ),
     )
 
@@ -42,8 +35,9 @@ class Settings(BaseSettings):
             "Azure Data Factory the adf-agent may query, e.g. "
             '{"finance-dev": {"subscription_id": "...", "resource_group": "...", '
             '"factory_name": "..."}}. Empty (default) disables the ADF subagent '
-            "entirely: it is not registered on the orchestrator and the system "
-            "prompt carries no ADF routing text."
+            "entirely: it is not registered on the orchestrator, so its "
+            "description, the only ADF routing text the orchestrator sees, "
+            "is never offered."
         ),
     )
     adf_default_factory: str | None = Field(
@@ -54,17 +48,6 @@ class Settings(BaseSettings):
             "when the caller does not name one. When exactly one factory is mapped "
             "it is the implicit default and this can stay unset; with several "
             "factories and no default the tools ask the model to pass factory=<alias>."
-        ),
-    )
-    adf_disabled_groups: StringList = Field(
-        default_factory=list,
-        alias="ADF_DISABLED_GROUPS",
-        description=(
-            "Comma-separated Entra group object-ids or display names for which the "
-            "Azure Data Factory subagent is DISABLED, matched the same way as "
-            "TENANT_GROUP_INDEX_MAPPING keys. A caller whose groups intersect this set "
-            "cannot delegate to the adf-agent; everyone else keeps it. Empty "
-            "(default) leaves the ADF subagent enabled for everyone."
         ),
     )
     adf_write_enabled: bool = Field(
@@ -94,6 +77,25 @@ class Settings(BaseSettings):
             "reuse every pipeline lookup by name lists every factory again. An answer "
             "that a pipeline does NOT exist is always checked against a list at most "
             "30 s old. 0 or less turns the reuse off."
+        ),
+    )
+    # Source-to-Target Mapping authoring (sttm-agent)
+    sttm_agent_enabled: bool = Field(
+        default=False,
+        alias="STTM_AGENT_ENABLED",
+        description=(
+            "Turns the sttm-agent on: Data Dictionary and STTM authoring sessions. "
+            "Off by default. Which groups may use it is set in the access-control "
+            "file, not here."
+        ),
+    )
+    sttm_download_base_url: str = Field(
+        default="/api/sttm/files",
+        alias="STTM_DOWNLOAD_BASE_URL",
+        description=(
+            "Where the download links to the workbooks the sttm-agent builds point: "
+            "this backend's /sttm/files route as the frontend reaches it (its /api "
+            "proxy by default). A link is this, a slash and the file's id."
         ),
     )
     # Azure Data Lake Storage (adls-agent)
@@ -133,14 +135,6 @@ class Settings(BaseSettings):
         default="America/New_York",
         alias="ADLS_BUSINESS_TIMEZONE",
         description="IANA timezone that defines the business day for ADLS checks.",
-    )
-    adls_disabled_groups: StringList = Field(
-        default_factory=list,
-        alias="ADLS_DISABLED_GROUPS",
-        description=(
-            "Comma-separated Entra group ids or names that may not use the adls-agent. "
-            "Empty (default) allows everyone."
-        ),
     )
     #Openai Config
     # Reasoning effort for gpt-5.x deployments. "none" turns the model into a
@@ -381,7 +375,7 @@ class Settings(BaseSettings):
             "JSON object mapping an Azure AI Search index name to the semantic "
             'configuration defined ON that index, e.g. {"index-a": "config-a", '
             '"index-b": "config-b"}. The semantic config is a property of the index, so '
-            "when groups are routed to different indexes (tenant_group_index_mapping) each "
+            "when groups are routed to different indexes (the access-control file) each "
             "index needs its own config name — sending one global name makes Azure 400 "
             "('Unknown semantic configuration') on any index that does not define it, which "
             "silently kills RAG for that group. The resolved index is looked up here first; "
@@ -516,34 +510,11 @@ class Settings(BaseSettings):
 
     # --- Optional capabilities ---------------------------------------------
     # An optional capability is wired end to end or not at all: its subagent
-    # joins the roster in ``v1.core.subagents`` and its routing block is
-    # appended to the orchestrator system prompt in ``v1.core.prompts``. Both
-    # read the flags below, so the two cannot drift and the model is never told
-    # about a capability whose backing resource is unconfigured (which would
-    # surface as a delegation that fails at tool-call time).
-
-    @property
-    def mapped_group_keys(self) -> frozenset[str]:
-        """Every Entra group object-id or display name this deployment maps to behavior.
-
-        Union of the group-keyed knobs: ``tenant_group_index_mapping``,
-        ``tenant_group_starter_prompts_mapping``, ``adf_disabled_groups``, and
-        ``adls_disabled_groups``.
-        Auth exports ONLY a caller's intersection with this set (both forms of a
-        matched group) into ``langgraph_auth_user`` — the platform persists run
-        configs and returns them through its threads/runs read APIs, so the
-        caller's full AD inventory must never ride along (see
-        ``v1.utils.auth._mapped_groups``).
-        """
-
-        return frozenset(
-            (
-                *self.tenant_group_index_mapping,
-                *self.tenant_group_starter_prompts_mapping,
-                *self.adf_disabled_groups,
-                *self.adls_disabled_groups,
-            )
-        )
+    # joins the roster in ``v1.core.subagents`` only when its flag below says
+    # so. The orchestrator learns of a capability only from that subagent's
+    # description, so the model is never told about one whose backing resource
+    # is unconfigured (which would surface as a delegation that fails at
+    # tool-call time).
 
     @property
     def adf_enabled(self) -> bool:
@@ -556,6 +527,12 @@ class Settings(BaseSettings):
         """Whether the ADLS subagent is on and has an account to read."""
 
         return self.adls_agent_enabled and bool(self.adls_account_mapping)
+
+    @property
+    def sttm_enabled(self) -> bool:
+        """Whether the STTM authoring subagent is on. It needs no Azure resource."""
+
+        return self.sttm_agent_enabled
 
     @property
     def unconfigured_capabilities(self) -> tuple[tuple[str, str], ...]:
@@ -575,6 +552,7 @@ class Settings(BaseSettings):
                     "ADLS_ACCOUNT_MAPPING" if self.adls_agent_enabled else "ADLS_AGENT_ENABLED",
                     self.adls_enabled,
                 ),
+                ("sttm-agent", "STTM_AGENT_ENABLED", self.sttm_enabled),
             )
             if not enabled
         )

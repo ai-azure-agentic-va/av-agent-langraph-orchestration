@@ -53,7 +53,7 @@ from langchain.agents.middleware import (
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
-from v1.core.middlewares.subagent_access import TASK_TOOL_NAME
+from v1.core.middlewares.access_control import TASK_TOOL_NAME
 from v1.core.tools.ai_search.ai_search import (
     _current_run_id,
     _emit,
@@ -251,7 +251,7 @@ class CitationsMiddleware(AgentMiddleware):
     every middleware that rewrites the answer, so it
     checks the text the user is shown. deepagents' FilesystemMiddleware wraps
     outside it and keeps the artifact if it evicts a large ``task`` result; a call
-    SubagentAccessMiddleware blocks comes back as a ToolMessage and passes through.
+    AccessControlMiddleware refuses comes back as a ToolMessage and passes through.
 
     adf-agent runs it as well, to persist its own searches: deepagents copies the
     subagent's ``all_sources`` back on return, so they are kept even if the run's

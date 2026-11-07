@@ -4635,7 +4635,7 @@ def test_inside_adf_agent_the_request_is_the_task_it_was_handed() -> None:
     from test_patch_tool_calls import _stand_in_model, _user
 
     import v1.core.agent as agent_mod
-    from v1.core.middlewares.subagent_access import TASK_TOOL_NAME
+    from v1.core.middlewares.access_control import TASK_TOOL_NAME
     from v1.core.subagents import ADF_SUBAGENT, SERVICENOW_SUBAGENT
 
     def _turn(n: int, task: str) -> list[AIMessage]:
@@ -7838,15 +7838,15 @@ def test_a_stopped_run_tree_cancels_its_fetches_ahead() -> None:
 # --- wiring -------------------------------------------------------------------
 
 
-def test_subagent_exposes_every_tool_under_the_gated_name() -> None:
-    """The subagent's name must match the access gate's, or the gate silently
-    stops protecting it; its tool list must cover every read and guarded-write
-    capability, plus the knowledge-base search it uses to resolve a written SLA
-    threshold ADF itself does not store."""
-    from v1.core.middlewares.subagent_access import ADF_SUBAGENT_NAME
+def test_subagent_exposes_every_tool_under_its_registered_name() -> None:
+    """Access-control files block the subagent by this name (a name the backend
+    does not have fails startup), so renaming it is a config change too; its tool
+    list must cover every read and guarded-write capability, plus the
+    knowledge-base search it uses to resolve a written SLA threshold ADF itself
+    does not store."""
     from v1.core.subagents import ADF_SUBAGENT
 
-    assert ADF_SUBAGENT["name"] == ADF_SUBAGENT_NAME
+    assert ADF_SUBAGENT["name"] == "adf-agent"
     assert {tool.name for tool in ADF_SUBAGENT["tools"]} == {
         "list_factories",
         "list_pipelines",
@@ -7900,6 +7900,17 @@ def _adf_skill_text(name: str) -> str:
 
     text = (SKILLS_DIR / "adf" / name / "SKILL.md").read_text(encoding="utf-8")
     return " ".join(text.split())
+
+
+def _formatting_skill_text() -> str:
+    """The orchestrator's message-formatting skill, as written.
+
+    The rules for presenting a relayed Data Factory answer live there: the
+    orchestrator reads it before every answer that presents results.
+    """
+    from v1.core.skills import SKILLS_DIR
+
+    return (SKILLS_DIR / "message-formatting" / "SKILL.md").read_text(encoding="utf-8")
 
 
 def test_prompt_pairs_pipeline_context_with_the_knowledge_base() -> None:
@@ -8009,12 +8020,12 @@ def test_orchestrator_hands_the_ticket_text_and_opened_time_to_the_adf_agent() -
     a summarized handoff deletes the pipeline names and the anchor together, and
     the subagent then has nothing to correlate.
     """
-    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK
+    from v1.core.prompts.adf import ADF_SUBAGENT_DESCRIPTION
 
-    assert "INCIDENT → PIPELINE HANDOFF" in ADF_ROUTING_BLOCK
-    assert "OPENED/CREATED timestamp" in ADF_ROUTING_BLOCK
-    assert "never invent one" in ADF_ROUTING_BLOCK
-    assert "CORRELATING A SERVICENOW INCIDENT" in ADF_ROUTING_BLOCK
+    assert "INCIDENT → PIPELINE HANDOFF" in ADF_SUBAGENT_DESCRIPTION
+    assert "OPENED/CREATED timestamp" in ADF_SUBAGENT_DESCRIPTION
+    assert "never invent one" in ADF_SUBAGENT_DESCRIPTION
+    assert "correlating a ServiceNow incident" in ADF_SUBAGENT_DESCRIPTION
 
 
 def test_orchestrator_correlates_a_pasted_ticket_without_a_servicenow_lookup() -> None:
@@ -8024,10 +8035,10 @@ def test_orchestrator_correlates_a_pasted_ticket_without_a_servicenow_lookup() -
     orchestrator looked the NUMBER up anyway, got ticket_not_found and stopped —
     handing back nothing while holding every input the correlation needed.
     """
-    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK
+    from v1.core.prompts.adf import ADF_SUBAGENT_DESCRIPTION
 
-    assert "A TICKET THE USER ALREADY PASTED goes straight to `adf-agent`" in ADF_ROUTING_BLOCK
-    assert "CORRELATE ANYWAY from the text they gave you" in ADF_ROUTING_BLOCK
+    assert "A TICKET THE USER ALREADY PASTED goes straight here" in ADF_SUBAGENT_DESCRIPTION
+    assert "CORRELATE ANYWAY from the text they gave you" in ADF_SUBAGENT_DESCRIPTION
 
 
 def test_status_answers_open_with_their_outcome() -> None:
@@ -8082,20 +8093,21 @@ def test_orchestrator_relays_the_factory_resource_name_and_the_utc_label() -> No
     an unlabelled time. Both are dead ends — the shorthand matches no
     factory in the Portal, and the Portal renders local time, so an unlabelled
     run looks like it ran on a different day. Rules held only by `adf.py` cannot
-    stop that: the layer that drops them is this one.
+    stop that: the layer that drops them is the orchestrator's, so they sit in
+    the formatting skill it reads before every answer that presents results.
     """
     from v1.core.prompts.adf import ADF_SUBAGENT_PROMPT
-    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK
 
     assert "FACTORY NAMES — use the name the tools print" in ADF_SUBAGENT_PROMPT
     assert "TIMESTAMPS — keep the UTC label" in ADF_SUBAGENT_PROMPT
     assert "ADF LINKS — pass them through" in ADF_SUBAGENT_PROMPT
 
-    assert "Repeat that name verbatim" in ADF_ROUTING_BLOCK
-    assert "ADF times arrive labelled '... UTC'. Keep the label." in ADF_ROUTING_BLOCK
+    skill = _formatting_skill_text()
+    assert "Repeat that name verbatim" in skill
+    assert "ADF times arrive labelled '... UTC'. Keep the label." in skill
     # ServiceNow and ADF times now share one rule (keep the ' UTC' label: the UI
-    # localizes that form), so neither block may forbid the label.
-    assert "Same rule as for\n    ServiceNow times" in ADF_ROUTING_BLOCK
+    # localizes that form), so neither section may forbid the label.
+    assert "Same rule as for ServiceNow times" in " ".join(skill.split())
 
 
 def test_both_prompts_keep_a_users_own_time_out_of_the_utc_label() -> None:
@@ -8105,10 +8117,9 @@ def test_both_prompts_keep_a_users_own_time_out_of_the_utc_label() -> None:
     the user's time, and only the subagent passes it to a tool's date filter.
     """
     from v1.core.prompts.adf import ADF_SUBAGENT_PROMPT
-    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK
 
-    adf, routing = (" ".join(p.split()) for p in (ADF_SUBAGENT_PROMPT, ADF_ROUTING_BLOCK))
-    for prompt in (adf, routing):
+    adf, skill = (" ".join(p.split()) for p in (ADF_SUBAGENT_PROMPT, _formatting_skill_text()))
+    for prompt in (adf, skill):
         assert "A time the USER gives ('4 am PDT') is not UTC: convert it (11:00 UTC)" in prompt
         assert "quote it as written" in prompt
     assert "before a date filter or a ' UTC' label" in adf
@@ -8122,9 +8133,8 @@ def test_both_prompts_carry_the_adf_link_and_the_24_hour_caveat() -> None:
     caveat has to travel with the id too.
     """
     from v1.core.prompts.adf import ADF_SUBAGENT_PROMPT
-    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK
 
-    for prompt in (ADF_SUBAGENT_PROMPT, ADF_ROUTING_BLOCK):
+    for prompt in (ADF_SUBAGENT_PROMPT, _formatting_skill_text()):
         assert "adf.azure.com" in prompt
         assert "24 HOURS" in prompt or "24 hours" in prompt
     # Rule 1 forbids ARM paths; unnarrowed it would forbid the link that is one.
@@ -8142,12 +8152,11 @@ def test_both_prompts_report_a_write_refusal_by_its_outcome_only() -> None:
     Asked why, both used to explain the policy instead ('I can't disclose which
     factories are write-enabled'), which still tells the user that some are.
     """
-    from v1.core.prompts.adf import ADF_SUBAGENT_PROMPT
-    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK
+    from v1.core.prompts.adf import ADF_SUBAGENT_DESCRIPTION, ADF_SUBAGENT_PROMPT
 
     subagent = " ".join(ADF_SUBAGENT_PROMPT.split())
     refusals = _adf_skill_text("adf-write-refusals")
-    routing = " ".join(ADF_ROUTING_BLOCK.split())
+    routing = " ".join(ADF_SUBAGENT_DESCRIPTION.split())
     assert "WRITE REFUSALS — report the outcome, never the reason" in subagent
     assert "even when the user asks for the exact reason or error" in refusals
     assert "no saying that a reason or error exists or is being withheld" in refusals
@@ -8176,25 +8185,20 @@ def test_routing_follows_intent_and_the_named_source_not_keywords() -> None:
     user named the knowledge base. Routing now goes by what the user wants back,
     and a source the user names decides over every topic rule.
     """
-    from v1.core.middlewares.subagent_access import ADF_RESTRICTION_NOTE
     from v1.core.prompts.adf import ADF_SUBAGENT_DESCRIPTION
-    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK, BASE_SYSTEM_PROMPT
+    from v1.core.prompts.orchestrator import BASE_SYSTEM_PROMPT
 
     base = " ".join(BASE_SYSTEM_PROMPT.split())
-    routing = " ".join(ADF_ROUTING_BLOCK.split())
+    routing = " ".join(ADF_SUBAGENT_DESCRIPTION.split())
     assert "ROUTE BY INTENT, NEVER BY KEYWORD" in base
-    assert "A SOURCE THE USER NAMES decides, over every topic rule in this prompt" in base
+    assert "A SOURCE THE USER NAMES decides, over every topic rule" in base
     assert "never switch to it silently" in base
     assert "MENTIONING A PIPELINE IS NOT A REASON TO DELEGATE" in routing
-    assert "goes to `ai_search_tool` ONLY, even when it names a pipeline" in routing
+    assert "goes to the knowledge base ONLY, even when it names a pipeline" in routing
     assert "When the USER sent the question to the knowledge base, do not delegate" in routing
     assert "wording wins" not in routing
     assert "is it documented which pipelines exist" not in routing
-    assert "not merely because a question mentions a pipeline" in ADF_SUBAGENT_DESCRIPTION
-    # EXT callers without Data Factory still get written knowledge about pipelines.
-    assert "Mentioning a pipeline does not make a request a Data Factory request" in (
-        ADF_RESTRICTION_NOTE
-    )
+    assert "not merely because a question mentions a pipeline" in routing
 
 
 def test_rule_9_recognises_both_refusals_by_their_tool_text() -> None:
@@ -8265,8 +8269,8 @@ def test_adf_skills_stay_out_of_the_orchestrator_skill_list() -> None:
 def test_prompts_stay_within_their_context_budget() -> None:
     """Every character here is paid on every call that loads it.
 
-    The orchestrator carries its base prompt, the ADF routing block and the
-    adf-agent description on every turn, and the adf-agent prompt is paid on
+    The orchestrator carries the adf-agent description on every turn (it is the
+    agent's entry in the ``task`` tool), and the adf-agent prompt is paid on
     every delegation. Guidance only some questions need belongs in a skill the
     agent reads when its rule applies (skills/adf/), so growing past these caps
     is a decision to make, not a side effect.
@@ -8274,13 +8278,14 @@ def test_prompts_stay_within_their_context_budget() -> None:
     The adf-agent cap moved from 24,000 for OUTCOME FIRST: it shapes nearly every
     status answer, so a skill read would cost a tool call on each of them. The
     unnamed-trigger line in rule 7 stays inline for the same reason as its rule.
+    The description took over the orchestrator's old ADF routing block, so what
+    to hand the agent and how to relay it leave together when access control
+    hides the agent; the base prompt's own cap is in test_orchestrator_prompt.
     """
     from v1.core.prompts.adf import ADF_SUBAGENT_DESCRIPTION, ADF_SUBAGENT_PROMPT
-    from v1.core.prompts.orchestrator import ADF_ROUTING_BLOCK, BASE_SYSTEM_PROMPT
 
     assert len(ADF_SUBAGENT_PROMPT) <= 25_000
-    orchestrator = (BASE_SYSTEM_PROMPT, ADF_ROUTING_BLOCK, ADF_SUBAGENT_DESCRIPTION)
-    assert sum(map(len, orchestrator)) <= 49_000
+    assert len(ADF_SUBAGENT_DESCRIPTION) <= 7_000
 
 
 def test_prompt_leaves_the_factory_to_the_tools() -> None:

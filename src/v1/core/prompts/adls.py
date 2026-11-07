@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-# What the orchestrator reads when deciding to delegate (not the subagent's own prompt).
+# What the orchestrator reads when deciding to delegate (not the subagent's own prompt),
+# along with what to hand it and how to present its result.
 ADLS_SUBAGENT_DESCRIPTION = (
     "Azure Data Lake Storage agent. Use to check whether a file landed in a "
     "landing (LND) folder of the data lake on a business date (YYYY-MM-DD or "
@@ -12,7 +13,19 @@ ADLS_SUBAGENT_DESCRIPTION = (
     "object ID if the user gave them. It checks the inbound, error, and archive "
     "subfolders and reports whether the file was received and processed, failed "
     "processing, or is still being processed, with its arrival time and SLA "
-    "status (On time or Late) when an SLA is given."
+    "status (On time or Late) when an SLA is given. Whether a file arrived or "
+    "landed, when, and whether it was processed or failed in landing are in "
+    "scope. The landing path (a relative lnd/… path or a full abfss://, abfs:// "
+    "or https:// URL) comes FROM THE USER: never invent, guess or derive one from "
+    "a view or table name, and when the question has none, ask the user for it "
+    "before delegating. Name only landing paths the user or a tool gave, in the "
+    "answer and the follow-up section alike; when a path is incorrect or not "
+    "allowed, or while asking for one, propose none, not even as an example. Only "
+    "the path is required: delegate right away, never ask first for a storage "
+    "account, SLA, timezone, date or file name, and pass 'today' (or no date) as "
+    "it is. Pass the storage account, SLA, date, file name or object ID exactly as "
+    "the user gave them and never add a timezone. Present its result as the "
+    "formatting skill's \"Data Lake answers\" section says."
 )
 
 ADLS_SUBAGENT_PROMPT = """

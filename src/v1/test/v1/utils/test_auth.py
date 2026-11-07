@@ -3,8 +3,8 @@
 Covers signature verification (RS256/ES256 accept; alg=none / disallowed-alg /
 wrong-kid / tampered-payload / wrong-key reject), claim validation
 (exp/nbf/iss/aud/tid), the non-dev environment hard-guards, the JWKS cache, and
-the mapped-groups-only export (only groups keyed in the TENANT_GROUP_* /
-ADF_DISABLED_GROUPS settings reach the langgraph user).
+the configured-groups-only export (only groups the access-control policy
+configures reach the langgraph user).
 
 Keys are generated in-process with ``cryptography``; tokens and JWKs are built
 with ``PyJWT``. No network is touched (the one JWKS-URL test stubs ``urlopen``).
@@ -101,27 +101,40 @@ def _env(**overrides):
                 os.environ[key] = value
 
 
-@contextlib.contextmanager
-def _group_mappings(index="{}", prompts="{}", adf=""):
-    """Pin the group-keyed settings that gate the group export, hermetically.
+_TEAM_ID = "6f1c2b9e-0d4a-4c8e-9a51-3e7b2d1f8c40"
+_OTHER_ID = "0b7e4d2a-9c13-4f6e-8d25-a1f3c6e9b704"
+_TEAM_POLICY = {
+    "version": 1,
+    "groups": {_TEAM_ID: {"display_name": "TEAM-A", "search_index": "team-a-index"}},
+}
 
-    Auth exports only groups present in ``Settings.mapped_group_keys``, so tests
-    must control that set explicitly (real env vars beat any developer ``.env``
-    file) and clear the cached Settings so the override is actually read.
+
+@contextlib.contextmanager
+def _access_file(config: dict):
+    """Run with the access-control policy read from a file holding ``config``.
+
+    Auth exports only the groups the policy configures, so tests pin the file
+    (a real env var beats any developer ``.env`` file) and clear the cached
+    Settings and policy so it is actually read.
     """
 
-    from v1.core.config import get_settings
+    import tempfile
 
-    with _env(
-        TENANT_GROUP_INDEX_MAPPING=index,
-        TENANT_GROUP_STARTER_PROMPTS_MAPPING=prompts,
-        ADF_DISABLED_GROUPS=adf,
-    ):
-        get_settings.cache_clear()
-        try:
-            yield
-        finally:
+    from v1.core.config import get_settings
+    from v1.core.middlewares.access_control import get_access_policy
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "access-control.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(config, handle)
+        with _env(ACCESS_CONTROL_CONFIG_PATH=path):
             get_settings.cache_clear()
+            get_access_policy.cache_clear()
+            try:
+                yield
+            finally:
+                get_settings.cache_clear()
+                get_access_policy.cache_clear()
 
 
 def _decode(token: str):
@@ -493,19 +506,19 @@ def test_authenticate_end_to_end_rs256() -> None:
         "tid": "tenant-1",
         "oid": "user-oid",
         "scp": "api.read api.write",
-        "groups": ["g-1"],
+        "groups": [_TEAM_ID],
     }
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
     with (
         _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"),
-        _group_mappings(index='{"g-1": "search-index"}'),
+        _access_file({"version": 1, "groups": {_TEAM_ID: {}}}),
     ):
         principal = auth.authenticate_authorization("Bearer " + token)
     assert principal.subject == "user-oid"
     assert principal.auth_mode == "jwt"
     assert "api.read" in principal.scopes
     assert principal.tenant == "tenant-1"
-    assert principal.groups == ("g-1",)
+    assert principal.groups == (_TEAM_ID,)
 
 
 def test_authenticate_rejects_missing_required_scope() -> None:
@@ -548,74 +561,8 @@ def test_authenticate_rejects_expired_token() -> None:
         )
 
 
-def test_authenticate_exports_only_mapped_groups_in_both_forms() -> None:
-    """Only app-mapped groups are exported; a Graph pair match keeps id AND name."""
-    import v1.utils.auth as auth_module
-    from v1.utils.graph_groups import GraphGroup
-
-    auth = JwtAuthenticator(_e2e_config())
-    now = int(time.time())
-    claims = {
-        "iss": "https://idp/",
-        "aud": "api://app",
-        "exp": now + 3600,
-        "oid": "user-oid",
-        "scp": "api.read",
-        "groups": ["guid-1"],
-    }
-    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    original = auth_module.resolve_groups_via_graph
-    try:
-        auth_module.resolve_groups_via_graph = lambda oid, **kw: (
-            GraphGroup(id="guid-1", display_name="APPL-DEVELOPERS"),
-            GraphGroup(id="guid-2", display_name="UNRELATED-TEAM"),
-        )
-        with (
-            _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="true"),
-            _group_mappings(index='{"APPL-DEVELOPERS": "dev-index"}'),
-        ):
-            principal = auth.authenticate_authorization("Bearer " + token)
-    finally:
-        auth_module.resolve_groups_via_graph = original
-    # The name-keyed mapping keeps BOTH forms of the matched group; the unmapped
-    # guid-2 / UNRELATED-TEAM membership is dropped from the export entirely.
-    assert principal.groups == ("APPL-DEVELOPERS", "guid-1")
-    user_groups = principal.to_langgraph_user()["groups"]
-    assert "guid-2" not in user_groups and "UNRELATED-TEAM" not in user_groups
-
-
-def test_authenticate_guid_keyed_mapping_exports_display_name_too() -> None:
-    """A GUID-keyed mapping still surfaces the display name (user-context needs it)."""
-    import v1.utils.auth as auth_module
-    from v1.utils.graph_groups import GraphGroup
-
-    auth = JwtAuthenticator(_e2e_config())
-    now = int(time.time())
-    claims = {
-        "iss": "https://idp/",
-        "aud": "api://app",
-        "exp": now + 3600,
-        "oid": "user-oid",
-        "scp": "api.read",
-    }
-    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
-    original = auth_module.resolve_groups_via_graph
-    try:
-        auth_module.resolve_groups_via_graph = lambda oid, **kw: (
-            GraphGroup(id="guid-1", display_name="APPL-DEVELOPERS"),
-        )
-        with (
-            _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="true"),
-            _group_mappings(index='{"guid-1": "dev-index"}'),
-        ):
-            principal = auth.authenticate_authorization("Bearer " + token)
-    finally:
-        auth_module.resolve_groups_via_graph = original
-    assert principal.groups == ("APPL-DEVELOPERS", "guid-1")
-
-
 def test_authenticate_exports_no_groups_when_nothing_is_mapped() -> None:
-    """With no group-keyed settings configured, the export is empty (fail closed)."""
+    """With no group configured, the export is empty (fail closed)."""
     auth = JwtAuthenticator(_e2e_config())
     now = int(time.time())
     claims = {
@@ -629,32 +576,90 @@ def test_authenticate_exports_no_groups_when_nothing_is_mapped() -> None:
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
     with (
         _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"),
-        _group_mappings(),
+        _access_file({"version": 1}),
     ):
         principal = auth.authenticate_authorization("Bearer " + token)
     assert principal.groups == ()
     assert principal.to_langgraph_user()["groups"] == []
 
 
-def test_authenticate_adf_disabled_group_counts_as_mapped() -> None:
-    """A group listed only in ADF_DISABLED_GROUPS survives the export filter."""
+def _graph_principal(graph_groups, claim_groups=None):
+    """Authenticate a token whose groups come from ``graph_groups`` (Graph stubbed)."""
+    import v1.utils.auth as auth_module
+
     auth = JwtAuthenticator(_e2e_config())
-    now = int(time.time())
     claims = {
         "iss": "https://idp/",
         "aud": "api://app",
-        "exp": now + 3600,
+        "exp": int(time.time()) + 3600,
         "oid": "user-oid",
         "scp": "api.read",
-        "groups": ["ops-team-guid", "other-guid"],
     }
+    if claim_groups is not None:
+        claims["groups"] = claim_groups
     token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
+    original = auth_module.resolve_groups_via_graph
+    try:
+        auth_module.resolve_groups_via_graph = lambda oid, **kw: tuple(graph_groups)
+        with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="true"):
+            return auth.authenticate_authorization("Bearer " + token)
+    finally:
+        auth_module.resolve_groups_via_graph = original
+
+
+def test_authenticate_object_id_key_exports_id_and_graph_name() -> None:
+    """The Graph id matches in any case; the export is the id plus Graph's name."""
+    from v1.utils.graph_groups import GraphGroup
+
+    with _access_file(_TEAM_POLICY):
+        principal = _graph_principal(
+            [
+                GraphGroup(id=_TEAM_ID.upper(), display_name="Team A (renamed)"),
+                GraphGroup(id=_OTHER_ID, display_name="UNRELATED-TEAM"),
+            ]
+        )
+    assert principal.groups == (_TEAM_ID, "Team A (renamed)")
+
+
+def test_authenticate_object_id_key_matches_a_claim_group_and_adds_the_label() -> None:
     with (
+        _access_file(_TEAM_POLICY),
         _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"),
-        _group_mappings(adf="ops-team-guid"),
     ):
+        auth = JwtAuthenticator(_e2e_config())
+        claims = {
+            "iss": "https://idp/",
+            "aud": "api://app",
+            "exp": int(time.time()) + 3600,
+            "oid": "user-oid",
+            "scp": "api.read",
+            "groups": [_TEAM_ID, _OTHER_ID],
+        }
+        token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
         principal = auth.authenticate_authorization("Bearer " + token)
-    assert principal.groups == ("ops-team-guid",)
+    assert principal.groups == (_TEAM_ID, "TEAM-A")
+
+
+def test_authenticate_impostor_group_names_never_match_an_object_id_key() -> None:
+    """A self-made group named after the configured group (or its id) is dropped."""
+    from v1.utils.graph_groups import GraphGroup
+
+    with _access_file(_TEAM_POLICY):
+        principal = _graph_principal(
+            [
+                GraphGroup(id=_OTHER_ID, display_name="TEAM-A"),
+                GraphGroup(id="1d9e7c55-2b6f-4a08-b3c4-5e8f0a7d6b21", display_name=_TEAM_ID),
+            ]
+        )
+    assert principal.groups == ()
+
+
+def test_dev_principal_accepts_a_configured_display_name() -> None:
+    """Auth-off dev mode may name a group by its configured display_name."""
+    auth = JwtAuthenticator(AuthConfig(mode="dev"))
+    with _access_file(_TEAM_POLICY):
+        principal = auth.authenticate_authorization(None, {"x-dev-groups": "TEAM-A,UNMAPPED-GROUP"})
+    assert principal.groups == (_TEAM_ID, "TEAM-A")
 
 
 def _profile_principal(**profile_claims):
@@ -705,13 +710,13 @@ def test_dev_principal_reads_profile_headers() -> None:
 
 
 def test_dev_principal_filters_groups_to_mapped_keys() -> None:
-    """Dev parity: x-dev-groups goes through the same mapped-groups export filter."""
+    """Dev parity: x-dev-groups goes through the same configured-groups filter."""
     auth = JwtAuthenticator(AuthConfig(mode="dev"))
-    with _group_mappings(index='{"MAPPED-GROUP": "idx"}'):
+    with _access_file(_TEAM_POLICY):
         principal = auth.authenticate_authorization(
-            None, {"x-dev-groups": "MAPPED-GROUP,UNMAPPED-GROUP"}
+            None, {"x-dev-groups": f"{_TEAM_ID.upper()},{_OTHER_ID}"}
         )
-    assert principal.groups == ("MAPPED-GROUP",)
+    assert principal.groups == (_TEAM_ID, "TEAM-A")
 
 
 # -- bearer / decode hardening -------------------------------------------------

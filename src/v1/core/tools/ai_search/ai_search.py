@@ -23,7 +23,7 @@ from v1.utils.azure_credentials import (
     get_azure_credential,
     get_token_provider,
 )
-from v1.utils.group_routing import groups_from_config, resolve_for_groups
+from v1.utils.group_routing import groups_from_config
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -647,6 +647,27 @@ async def ai_search_tool(
 ) -> tuple[str, list[dict]]:
     """
     Search the company knowledge base and return numbered passages to cite.
+
+    This is the source the user means by "the knowledge base", "the KB", "the docs",
+    "the documentation" or "the wiki". Use it for written knowledge: policy,
+    documentation, how-to and process, standards, definitions, schema, and how existing
+    sources are documented as mapped (STTM, data lineage), except the application and
+    platform troubleshooting procedures another capability owns. Call it fresh for every
+    such question, follow-ups included: never answer one from earlier turns or memory.
+    Pass a focused ``query``; the platform picks the authorized index, so never ask the
+    user which one to use. Cite each statement with the ``[n]`` marker that prefixes the
+    passage it came from: numbering is append-only across the conversation, so a source
+    keeps its number and never restarts at [1]. Never show a source's URL or
+    ``BREADCRUMB:`` path in an answer; its ``[n]`` marker is the link.
+
+    For an exhaustive request ("all children", "every page under", "everything in this
+    section"), call it twice, one after the other: first with a focused query to find the
+    parent, then with ``section`` set to the exact ``BREADCRUMB:`` of the section's OWN
+    page (the one whose page file repeats the section name, e.g. ending in
+    ``Jul 24 > Jul 24.md``), never a deeper descendant's (run one more focused query to
+    surface that page if needed). A larger ``top_k`` is no substitute. If several parents
+    could match, ask the user which one they mean.
+
     Args:
          query (str): The search query.
          top_k (int, optional): The number of top results to return. Defaults to settings.ai_search_default_top_k.
@@ -685,11 +706,10 @@ async def ai_search_tool(
     # Resolve the index from the caller's groups here (inside the run context)
     # because contextvars don't propagate into the worker thread below.
     caller_groups = groups_from_config()
-    index_name = resolve_for_groups(
-        settings.tenant_group_index_mapping,
-        caller_groups,
-        settings.azure_ai_search_default_index,
-    )
+    # Imported here: the middlewares package imports this module.
+    from v1.core.middlewares.access_control import caller_access
+
+    index_name = caller_access(caller_groups).search_index or settings.azure_ai_search_default_index
     # The semantic configuration is a property of the resolved index, not the
     # caller's group — look it up by index name, falling back to the global
     # default for any index not explicitly mapped. Sending the wrong index's

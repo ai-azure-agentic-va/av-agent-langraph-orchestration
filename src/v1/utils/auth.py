@@ -94,9 +94,9 @@ class AuthConfig:
     # Dev-only default groups, used when a request sends no `x-dev-groups` header.
     # Only ever read on the dev-mode auth path (AGENT_AUTH_MODE in dev/mock/local),
     # so it has no effect in a jwt-auth deploy. Lets local devs pin their group
-    # (e.g. EXAMPLE-GROUP-EXT for external users) from .env instead of per-request headers.
-    # Filtered like the jwt path: only app-mapped groups are exported (see
-    # ``_mapped_groups``), so a dev group must be a mapping key to survive.
+    # from .env instead of per-request headers, by object id or by the
+    # display_name the access-control file gives it. Filtered like the jwt path:
+    # only configured groups are exported (see ``_dev_groups``).
     dev_groups: tuple[str, ...] = ()
 
     @classmethod
@@ -264,13 +264,13 @@ class JwtAuthenticator:
         token_groups = _claim_groups(claims)
         groups_source = "token"
         graph_groups: tuple[GraphGroup, ...] = ()
-        # Supplement token groups with Microsoft Graph when enabled: Entra emits
-        # groups as GUIDs only, while TENANT_GROUP_* mappings may be keyed by
-        # display names (e.g. "APPL-DEVELOPERS"). Graph returns both object-ids
-        # and display names, so a mapping key matches on either form. Graph
-        # results are cached per OID, so the extra round-trip is paid at most
-        # once per cache window. Best-effort: a Graph failure leaves token
-        # groups as-is and never fails authentication.
+        # Supplement token groups with Microsoft Graph when enabled: deployed
+        # tokens carry no `groups` claim, and Graph returns each group's object-id
+        # (what the access-control file is keyed by) and display name (what the
+        # user-context block shows). Graph results are cached per OID, so the
+        # extra round-trip is paid at most once per cache window.
+        # Best-effort: a Graph failure leaves token groups as-is and never fails
+        # authentication.
         if graph_groups_enabled():
             oid = _claim_str(claims, "oid")
             if oid:
@@ -286,15 +286,14 @@ class JwtAuthenticator:
         # which the platform persists and returns through its threads/runs read
         # APIs — so the caller's full AD inventory (transitiveMemberOf can be
         # hundreds of groups) must not ride along to the UI. Routing and gating
-        # only ever intersect groups with the mapping keys, so unmapped groups
-        # carry no signal anyway. A mapped group is kept in BOTH forms (object-id
-        # and display name) when Graph resolved the pair — GUID-keyed mappings
-        # still match, and the user-context block (which drops GUIDs) still has
-        # a name to show.
+        # only ever read the groups the access-control policy configures, so
+        # other groups carry no signal anyway. A configured group is kept as its
+        # object-id plus a display name, so the user-context block (which drops
+        # GUIDs) still has a name to show.
         groups = _mapped_groups(token_groups, graph_groups)
         # Diagnostic (DEBUG only): the PRE-filter candidates (token groups plus
-        # the Graph id<->displayName pairs — handy for configuring
-        # TENANT_GROUP_INDEX_MAPPING) and the filtered set actually exported.
+        # the Graph id<->displayName pairs — handy for writing the access-control
+        # file) and the filtered set actually exported.
         # `overage` (`_claim_names`/`_claim_sources` present, no `groups`) means
         # Entra omitted the inline list and Graph is the only way to read it.
         if logger.isEnabledFor(logging.DEBUG):
@@ -352,8 +351,8 @@ class JwtAuthenticator:
         tenant = _header_value(headers or {}, "x-dev-tenant") or self.config.dev_tenant
         scopes = _csv(_header_value(headers or {}, "x-dev-scopes")) or self.config.dev_scopes
         # Same export filter as the jwt path so dev behaves like a deploy: only
-        # app-mapped groups reach ``langgraph_auth_user`` (see _mapped_groups).
-        groups = _mapped_groups(
+        # configured groups reach ``langgraph_auth_user`` (see _dev_groups).
+        groups = _dev_groups(
             _csv(_header_value(headers or {}, "x-dev-groups")) or self.config.dev_groups
         )
         return AuthenticatedPrincipal(
@@ -582,54 +581,57 @@ def _claim_groups(claims: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(groups))
 
 
-def _mapped_group_keys() -> frozenset[str]:
-    """Every Entra group object-id or display name this deployment maps to behavior.
+def _access_policy() -> Any | None:
+    """The access-control policy (``v1.core.middlewares.access_control``), or None.
 
-    Reads ``Settings.mapped_group_keys`` (the union of TENANT_GROUP_INDEX_MAPPING,
-    TENANT_GROUP_STARTER_PROMPTS_MAPPING, and ADF_DISABLED_GROUPS keys) via a lazy
-    import so ``v1.core`` never becomes an import-time dependency of this module.
-    Best-effort: an unreadable Settings (e.g. malformed mapping JSON) yields an
-    empty set — no groups are exported — rather than failing authentication.
+    Imported lazily so ``v1.core`` never becomes an import-time dependency of
+    this module. Best-effort: a policy that cannot load (it also fails the
+    agent build at startup) exports no groups rather than failing
+    authentication, which is the closed direction.
     """
 
     try:
-        from v1.core.config import get_settings
+        from v1.core.middlewares.access_control import get_access_policy
 
-        return get_settings().mapped_group_keys
+        return get_access_policy()
     except Exception:  # noqa: BLE001 - group export must never break auth
-        logger.warning("Mapped-group keys unavailable; exporting no groups", exc_info=True)
-        return frozenset()
+        logger.warning("Access-control policy unavailable; exporting no groups", exc_info=True)
+        return None
 
 
 def _mapped_groups(
     claim_groups: Sequence[str],
     graph_groups: Sequence[GraphGroup] = (),
 ) -> tuple[str, ...]:
-    """Filter a caller's groups down to the app-MAPPED ones, in both known forms.
+    """Filter a caller's groups down to the ones the access-control policy configures.
 
     ``langgraph_auth_user`` (and with it every run config, the platform's
     threads/runs read APIs, and the chat UI) must not carry the caller's full AD
-    inventory. A group is kept only when the deployment maps it to behavior —
-    i.e. it is in :func:`_mapped_group_keys`. A Graph-resolved group that matches
-    on either its object-id or its display name keeps BOTH forms, so GUID-keyed
-    mappings still match downstream (``resolve_for_groups``) and the
-    user-context block (which drops GUIDs) still has a name to show. Token-only
-    entries (no Graph pair) are kept solely when they are mapping keys
-    themselves.
+    inventory. A group is kept only when the policy configures its object id; it
+    is exported as that id plus a display name for the user-context block (see
+    ``AccessPolicy.export_groups``).
     """
 
-    mapped = _mapped_group_keys()
-    if not mapped:
+    policy = _access_policy()
+    if policy is None:
         return ()
-    keep = {group for group in claim_groups if group in mapped}
-    for graph_group in graph_groups:
-        if graph_group.id in mapped or (
-            graph_group.display_name and graph_group.display_name in mapped
-        ):
-            keep.add(graph_group.id)
-            if graph_group.display_name:
-                keep.add(graph_group.display_name)
-    return tuple(sorted(keep))
+    return policy.export_groups(
+        [*claim_groups, *(group.id for group in graph_groups)],
+        {group.id: group.display_name for group in graph_groups},
+    )
+
+
+def _dev_groups(values: Sequence[str]) -> tuple[str, ...]:
+    """``x-dev-groups`` (or AGENT_AUTH_DEV_GROUPS) filtered like ``_mapped_groups``.
+
+    Also accepts a configured group's display_name, since dev mode authenticates
+    nobody anyway.
+    """
+
+    policy = _access_policy()
+    if policy is None:
+        return ()
+    return policy.dev_groups(values)
 
 
 def _claim_email(claims: Mapping[str, Any]) -> str | None:

@@ -4,10 +4,12 @@ import asyncio
 import functools
 import logging
 import threading
-from typing import Annotated, Any, NotRequired
+from typing import Annotated, Any, NotRequired, get_args
 
 from deepagents import (
     DeepAgentState,
+    FsToolName,
+    GeneralPurposeSubagentProfile,
     HarnessProfile,
     create_deep_agent,
     register_harness_profile,
@@ -15,6 +17,7 @@ from deepagents import (
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
+from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.context_editing import (
     ClearToolUsesEdit,
     ContextEditingMiddleware,
@@ -23,16 +26,22 @@ from langchain_openai import AzureChatOpenAI
 from langgraph.errors import GraphBubbleUp
 
 from v1.core.config import get_settings
+from v1.core.middlewares.access_control import (
+    TASK_TOOL_NAME,
+    AccessControlMiddleware,
+    check_blocked_names,
+    get_access_policy,
+)
 from v1.core.middlewares.azure_links import AzureLinksMiddleware
 from v1.core.middlewares.citations import CitationsMiddleware
 from v1.core.middlewares.model_error_guard import ModelErrorGuardMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
 from v1.core.middlewares.sliding_window import SlidingWindowFloorMiddleware
-from v1.core.middlewares.subagent_access import SubagentAccessMiddleware
 from v1.core.middlewares.user_context import UserContextMiddleware
 from v1.core.prompts import SYSTEM_PROMPT
 from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
 from v1.core.subagents import (
+    ALL_SUBAGENTS,
     ENABLED_SUBAGENTS,
     close_adf_resources,
     close_adls_resources,
@@ -43,6 +52,7 @@ from v1.core.tools import (
     close_search_clients,
 )
 from v1.core.tools.ai_search.ai_search import source_key
+from v1.core.tools.sttm.state import merge_by_revision, merge_sessions
 from v1.core.tools.url_reader import read_url_tool
 from v1.utils.azure_credentials import get_async_token_provider, get_token_provider
 from v1.utils.checkpointer import close_checkpointer, get_checkpointer
@@ -82,7 +92,7 @@ def merge_sources(existing: list[dict] | None, new: list[dict] | None) -> list[d
 
 
 class ChatAgentState(DeepAgentState):
-    """``DeepAgentState`` plus the cumulative ``all_sources`` channel. Nothing else.
+    """``DeepAgentState`` plus the ``all_sources`` and STTM (``sttm_*``) channels.
 
     ``messages`` is deliberately NOT overridden here — it is inherited from
     ``DeepAgentState``, which annotates it with langgraph's ``DeltaChannel``
@@ -114,6 +124,17 @@ class ChatAgentState(DeepAgentState):
     # survives a process restart. NotRequired: a new thread has none until the first
     # search. Merged by `merge_sources`.
     all_sources: NotRequired[Annotated[list[dict], merge_sources]]
+
+    # The conversation's STTM sessions (v1.core.tools.sttm), which only the
+    # sttm-agent's tools change. The orchestrator keeps them between turns, and
+    # deepagents builds every subagent on this schema, so each task hands them to
+    # the sttm-agent and takes back what its tools changed. Merged by
+    # `merge_sessions`: per session, the higher revision wins.
+    sttm_sessions: NotRequired[Annotated[dict[str, dict], merge_sessions]]
+    # The layout steps of each STTM session's workbooks, kept and merged the same
+    # way. Apart from the session, so a layout change works on an approved session
+    # and leaves its revision and reviews alone.
+    sttm_layouts: NotRequired[Annotated[dict[str, dict], merge_by_revision]]
 
 
 def build_azure_chat_model() -> AzureChatOpenAI:
@@ -277,7 +298,21 @@ def _resolve_max_input_tokens(model: AzureChatOpenAI) -> int:
     return _DEFAULT_MAX_INPUT_TOKENS
 
 
+def _capability_names() -> tuple[set[str], set[str]]:
+    """Every tool and subagent name the backend has, configured here or not."""
+
+    tools = {*get_args(FsToolName), TASK_TOOL_NAME, ai_search_tool.name, read_url_tool.name}
+    for spec in ALL_SUBAGENTS:
+        tools.update(tool.name for tool in spec.get("tools", ()))
+    return tools, {spec["name"] for spec in ALL_SUBAGENTS}
+
+
 def _build_agent_sync(checkpointer: Any) -> Any:
+    # A missing or invalid access-control file fails the build, and so startup:
+    # running without it would lift every restriction it holds. So does a blocked
+    # name the backend does not have, which would block nothing.
+    known_tools, known_subagents = _capability_names()
+    check_blocked_names(get_access_policy(), tools=known_tools, subagents=known_subagents)
     model = get_azure_chat_model()
     _ensure_harness_profiles_registered()
     _ensure_summary_failures_degrade()
@@ -318,14 +353,17 @@ def _build_agent_sync(checkpointer: Any) -> Any:
 
     agent = create_deep_agent(
         model=model,
-        # Custom state schema ONLY to add the cumulative `all_sources` channel;
-        # `messages` is deepagents' DeltaChannel default (see ChatAgentState).
+        # Custom state schema ONLY to add the `all_sources` and STTM (`sttm_*`)
+        # channels; `messages` is deepagents' DeltaChannel default (see
+        # ChatAgentState).
         state_schema=ChatAgentState,
         tools=tools,
         subagents=ENABLED_SUBAGENTS,
         # Order matters: first entry = OUTERMOST, last = INNERMOST (closest to the
         # model). deepagents appends these AFTER its SummarizationMiddleware, so both
         # context-management layers below see the post-summarization effective view.
+        # AccessControlMiddleware is not listed: the harness profile adds it to
+        # every stack, inner of all of these (see _ensure_harness_profiles_registered).
         middleware=[
             # Outermost: catch a model-call 400 (Azure content filter / bad request)
             # and return a graceful assistant message through the normal response
@@ -341,14 +379,8 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             CitationsMiddleware(),
             SafetyGateMiddleware(),
             # Appends the signed-in user's name, email, and AD group names (from
-            # the JWT principal) to the system prompt. Outer of SubagentAccess so
-            # the ADF restriction note still lands last.
+            # the JWT principal) to the system prompt.
             UserContextMiddleware(),
-            # Per-request gate: for callers in ADF_DISABLED_GROUPS / ADLS_DISABLED_GROUPS
-            # appends a restriction note and hard-blocks delegation to the disabled
-            # subagent. Sits inner of deepagents' SubAgentMiddleware so it sees
-            # the assembled request.
-            SubagentAccessMiddleware(),
             # Each ADF Studio / Azure portal link in the answer is one a tool
             # result or the user holds, the run's own link, or gone. Outer of
             # ContextEditing, so a cleared result still counts as held.
@@ -413,8 +445,23 @@ _harness_profiles_lock = threading.Lock()
 _harness_profiles_registered = False
 
 
+def _access_control_middleware() -> list[AgentMiddleware]:
+    """A fresh AccessControlMiddleware for each stack deepagents builds.
+
+    It hides and refuses the caller's blocked tools and blocked subagents alike.
+    The profile's ``extra_middleware`` reaches the orchestrator and every
+    declarative subagent, so the policy holds in each of them (a compiled
+    subagent adds its own). ``task_subagents`` is only the ``task`` tool's
+    roster, ``ENABLED_SUBAGENTS`` read when the agent is built: it is what the
+    middleware needs to cut a blocked subagent's line from that tool's
+    description. Only a stack that offers ``task`` uses it.
+    """
+
+    return [AccessControlMiddleware(task_subagents=ENABLED_SUBAGENTS)]
+
+
 def _ensure_harness_profiles_registered() -> None:
-    """Register the middleware exclusions once, before the agent is built.
+    """Register the middleware exclusions and additions once, before the build.
 
     Registration mutates a process-global registry that ``create_deep_agent``
     consults when resolving the model's profile, so it must run before the
@@ -429,7 +476,13 @@ def _ensure_harness_profiles_registered() -> None:
     with _harness_profiles_lock:
         if _harness_profiles_registered:
             return
-        profile = HarnessProfile(excluded_middleware=_EXCLUDED_MIDDLEWARE)
+        profile = HarnessProfile(
+            excluded_middleware=_EXCLUDED_MIDDLEWARE,
+            extra_middleware=_access_control_middleware,
+            # No general-purpose subagent: every delegation goes to a subagent
+            # this backend defines. With none configured, deepagents drops `task`.
+            general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+        )
         for key in _HARNESS_PROFILE_KEYS:
             register_harness_profile(key, profile)
         _harness_profiles_registered = True
@@ -444,7 +497,7 @@ def _ensure_harness_profiles_registered() -> None:
 # summarization. Restore degrade-don't-die: log it and return a neutral placeholder
 # so the turn still runs. The pre-summary history is still offloaded to
 # /conversation_history/ and the summary message still carries that path, so
-# grep-based recall keeps working.
+# the agent can still read_file it back.
 _SUMMARY_FALLBACK = (
     "(Summary unavailable: the earlier part of this conversation could not be summarized.)"
 )

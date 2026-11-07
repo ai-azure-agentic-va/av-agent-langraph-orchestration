@@ -4,6 +4,8 @@ from fastapi import FastAPI
 
 from v1.api.routes.feedback import create_feedback_router
 from v1.api.routes.starter_prompts import create_starter_prompts_router
+from v1.api.routes.sttm_files import create_sttm_files_router
+from v1.core.config import get_settings
 
 
 @asynccontextmanager
@@ -41,3 +43,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.include_router(create_feedback_router())
 app.include_router(create_starter_prompts_router())
+# The sttm-agent's workbook downloads, only where the sttm-agent is turned on.
+if get_settings().sttm_enabled:
+    app.include_router(create_sttm_files_router())

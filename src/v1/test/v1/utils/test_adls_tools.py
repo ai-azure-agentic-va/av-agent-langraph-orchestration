@@ -1182,11 +1182,11 @@ def test_tool_is_the_only_adls_tool_and_wired_on_the_subagent() -> None:
 def test_reporting_format_lives_in_the_formatting_skill() -> None:
     from pathlib import Path
 
-    from v1.core.prompts.orchestrator import ADLS_ROUTING_BLOCK
+    from v1.core.prompts.adls import ADLS_SUBAGENT_DESCRIPTION
 
     skill = Path(adls.__file__).parents[2] / "skills/message-formatting/SKILL.md"
     assert "## Data Lake answers — file arrival checks" in skill.read_text()
-    assert "message-formatting" in ADLS_ROUTING_BLOCK
+    assert "Data Lake answers" in ADLS_SUBAGENT_DESCRIPTION
 
 
 def test_subagent_needs_the_flag_and_an_account() -> None:

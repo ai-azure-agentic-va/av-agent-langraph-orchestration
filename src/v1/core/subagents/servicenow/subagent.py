@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from v1.core.middlewares.azure_links import AzureLinksMiddleware
 from v1.core.middlewares.user_context import SUBAGENT_GUIDANCE, UserContextMiddleware
-from v1.core.prompts import SERVICENOW_SUBAGENT_PROMPT
+from v1.core.prompts import SERVICENOW_SUBAGENT_DESCRIPTION, SERVICENOW_SUBAGENT_PROMPT
 from v1.core.tools import (
     ai_search_tool,
     calculator,
@@ -16,19 +16,7 @@ from v1.core.tools import (
 
 SERVICENOW_SUBAGENT = {
     "name": "servicenow-ticket-agent",
-    "description": (
-        "Use for ALL ServiceNow tasks. Incidents are its default: getting one "
-        "ticket's details (summary or full card) and listing/searching tickets by "
-        "optional status. That includes WHO worked on something — \"which "
-        "engineer worked on <X>\", \"what is <person> working on\" — whatever <X> "
-        "names: an incident search, never `ai_search_tool`, and never out of "
-        "scope. It also searches ServiceNow's own knowledge articles "
-        "(KB…) whenever the task is a PROCEDURE ask — the steps to do something, "
-        "how to run or perform it, the process for it, or a KB number — whether "
-        "or not the task text names an article. And it searches CHANGE REQUESTS "
-        "(CHG…): \"any recent changes related to <app>?\", \"recent change "
-        "requests for <app>\", \"open change requests for <app>\", or a CHG number."
-    ),
+    "description": SERVICENOW_SUBAGENT_DESCRIPTION,
     "system_prompt": SERVICENOW_SUBAGENT_PROMPT,
     "tools": [
         servicenow_get_ticket_detail,

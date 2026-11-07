@@ -1,15 +1,12 @@
-"""Group-scoped routing helpers.
-
-Map an authenticated caller's Entra groups to a per-group value — a search
-index, a starter-prompt set, etc. — via a ``{group-id-or-name: value}`` mapping.
+"""Where a caller's Entra groups are read from.
 
 The caller's groups come from the principal that auth stamps as
-``langgraph_auth_user``. Auth exports only the app-MAPPED groups — the caller's
-intersection with the mapping keys, in both object-id and display-name form
-when Graph resolved the pair (see ``v1.utils.auth._mapped_groups``) — so the
-full AD inventory never reaches run configs or the UI. Two call sites read it
-differently, so this module exposes both extractors plus the shared first-match
-resolver:
+``langgraph_auth_user``. Auth exports only the groups the access-control policy
+configures (see ``v1.utils.auth._mapped_groups``), so the full AD inventory
+never reaches run configs or the UI. What those groups mean (search index,
+starter prompts, blocked tools and subagents) is decided by
+``v1.core.middlewares.access_control``. Two call sites read the groups
+differently, so this module exposes both extractors:
 
 - :func:`groups_from_config` — inside a LangGraph run (tool/middleware context),
   where the principal lives on the run config.
@@ -23,9 +20,7 @@ authenticated principal, so callers degrade to their default value.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, TypeVar
-
-T = TypeVar("T")
+from typing import Any
 
 
 def _coerce_groups(groups: Any) -> tuple[str, ...]:
@@ -70,22 +65,4 @@ def groups_from_request(request: Any) -> tuple[str, ...]:
     return _coerce_groups(groups)
 
 
-def resolve_for_groups(mapping: Mapping[str, T], groups: Sequence[str], default: T) -> T:
-    """Return the mapped value for the caller's groups, else ``default``.
-
-    Walks ``mapping`` in declared order and returns the value for the first key
-    (group object-id *or* display name) the caller belongs to — so admins
-    control precedence via JSON ordering. Skips falsy values (empty index name /
-    empty prompt list). Returns ``default`` when nothing matches or the caller
-    has no groups.
-    """
-
-    if mapping and groups:
-        member = set(groups)
-        for key, value in mapping.items():
-            if key in member and value:
-                return value
-    return default
-
-
-__all__ = ["groups_from_config", "groups_from_request", "resolve_for_groups"]
+__all__ = ["groups_from_config", "groups_from_request"]
