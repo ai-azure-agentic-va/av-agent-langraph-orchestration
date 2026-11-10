@@ -26,6 +26,7 @@ from langchain_openai import AzureChatOpenAI
 from langgraph.errors import GraphBubbleUp
 
 from v1.core.config import get_settings
+from v1.core.databricks_workspaces import log_config_problem
 from v1.core.middlewares.access_control import (
     TASK_TOOL_NAME,
     AccessControlMiddleware,
@@ -34,6 +35,11 @@ from v1.core.middlewares.access_control import (
 )
 from v1.core.middlewares.azure_links import AzureLinksMiddleware
 from v1.core.middlewares.citations import CitationsMiddleware
+from v1.core.middlewares.databricks_outputs import DatabricksOutputsMiddleware
+from v1.core.middlewares.databricks_selection import (
+    ORCHESTRATOR_SELECTION_NOTE,
+    DatabricksSelectionMiddleware,
+)
 from v1.core.middlewares.model_error_guard import ModelErrorGuardMiddleware
 from v1.core.middlewares.safety import SafetyGateMiddleware
 from v1.core.middlewares.sliding_window import SlidingWindowFloorMiddleware
@@ -43,11 +49,15 @@ from v1.core.skills import SKILLS_MOUNT, SKILLS_SOURCES, build_skills_backend
 from v1.core.subagents import (
     ALL_SUBAGENTS,
     ENABLED_SUBAGENTS,
+    STTM_SUBAGENT,
     close_adf_resources,
     close_adls_resources,
+    close_databricks_resources,
     close_servicenow_resources,
 )
+from v1.core.subagents.sttm.runnable import build_sttm_graph, install
 from v1.core.tools import (
+    DATABRICKS_TOOL_NAMES,
     ai_search_tool,
     close_search_clients,
 )
@@ -91,8 +101,20 @@ def merge_sources(existing: list[dict] | None, new: list[dict] | None) -> list[d
     return ordered
 
 
+def keep_latest(existing: str | None, new: str | None) -> str | None:
+    """Reducer for ``last_databricks_workspace``: the newest non-None value wins.
+
+    Every subagent inherits this schema and deepagents merges each ``task`` result's
+    state back, so two parallel ``task`` calls both write the key in one step, which
+    a plain LastValue channel rejects (``InvalidUpdateError``).
+    """
+
+    return new if new is not None else existing
+
+
 class ChatAgentState(DeepAgentState):
-    """``DeepAgentState`` plus the ``all_sources`` and STTM (``sttm_*``) channels.
+    """``DeepAgentState`` plus the ``all_sources``, STTM (``sttm_*``) and
+    ``last_databricks_workspace`` channels.
 
     ``messages`` is deliberately NOT overridden here — it is inherited from
     ``DeepAgentState``, which annotates it with langgraph's ``DeltaChannel``
@@ -135,6 +157,10 @@ class ChatAgentState(DeepAgentState):
     # way. Apart from the session, so a layout change works on an approved session
     # and leaves its revision and reviews alone.
     sttm_layouts: NotRequired[Annotated[dict[str, dict], merge_by_revision]]
+    # The alias of the Databricks workspace the previous turn used (non-secret),
+    # written by DatabricksSelectionMiddleware so it can say when the chat's
+    # workspace changed. Merged by `keep_latest`.
+    last_databricks_workspace: NotRequired[Annotated[str, keep_latest]]
 
 
 def build_azure_chat_model() -> AzureChatOpenAI:
@@ -304,6 +330,8 @@ def _capability_names() -> tuple[set[str], set[str]]:
     tools = {*get_args(FsToolName), TASK_TOOL_NAME, ai_search_tool.name, read_url_tool.name}
     for spec in ALL_SUBAGENTS:
         tools.update(tool.name for tool in spec.get("tools", ()))
+    # The Databricks spec has no tools where Databricks is off; its names still count.
+    tools.update(DATABRICKS_TOOL_NAMES)
     return tools, {spec["name"] for spec in ALL_SUBAGENTS}
 
 
@@ -317,13 +345,21 @@ def _build_agent_sync(checkpointer: Any) -> Any:
     _ensure_harness_profiles_registered()
     _ensure_summary_failures_degrade()
 
+    databricks_problem = settings.databricks_config_problem
     for name, setting_name in settings.unconfigured_capabilities:
+        if name == "databricks-agent" and databricks_problem:
+            continue  # switched on; the ERROR below names the real culprit
         logger.warning(
             "Subagent %r NOT registered (set %s to enable it); its questions "
             "will fall through to ai_search_tool.",
             name,
             setting_name,
         )
+    if databricks_problem:
+        log_config_problem(databricks_problem)
+    logger.info(
+        "Subagents registered: %s", ", ".join(spec["name"] for spec in ENABLED_SUBAGENTS)
+    )
 
     # Long-conversation layered defense (see docs/research long-context strategy):
     # ContextEditingMiddleware performs SELECTIVE RETENTION — above
@@ -351,6 +387,12 @@ def _build_agent_sync(checkpointer: Any) -> Any:
     if settings.url_reader_enabled:
         tools.append(read_url_tool)
 
+    backend = build_backend()
+    if STTM_SUBAGENT in ENABLED_SUBAGENTS:
+        # The sttm-agent is a compiled subagent: its graph is built here, with
+        # the model, backend and harness profile the declarative ones get.
+        install(build_sttm_graph(model, backend, ChatAgentState))
+
     agent = create_deep_agent(
         model=model,
         # Custom state schema ONLY to add the `all_sources` and STTM (`sttm_*`)
@@ -369,6 +411,10 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             # and return a graceful assistant message through the normal response
             # path, so the UI streams a readable reply instead of a raw 400 error.
             ModelErrorGuardMiddleware(),
+            # Outside CitationsMiddleware's tool-call hook: streams the Databricks
+            # subagent's status lines and adds its query results and table choice
+            # to the `task` result's artifact.
+            DatabricksOutputsMiddleware(),
             # Knowledge-base citations, at three points of a turn: strip [n]
             # markers the model invented from the fully assembled answer (outer of
             # every middleware that rewrites it); give a subagent's `task` result
@@ -385,6 +431,12 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             # result or the user holds, the run's own link, or gone. Outer of
             # ContextEditing, so a cleared result still counts as held.
             AzureLinksMiddleware(whole_conversation=True, label="the orchestrator's answer"),
+            # Names the chat's Databricks workspace (and any change since the last
+            # turn) and selected tables, so short data follow-ups still go to the
+            # databricks-agent.
+            DatabricksSelectionMiddleware(
+                ORCHESTRATOR_SELECTION_NOTE, require_access=True, remember_workspace=True
+            ),
             # Selective retention: clear stale tool-result bodies before the model
             # call (view-only; persisted artifacts / citations preserved).
             ContextEditingMiddleware(
@@ -399,7 +451,7 @@ def _build_agent_sync(checkpointer: Any) -> Any:
             SlidingWindowFloorMiddleware(max_tokens=floor_tokens),
         ],
         system_prompt=SYSTEM_PROMPT,
-        backend=build_backend(),
+        backend=backend,
         skills=SKILLS_SOURCES,
         checkpointer=checkpointer,
     )
@@ -568,6 +620,8 @@ async def close_agent_resources() -> None:
         "servicenow": close_servicenow_resources(),
         "adf": close_adf_resources(),
         "adls": close_adls_resources(),
+        # Databricks holds nothing open today (clients are per call).
+        "databricks": close_databricks_resources(),
         "checkpointer": close_checkpointer(),
         # Shared async Key Vault client/credential (used by ServiceNow secret
         # resolution and any other aresolve_env_secret callers).

@@ -65,6 +65,11 @@ Thumbs.db
 # The plain path is dev; per-environment files carry a suffix.
 infra/.pg_password
 infra/.pg_password.*
+# Deploy-time secrets: Flexible Server passwords/DSNs (make db-init), Databricks token key.
+infra/.pg_admin_password
+infra/.pg_login_password.*
+infra/.pg_dsn.*
+infra/.databricks_token_key.*
 docker-compose.override.yml
 SERVICENOW_GAP_ANALYSIS.md
 SERVICENOW_TESTCASE_GAP_ANALYSIS.md
@@ -82,4 +87,6 @@ adf-agent-fixture-output/
 # Local learning notes / scratch plans (not project code)
 docs/learning/
 docs/learning/00_MASTER_PLAN.md
-docs/research/SIMILAR_INCIDENT_CLASSIFIER.md
+
+# superpowers local workspace
+.superpowers/

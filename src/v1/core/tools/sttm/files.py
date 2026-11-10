@@ -27,6 +27,7 @@ from langgraph.store.base import BaseStore
 
 from v1.core.config import get_settings
 from v1.core.tools.sttm.session import timestamp
+from v1.core.tools.sttm.workbook import WORKBOOKS
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,8 @@ ID_LENGTH = 16
 # Upper-case letters without I, L and O, as session ids use: an id has no digits,
 # so no card-number filter masks it, and none reads as another.
 _ID_LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZ"
+# What follows a build's id in its files' ids: 'data-dictionary' or 'sttm'.
+_WORKBOOK_PARTS = frozenset(workbook.replace("_", "-") for workbook in WORKBOOKS)
 # The most of one owner's files looked at when their expired ones are deleted.
 MAX_SWEPT = 500
 
@@ -52,11 +55,29 @@ class KeptFile:
 
 
 def new_file_id() -> str:
+    """A new build's id; its files' ids are :func:`workbook_file_id`."""
+
     return "".join(secrets.choice(_ID_LETTERS) for _ in range(ID_LENGTH))
 
 
+def workbook_file_id(build_id: str, workbook: str) -> str:
+    """The id of a build's ``workbook`` file (a key of WORKBOOKS), e.g. '…-data-dictionary'.
+
+    A build's files share its id, so their links differ only where their labels do: a link
+    copied with the other file's id still opens its own file.
+    """
+
+    return f"{build_id}-{workbook.replace('_', '-')}"
+
+
 def is_file_id(value: str) -> bool:
-    return len(value) == ID_LENGTH and all(letter in _ID_LETTERS for letter in value)
+    # A link given before a build's files shared an id has no workbook part.
+    build_id, dash, workbook = value.partition("-")
+    return (
+        len(build_id) == ID_LENGTH
+        and all(letter in _ID_LETTERS for letter in build_id)
+        and (not dash or workbook in _WORKBOOK_PARTS)
+    )
 
 
 def download_url(file_id: str) -> str:
@@ -94,6 +115,7 @@ async def _sweep(store: BaseStore, owner: str, now: datetime) -> None:
 async def keep_file(
     store: BaseStore,
     *,
+    file_id: str,
     owner: str,
     name: str,
     media_type: str,
@@ -103,9 +125,8 @@ async def keep_file(
     session_id: str,
     version: int,
 ) -> KeptFile:
-    """Keep ``content`` for ``owner`` for :data:`KEEP`, under a new id."""
+    """Keep ``content`` for ``owner`` for :data:`KEEP`, under ``file_id``."""
 
-    file_id = new_file_id()
     expires = now + KEEP
     value = {
         "owner": owner,
@@ -165,4 +186,5 @@ __all__ = [
     "is_file_id",
     "keep_file",
     "new_file_id",
+    "workbook_file_id",
 ]

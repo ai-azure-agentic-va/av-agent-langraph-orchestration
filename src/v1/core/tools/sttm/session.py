@@ -32,15 +32,17 @@ from __future__ import annotations
 
 import re
 import secrets
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from v1.core.tools.sttm.documents import document_at, message_layout, without_documents
 from v1.core.tools.sttm.rules import available_rule_files, rule_file_text
 from v1.core.tools.sttm.spec import (
+    SpecParse,
     duplicate_names,
     normalize_name,
     parse_specification,
@@ -236,6 +238,7 @@ COLUMNS: dict[str, tuple[Column, ...]] = {
             required=True,
             derived_link="logic",
         ),
+        Column("logic_type", "Logic type", "governed"),
         Column("pii_pci", "PII/PCI", "linked", link=("data_dictionary", "pii_pci")),
     ),
     "curated_to_asl": (
@@ -341,6 +344,9 @@ class InputRecord(BaseModel):
     recorded_at: str
     # The session the input was carried over from (instructions only).
     inherited_from: str | None = None
+    # Every input but a specification: the words of the message that hold it.
+    # Older sessions have none.
+    passage: str | None = None
     # Specification only: the tables read, what was skipped, and the lines of
     # attribute rows that could not be read.
     tables: list[str] = Field(default_factory=list)
@@ -492,6 +498,11 @@ def timestamp(now: datetime) -> str:
 
 
 _CLAUSE_BREAK = re.compile(r"[.!?;\n]+")
+_WORD = re.compile(r"[^\W_]+")
+# The fewest words a passage has, so a common phrase cannot pass for one, and
+# the most of it kept: it is for the analyst to check, and the message is kept too.
+MIN_PASSAGE_WORDS = 4
+MAX_PASSAGE_CHARS = 1_000
 
 
 def _has_word(text: str, words: Iterable[str]) -> bool:
@@ -500,6 +511,24 @@ def _has_word(text: str, words: Iterable[str]) -> bool:
         if word and re.search(rf"(?<![0-9a-z]){re.escape(word)}(?![0-9a-z])", text):
             return True
     return False
+
+
+def find_passage(passage: str, text: str, *, min_words: int = MIN_PASSAGE_WORDS) -> str | None:
+    """The part of ``text`` that holds ``passage``'s words one after another, or None.
+
+    Case, punctuation and spacing aside, the passage has to be copied from the
+    text: a summary or a restatement of it is not found.
+    """
+
+    wanted = [word.casefold() for word in _WORD.findall(passage)]
+    if not wanted or len(wanted) < min_words:
+        return None
+    words = list(_WORD.finditer(text))
+    folded = [word.group().casefold() for word in words]
+    for start, word in enumerate(folded):
+        if word == wanted[0] and folded[start : start + len(wanted)] == wanted:
+            return text[words[start].start() : words[start + len(wanted) - 1].end()]
+    return None
 
 
 class Evidence:
@@ -572,18 +601,21 @@ def analyst_evidence(session: Session, current: Mapping[str, Any] | None) -> Evi
 
     The specification does not count. It is the source's description of the
     feed and names every attribute, so it is no evidence that the analyst chose
-    a key, a classification or a target. A message recorded only as the
-    specification (now or before a replacement) is left out, and so are the
-    attribute tables of a message that holds the specification and other inputs.
+    a key, a classification or a target. The attribute tables of a message that
+    held it (now or before a replacement) are left out, and so are the files
+    attached to a message recorded only as the specification; the words the
+    analyst typed with it and their skill's still count.
     """
 
     kinds = _input_kinds(session)
     texts = []
     for message_id, text in session.messages.items():
         found = kinds.get(message_id, set())
-        if found == {"specification"}:
-            continue
-        texts.append(without_attribute_tables(text) if "specification" in found else text)
+        if "specification" in found:
+            text = without_attribute_tables(text)
+            if found == {"specification"}:
+                text = without_documents(text)
+        texts.append(text)
     if current is not None and str(current.get("id")) not in session.messages:
         texts.append(str(current.get("text") or ""))
     return Evidence("\n".join(texts))
@@ -890,57 +922,525 @@ class Recorded:
 
     recorded: list[str] = field(default_factory=list)
     already: list[str] = field(default_factory=list)
+    # The inputs that were not recorded, and why; the others still were.
+    refused: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    # The passage each recorded input but a specification was found in.
+    passages: dict[str, str] = field(default_factory=dict)
     attributes_added: int = 0
     tables: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
+# Words of the analyst's request to the agent (its session, review mode and
+# workbooks) that instructions on handling the data have no use for: a sentence
+# with them is the request, and not instructions.
+_REQUEST_WORDS = (
+    "sttm session",
+    "review mode",
+    *(f"{mode} mode" for mode in REVIEW_MODES),
+    "workbook",
+    "workbooks",
+)
+
+
+def _sentences(part: str, text: str) -> str:
+    """The sentences or lines of ``text`` that ``part`` of it runs through."""
+
+    start = text.find(part)
+    end = start + len(part)
+    while start > 0 and text[start - 1] not in ".!?;\n":
+        start -= 1
+    while end < len(text) and text[end] not in ".!?;\n":
+        end += 1
+    return text[start:end]
+
+
+# What names a part of the message as instructions: words of the analyst's text
+# or a heading ("Source-system instructions:"), and words of a skill's or an
+# attached file's name ("CoreBank source system.pdf").
+_INSTRUCTIONS = re.compile(r"\b(?:instructions?|source system doc[a-z]*)\b")
+_INSTRUCTIONS_NAME = re.compile(r"\b(?:instructions?|source system)\b")
+# Words that say there are none, next to those words ("no source-system
+# instructions", "the instructions are not attached"); the words between that
+# do not change it ("no source system instructions"); and the answers after a
+# colon that do ("Source-system instructions: none", ": not provided").
+_NEGATIONS = frozenset(
+    {"no", "not", "none", "nothing", "without", "missing", "never", "na"}
+    | {"dont", "doesnt", "didnt", "havent", "hasnt", "cant", "isnt", "arent", "wasnt", "wont"}
+)
+_FILLERS = frozenset(
+    {"source", "system", "the", "a", "an", "any", "my", "our", "your", "their", "its", "these"}
+    | {"those", "this", "that", "of", "for", "yet"}
+)
+_NONE_ANSWERS = frozenset({"none", "nothing", "na", "tbd", "unknown", "pending"})
+_NONE_AFTER_NO = frozenset(
+    {"instructions", "instruction", "provided", "available", "applicable", "given", "yet"}
+    | {"attached", "included", "received", "sent", "any", "docs", "documents", "documentation"}
+)
+# The line the frontend opens a skill's block with, before the skill's own text.
+_SKILL_PREAMBLE = "For this message, use my skill "
+
+
+def _negation(word: str) -> bool:
+    return word in _NEGATIONS or word.endswith("n't")
+
+
+def _says_none(before: list[str], after: list[str]) -> bool:
+    """Whether the words around a name for instructions say there are none."""
+
+    near: list[str] = []
+    for word in reversed(before):
+        if word in (":", ",") or len(near) == 3:
+            break
+        if word not in _FILLERS:
+            near.append(word)
+    if any(_negation(word) for word in near):
+        return True
+    head = after[: after.index(",")] if "," in after else after
+    if ":" in head[:4]:
+        answer = [word for word in after[head.index(":") + 1 :] if word not in (":", ",")]
+        # Nothing after the colon: it is a heading.
+        return bool(answer) and (
+            answer[0] in _NONE_ANSWERS
+            or (
+                answer[0] in ("no", "not", "missing")
+                and (len(answer) == 1 or answer[1] in _NONE_AFTER_NO)
+            )
+        )
+    return any(_negation(word) for word in head[:3])
+
+
+def _names_instructions(text: str, names: re.Pattern[str] = _INSTRUCTIONS) -> bool:
+    """Whether a sentence or line of ``text`` names instructions, and not as missing.
+
+    "Source-system instructions:", "the instructions are below" and "Use my
+    skill for the source-system instructions" do; "no source-system
+    instructions", "the instructions are not attached" and "Source-system
+    instructions: none" do not.
+    """
+
+    text = re.sub(r"\bn/a\b", "na", text.casefold().replace("\u2019", "'"))
+    for clause in _CLAUSE_BREAK.split(text):
+        flat = " ".join(re.findall(r"[^\W_]+(?:'[^\W_]+)*|[:,]", clause))
+        for found in names.finditer(flat):
+            if not _says_none(flat[: found.start()].split(), flat[found.end() :].split()):
+                return True
+    return False
+
+
+def _heading(line: str, *, alone: bool) -> bool:
+    """Whether ``line`` heads the lines below it: "Instructions:", "## Notes", "**Notes**".
+
+    A line ``alone`` in its paragraph does too when it is short and ends no
+    sentence ("Source System Instructions", as a document's heading pastes).
+    """
+
+    line = line.strip()
+    bare = line.strip("*_ ")
+    if (
+        line.startswith("#")
+        or bare.endswith(":")
+        or (len(line) > 4 and line[:2] in ("**", "__") and line.endswith(line[:2]))
+    ):
+        return True
+    return alone and 0 < len(bare.split()) <= 10 and not bare.endswith((".", "!", "?", ";", ","))
+
+
+def _heads(lines: list[str], first: int, start: int) -> list[str]:
+    """The lines above line ``first`` (from line ``start`` on) that head it, top down.
+
+    That is its paragraph up to the nearest heading line in it; and, unless that
+    heading has lines of the paragraph above it, the headings alone in their
+    paragraphs right above ("Source-system instructions", then "Notes:").
+    """
+
+    heads: list[str] = []
+    at = first
+    while not _heading(lines[at], alone=False) and at > start and lines[at - 1].strip():
+        at -= 1
+        heads.insert(0, lines[at])
+    if _heading(lines[at], alone=False) and at > start and lines[at - 1].strip():
+        return heads
+    while True:
+        above = at - 1
+        while above >= start and not lines[above].strip():
+            above -= 1
+        alone = above == start or (above > start and not lines[above - 1].strip())
+        if above < start or not _heading(lines[above], alone=alone):
+            return heads
+        heads.insert(0, lines[above])
+        if not alone:
+            return heads
+        at = above
+
+
+def _named_as_instructions(span: str, text: str) -> bool:
+    """Whether the analyst names the part of ``text`` that ``span`` is in as instructions.
+
+    In the typed text, a heading or a line above the span in its paragraph has
+    to, or a heading right above the paragraph (:func:`_heads`); a request
+    elsewhere in the message does not. A skill's block or an attached file is
+    named by its own text up to the span, by its name, or by the typed text.
+    """
+
+    at = text.find(span)
+    if at < 0 or not span:
+        return False
+    first = len((text[:at] + "x").splitlines()) - 1
+    last = len((text[: at + len(span) - 1] + "x").splitlines()) - 1
+    lines = text.splitlines()
+    layout = message_layout(text)
+    part = next((part for part in layout if part.first <= last <= part.last), None)
+    if part is None or part.kind == "text":
+        start = part.first if part is not None else 0
+        first = max(first, start)
+        return _names_instructions(
+            "\n".join([*_heads(lines, first, start), *lines[first : last + 1]])
+        )
+    own = lines[part.first : last + 1]
+    if part.kind == "user_skill" and own and own[0].startswith(_SKILL_PREAMBLE):
+        own = own[1:]
+    return (
+        _names_instructions("\n".join(own))
+        or _names_instructions(part.name, _INSTRUCTIONS_NAME)
+        or any(
+            _names_instructions("\n".join(lines[typed.first : typed.last + 1]))
+            for typed in layout
+            if typed.kind == "text"
+        )
+    )
+
+
+def _capped(span: str) -> str:
+    return span if len(span) <= MAX_PASSAGE_CHARS else span[:MAX_PASSAGE_CHARS] + "…"
+
+
+def _passages(
+    given: Mapping[str, str], text: str, *, specification: bool
+) -> tuple[dict[str, str], list[str]]:
+    """Each input's passage as the message has it (:func:`find_passage`), and why any is not.
+
+    In a message that holds the specification, instructions and derived fields
+    are looked for outside its attribute tables, so a row of it cannot pass for
+    them (as :func:`analyst_evidence` leaves them out); the ASL schema anywhere.
+    A specification's is read by :func:`_specification_table`. Instructions
+    taken from a sentence that asks for the work itself (:data:`_REQUEST_WORDS`)
+    are the request, and refused; so are instructions from a part of the
+    message the analyst does not name as instructions
+    (:func:`_named_as_instructions`), such as a block of values for the tables.
+    """
+
+    outside = without_attribute_tables(text) if specification else text
+    found: dict[str, str] = {}
+    failed: list[str] = []
+    requests: list[str] = []
+    unnamed: list[str] = []
+    for kind, passage in given.items():
+        if kind == "specification":
+            continue
+        span = find_passage(passage, text if kind == "asl_schema" else outside)
+        instructions = kind in ("source_system_instructions", "source_instructions")
+        if span is None:
+            failed.append(kind)
+        elif instructions and _has_word(
+            " ".join(_sentences(span, outside).casefold().split()), _REQUEST_WORDS
+        ):
+            requests.append(kind)
+        elif instructions and not _named_as_instructions(span, outside):
+            unnamed.append(kind)
+        else:
+            found[kind] = _capped(span)
+    reasons: list[str] = []
+    if failed:
+        where = (
+            " (for instructions and derived fields, outside the specification's tables)"
+            if specification
+            else ""
+        )
+        reasons.append(
+            f"The passage for {', '.join(INPUT_KINDS[kind] for kind in failed)} is missing, under "
+            f"{MIN_PASSAGE_WORDS} words, or not in the analyst's message{where}. Give each input "
+            "but a specification with words of the message that hold it, copied exactly. If the "
+            "message does not hold that input, do not record it: ask the analyst for it."
+        )
+    if "derived_fields" in failed:
+        reasons.append(
+            "When the analyst says there are no derived fields, that is "
+            "sttm_update(no_derived_fields=True), not an input."
+        )
+    if requests:
+        reasons.append(
+            f"The passage for {', '.join(INPUT_KINDS[kind] for kind in requests)} is in the "
+            "analyst's request (a sentence that asks for a session, its review mode or the "
+            "workbooks), not in instructions on how the data is to be handled. If the message "
+            "has no such instructions, do not record the input: ask the analyst for them."
+        )
+    if unnamed:
+        reasons.append(
+            f"Nothing in the analyst's message names the passage for "
+            f"{', '.join(INPUT_KINDS[kind] for kind in unnamed)} as instructions: a heading or "
+            'a line above it ("Source-system instructions: ..."), or, for an attached document '
+            "or a skill, its name or the analyst's typed text. Values under another heading are "
+            "values to record with sttm_update, not instructions. If no part of the message is "
+            "named so, do not record the input: ask the analyst to send the instructions with a "
+            'line naming them ("Source-system instructions:").'
+        )
+    return found, reasons
+
+
+def _unreadable(parsed: SpecParse, text: str) -> str | None:
+    """Why no attributes could be read from the message's specification, if none could."""
+
+    if parsed.attributes:
+        return None
+    if not parsed.flattened:
+        return " ".join(
+            [
+                (
+                    "No attribute table was found in the analyst's message. A specification needs "
+                    "a table with a header row naming the attribute column, pipe- or tab-separated."
+                ),
+                *parsed.notes,
+            ]
+        )
+    line = parsed.flattened[0]
+    paste = (
+        "with each row on its own line and its cells separated by tabs or pipes: copied "
+        "straight from the spreadsheet or document, or as a Markdown table"
+    )
+    document = document_at(text, line)
+    if document is not None:
+        return (
+            f"The specification's table in {document} has no lines between its columns "
+            f"(line {line}), so they cannot be told apart. Ask the analyst to paste the table "
+            f"{paste}; or to attach a PDF of it with grid lines."
+        )
+    return (
+        "The specification in the analyst's message lost its columns or line breaks when it was "
+        f"copied (line {line}). Ask the analyst to paste it again {paste}."
+    )
+
+
+def _table_regions(text: str, spans: Sequence[tuple[int, int]]) -> list[tuple[int, str]]:
+    """Each attribute table's first line (from 1, as :mod:`.spec` counts) and its own text.
+
+    That is the table and the paragraph right above it that heads it ("Accounts
+    specification:"), in the same part of the message; for a table at the top of
+    an attached file or a skill, the file's or the skill's name.
+    """
+
+    lines = text.splitlines()
+    layout = message_layout(text)
+    taken = {line - 1 for first, last in spans for line in range(first, last + 1)}
+    regions = []
+    for first, last in spans:
+        top = first - 1
+        part = next((part for part in layout if part.first <= top <= part.last), None)
+        start = part.first if part is not None else 0
+        above = top - 1
+        while above >= start and not lines[above].strip():
+            above -= 1
+        # Up to a blank line or another table's row.
+        while (
+            above >= start
+            and lines[above].strip()
+            and above not in taken
+            and not ("|" in lines[above] or "\t" in lines[above])
+        ):
+            top, above = above, above - 1
+        name = part.name if part is not None and part.kind != "text" and above < start else ""
+        regions.append((first, "\n".join([name, *lines[top:last]])))
+    return regions
+
+
+def _shared_names(parsed: SpecParse) -> str | None:
+    """Why the attribute tables of one message, read together, are not one specification."""
+
+    def table_of(line: int) -> int:
+        return next(first for first, last in parsed.table_spans if first <= line <= last)
+
+    shared = [
+        name
+        for name, group in parsed.duplicates().items()
+        if len({table_of(attribute.line) for attribute in group}) > 1
+    ]
+    if not shared:
+        return None
+    return (
+        f"The attribute tables in the analyst's message share attribute names ({_listed(shared)}). "
+        "If they are the specifications of different sources, record each session's "
+        "specification with the passage of its own table: the heading above it or a row of it. "
+        "If they are one source's, ask the analyst to send its specification again with each "
+        "attribute once."
+    )
+
+
+def _specification_table(
+    parsed: SpecParse, text: str, passage: str
+) -> tuple[SpecParse, str | None, str | None]:
+    """The specification to record, the passage that chose its table, and why it is refused.
+
+    ``parsed`` is every attribute table of ``text`` read together, which is the
+    specification when no passage is given. A passage, for a message that holds
+    several sources' tables, is the heading above one table or a row of it
+    (:func:`_table_regions`): that table alone is read.
+    """
+
+    problem = _unreadable(parsed, text)
+    if problem is not None or not passage.strip():
+        return parsed, None, problem or _shared_names(parsed)
+    found = [
+        (first, span)
+        for first, region in _table_regions(text, parsed.table_spans)
+        if (span := find_passage(passage, region, min_words=2)) is not None
+    ]
+    if len(found) == 1:
+        first, span = found[0]
+        chosen = parse_specification(text, table=first)
+        return chosen, span, _unreadable(chosen, text)
+    problem = (
+        "is in the heading or rows of more than one attribute table: give words that only its "
+        "own table's heading or rows have"
+        if found
+        else "is not the heading above an attribute table of the analyst's message or a row of "
+        "it, copied exactly (2 words or more)"
+    )
+    return (
+        parsed,
+        None,
+        (
+            f"The passage for the Source specification {problem}. Leave it out when the message "
+            "holds only this source's tables."
+        ),
+    )
+
+
+def _sharing(
+    others: Iterable[Session], message_id: str, *, chosen: bool
+) -> tuple[str | None, str | None]:
+    """Why a message's specification is refused as another session's too, or a note.
+
+    For a message with more than one attribute table: each session's
+    specification has to choose its own with a passage.
+    """
+
+    sharing = [
+        (other, record)
+        for other in others
+        for record in other.inputs
+        if record.kind == "specification" and record.message_id == message_id
+    ]
+    if not sharing:
+        return None, None
+    named = ", ".join(
+        f"{other.id} ({other.source_system} / {other.source})" for other, _ in sharing
+    )
+    unchosen = [other.id for other, record in sharing if not record.passage]
+    again = (
+        f"Record the specification of session {', '.join(unchosen)} again with replace=True "
+        "and the passage of its own table, as it read every table of the message."
+        if unchosen
+        else ""
+    )
+    if not chosen:
+        problem = (
+            "The analyst's message holds more than one attribute table, and session "
+            f"{named} recorded its specification from it too: give each session's "
+            "specification the passage of its own table (the heading above it or a row of it), "
+            f"so each reads that table alone. {again}"
+        )
+        return problem.strip(), None
+    return None, again or None
+
+
 def record_input(
     session: Session,
-    kinds: list[str],
+    inputs: Sequence[Mapping[str, Any]],
     message: Mapping[str, Any],
     *,
     replace: bool,
     now: datetime,
+    others: Iterable[Session] = (),
 ) -> Recorded:
     """Record the analyst's current message, verbatim, as the given inputs.
 
-    A specification may be split over several messages: each one adds its
-    attributes. ``replace`` drops what earlier messages gave for these kinds.
+    Each input is a kind and, but for a specification, the passage of the
+    message that holds it (:func:`_passages`); a specification's passage is
+    only for a message with several sources' tables (:func:`_specification_table`).
+    An input whose passage is not found, or a specification that cannot be read,
+    is refused with the reason and the others are still recorded; when none is,
+    nothing is. A specification may be split over several messages: each one adds
+    its attributes. ``replace`` drops what earlier messages gave for these kinds,
+    and what this one gave (to record it again). ``others`` are the conversation's
+    other sessions, for a message whose tables are several sessions' specifications.
     """
 
     ensure_editable(session)
+    given: dict[str, str] = {}
+    for item in inputs:
+        given.setdefault(str(item.get("kind")), str(item.get("passage") or ""))
+    kinds = list(given)
     unknown = [kind for kind in kinds if kind not in INPUT_KINDS]
     if unknown or not kinds:
         raise SessionError(
             f"Unknown input kind(s) {unknown or kinds}; use: {', '.join(INPUT_KINDS)}."
         )
     text = str(message.get("text") or "")
+    # Why an attached file was not read, for a refusal that may be down to it.
+    unread = "".join(f" {note}" for note in message.get("notes") or ())
     if not text.strip():
         raise SessionError(
             "The analyst's message has no text to record. Ask the analyst to paste the content "
-            "as text; a specification as a table with a header row, pipe- or tab-separated."
+            "as text or attach it as a PDF with selectable text; a specification as a table with "
+            "a header row, pipe- or tab-separated." + unread
         )
     message_id = str(message["id"])
-    parsed = parse_specification(text) if "specification" in kinds else None
-    if parsed is not None and not parsed.attributes:
-        raise SessionError(
-            "No attribute table was found in the analyst's message, so nothing was recorded. A "
-            "specification needs a table with a header row naming the attribute column, pipe- "
-            "or tab-separated. " + " ".join(parsed.notes)
-        )
-    if parsed is not None and "asl_schema" in kinds and len(parsed.tables) > 1:
-        raise SessionError(
-            "The message holds more than one attribute table and is being recorded as both the "
-            "specification and the ASL schema, so the schema's rows would be read as "
-            "specification attributes. Nothing was recorded: ask the analyst to send the ASL "
-            "schema in a message of its own."
-        )
-    result = Recorded()
+    done = (
+        set()
+        if replace
+        else {record.kind for record in session.inputs if record.message_id == message_id}
+    )
+    pending = {kind: passage for kind, passage in given.items() if kind not in done}
+    specification = "specification" in kinds or "specification" in _input_kinds(session).get(
+        message_id, set()
+    )
+    passages, reasons = _passages(pending, text, specification=specification)
+    result = Recorded(reasons=reasons)
+    refused = {kind for kind in pending if kind != "specification" and kind not in passages}
+    parsed = None
+    notes: list[str] = []
+    if "specification" in pending:
+        every = parse_specification(text)
+        parsed, span, problem = _specification_table(every, text, pending["specification"])
+        if span is not None:
+            passages["specification"] = _capped(span)
+        if problem is None and len(every.table_spans) > 1:
+            problem, note = _sharing(others, message_id, chosen=span is not None)
+            notes += [note] if note else []
+        blocked = {"specification"}
+        if problem is None and "asl_schema" in kinds and len(parsed.tables) > 1:
+            problem = (
+                "The message holds more than one attribute table and is being recorded as both "
+                "the specification and the ASL schema, so the schema's rows would be read as "
+                "specification attributes: ask the analyst to send the ASL schema in a message "
+                "of its own."
+            )
+            blocked.add("asl_schema")
+        if problem is not None:
+            result.reasons.append(problem)
+            refused |= blocked & pending.keys()
+    if result.reasons and unread:
+        result.reasons[-1] += unread
+    if set(kinds) <= refused:
+        raise SessionError("Nothing was recorded. " + " ".join(result.reasons))
     at = timestamp(now)
     for kind in kinds:
-        if any(r.kind == kind and r.message_id == message_id for r in session.inputs):
+        if kind in done:
             result.already.append(INPUT_KINDS[kind])
+            continue
+        if kind in refused:
+            result.refused.append(INPUT_KINDS[kind])
             continue
         if replace:
             dropped = {r.message_id for r in session.inputs if r.kind == kind}
@@ -948,9 +1448,13 @@ def record_input(
             if kind == "specification":
                 session.attributes = [a for a in session.attributes if a.message_id not in dropped]
                 session.replaced_specifications += sorted(
-                    dropped - set(session.replaced_specifications)
+                    dropped - set(session.replaced_specifications) - {message_id}
                 )
-        record = InputRecord(kind=kind, message_id=message_id, recorded_at=at)
+        record = InputRecord(
+            kind=kind, message_id=message_id, recorded_at=at, passage=passages.get(kind)
+        )
+        if kind in passages:
+            result.passages[INPUT_KINDS[kind]] = passages[kind]
         if kind == "specification" and parsed is not None:
             record.tables, record.notes = parsed.tables, parsed.notes
             record.skipped_lines = parsed.skipped_lines
@@ -959,10 +1463,10 @@ def record_input(
                 for attribute in parsed.attributes
             ]
             result.attributes_added = len(parsed.attributes)
-            result.tables, result.notes = parsed.tables, parsed.notes
+            result.tables, result.notes = parsed.tables, [*parsed.notes, *notes]
         session.inputs.append(record)
         result.recorded.append(INPUT_KINDS[kind])
-    if "specification" in kinds:
+    if INPUT_KINDS["specification"] in result.recorded:
         _key_from_specification(session, now)
     log_message(session, message)
     prune_cells(session)
@@ -1032,6 +1536,23 @@ def _names(raw: Any) -> list[str]:
     return [str(name).strip() for name in raw or [] if str(name).strip()]
 
 
+def _specification_key(old: Value | None, raw: Any) -> bool:
+    """Whether ``raw`` names the primary key the specification's key column already gives."""
+
+    if old is None or old.source != "specification":
+        return False
+    return {normalize_name(name) for name in _names(raw)} == {
+        normalize_name(name) for name in _names(old.value)
+    }
+
+
+# Why a value for an attribute is refused before the specification is recorded:
+# the attribute may well be right, so the value is kept for later, not dropped.
+_NO_ROWS_YET = (
+    "No specification is recorded yet, so the tables have no rows: set it again once one is."
+)
+
+
 def _detail_value(
     key: str, raw: Any, tables: Tables, evidence: Evidence, *, proposed: bool, can_propose: bool
 ) -> str:
@@ -1048,6 +1569,8 @@ def _detail_value(
         found = []
         for name in names:
             row = tables.row("data_dictionary", name)
+            if row is None and not tables.session.attributes:
+                raise SessionError(f"{label}: {name} is not an attribute yet. {_NO_ROWS_YET}")
             if row is None or row.origin == "audit":
                 raise SessionError(
                     f"{label}: {name} is not a specification attribute or derived field."
@@ -1135,14 +1658,16 @@ def set_details(
         raw = values.get(key)
         if raw is None:
             continue
+        old = session.details.get(key)
         try:
             value = _detail_value(
                 key, raw, tables, evidence, proposed=proposed, can_propose=closed is None
             )
         except SessionError as error:
-            outcome.refused.append(str(error))
+            # The key the specification already gives, sent again: nothing to refuse or ask.
+            if not _specification_key(old, raw):
+                outcome.refused.append(str(error))
             continue
-        old = session.details.get(key)
         new = Value(
             value=value,
             source="draft" if proposed else "analyst",
@@ -1409,10 +1934,21 @@ def _apply_update(
     where = f"{TABLES[table]}, {attribute or '(no attribute)'}, {update.get('column')}"
     column = column_key(table, str(update.get("column") or ""))
     if column is None:
+        # A column of another table is named, so the value is not taken for missing. The
+        # column is the agent's pick, not the analyst's word: without the last sentence a
+        # refused column was taken back to the analyst instead of sent again under the right one.
+        elsewhere = [
+            TABLES[other]
+            for other in TABLES
+            if other != table and column_key(other, str(update.get("column") or ""))
+        ]
         raise SessionError(
-            f"{where}: unknown column; the columns are "
+            f"{where}: unknown column; "
+            + (f"it is a column of the {' and the '.join(elsewhere)}; " if elsewhere else "")
+            + "the columns are "
             + ", ".join(c.key for c in COLUMNS[table])
-            + "."
+            + ". The column is yours to choose: send the value again under the one of these "
+            "it is for, if any."
         )
     spec = COLUMN_INDEX[table][column]
     if spec.kind == "engine":
@@ -1424,6 +1960,11 @@ def _apply_update(
     if attribute != "*":
         row = tables.row(table, attribute)
         if row is None:
+            if not session.attributes:
+                raise SessionError(
+                    f"{where}: {attribute!r} is not a row of the {TABLES[table]} yet. "
+                    f"{_NO_ROWS_YET}"
+                )
             in_dd = tables.row("data_dictionary", attribute) is not None
             raise SessionError(
                 f"{where}: {attribute!r} is not a row of the {TABLES[table]}"
@@ -1469,6 +2010,9 @@ def _checked_value(where: str, spec: Column, value: str, context: _UpdateContext
         raise SessionError(
             f"{where}: a {spec.kind} column takes values from {allowed}, not {context.source}."
         )
+    if value.casefold() in ("?", UNRESOLVED_LABELS.get(spec.key, "?").casefold()):
+        # What the views and the workbooks show for a value nothing decided.
+        raise SessionError(f"{where}: {value!r} marks a value not decided yet; leave it unset.")
     if spec.yes_no:
         normalized = yes_no(value)
         if normalized is None:
@@ -1483,7 +2027,8 @@ def _checked_value(where: str, spec: Column, value: str, context: _UpdateContext
     elif context.source == "analyst" and not context.evidence.says(value):
         raise SessionError(
             f"{where}: {value!r} is not in the analyst's instructions or feedback to this "
-            "session (a pasted specification does not count). Ask the analyst."
+            "session (a pasted specification does not count). Use their words for it exactly as "
+            "written, or ask the analyst."
         )
     if context.source == "rule":
         if spec.rule_files and context.rule_file not in spec.rule_files:
@@ -1724,7 +2269,7 @@ def validate(session: Session) -> list[CheckResult]:
     for row in dd:
         carry = tables.resolve("data_dictionary", row, "carry_to_curated").value
         if carry is None:
-            failing.append(f"{row.name}: carry_to_curated not set")
+            failing.append(f"{row.name}: carry_to_curated not set in the Data Dictionary")
             continue
         if carry != "Y":
             continue

@@ -9,6 +9,8 @@
 !.env.example
 !.env.sample
 infra/.env.deploy.example
+# Local agent workspace (plans, reports): never part of the image
+.superpowers/
 
 # Python / build
 .venv/
@@ -36,6 +38,8 @@ htmlcov/
 .git/
 .gitignore
 infra/
+# ...except the Databricks workspace seed files (DATABRICKS_WORKSPACES_SEED_FILE).
+!infra/databricks-workspaces.*.yaml
 docs/
 README.md
 

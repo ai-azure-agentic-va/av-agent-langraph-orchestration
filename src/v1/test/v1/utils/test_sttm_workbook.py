@@ -67,6 +67,7 @@ from v1.core.tools.sttm.files import (
     is_file_id,
     keep_file,
     new_file_id,
+    workbook_file_id,
 )
 from v1.core.tools.sttm.session import (
     COLUMNS,
@@ -82,6 +83,7 @@ from v1.core.tools.sttm.session import (
 from v1.core.tools.sttm.workbook import (
     MAX_STEPS,
     MEDIA_TYPE,
+    WORKBOOKS,
     Built,
     BuiltWorkbook,
     Op,
@@ -548,6 +550,29 @@ def test_the_session_fills_the_templates_mapping_sheets() -> None:
     assert set(_fills(asl).values()) == {"FFC7CE"} and len(_fills(asl)) == 8
 
 
+def test_the_raw_to_curated_sheet_gives_the_source_type_and_the_logic_type() -> None:
+    def more_columns(wb: Workbook) -> None:
+        ws = wb["Data Mapping (RAW-CUR)"]
+        ws.cell(1, ws.max_column + 1, "raw_datatype")
+        ws.cell(1, ws.max_column + 1, "cur_logictype")
+
+    session = _session()
+    with _rule_files({}):
+        outcome = _cells(
+            session,
+            ("r2c", "CUSTOMER_ID", "logic_type", "Direct move"),
+            message=_msg("m8", "CUSTOMER_ID's logic type: Direct move."),
+        )
+    assert not outcome.refused, outcome.refused
+    files = {**_template_files(), "sttm.xlsx": _modified(_sttm_template(), more_columns)}
+    r2c = _book(_built(templates=files, session=session).workbooks[1])["Data Mapping (RAW-CUR)"]
+
+    # The source's own type is the specification's (a derived field has none); the
+    # logic type is the analyst's.
+    assert _column(r2c, "raw_datatype") == ["VARCHAR", "VARCHAR", None]
+    assert _column(r2c, "cur_logictype") == ["Direct move", None, None]
+
+
 def test_the_templates_look_is_kept() -> None:
     dd, sttm = _books()
     ws = dd["Data Dictionary"]
@@ -879,12 +904,19 @@ def test_without_a_usable_template_the_session_columns_are_used() -> None:
         ),
     ]
     for templates, *reasons in cases:
-        with _logged(workbook_mod.logger, logging.ERROR) as logged:
+        with _logged(workbook_mod.logger) as logged:
             built = _built(templates=templates)
         assert [book.reason for book in built.workbooks] == reasons
         assert [book.template for book in built.workbooks] == [r is None for r in reasons]
-        unreadable = templates.get("data-dictionary.xlsx") == b"not a workbook"
-        assert logged == (["STTM template data-dictionary.xlsx could not be read"] * unreadable)
+        # One line for each generic workbook, which says why.
+        generic = [book.key for book in built.workbooks if not book.template]
+        assert [line.rsplit(", so the ", 1)[-1] for line in logged] == [
+            f"{key} is generic" for key in generic
+        ], logged
+        if templates.get("data-dictionary.xlsx") == b"not a workbook":
+            assert logged[0].startswith(
+                "STTM template data-dictionary.xlsx could not be read (BadZipFile: "
+            ), logged
         for book, reason in zip(built.workbooks, reasons):
             if reason is not None:
                 layout = _book(book)["About"]["B10"].value
@@ -1650,6 +1682,7 @@ def _keep(
     return asyncio.run(
         keep_file(
             store,
+            file_id=workbook_file_id(new_file_id(), "sttm"),
             owner=owner,
             name="sttm-accounts-v1-sttm.xlsx",
             media_type=MEDIA_TYPE,
@@ -1724,7 +1757,25 @@ def test_a_kept_file_is_its_owners_for_24_hours() -> None:
 def test_file_ids_are_checked_before_the_store_is_read() -> None:
     file_id = new_file_id()
     assert is_file_id(file_id) and len(file_id) == 16
-    for bad in ("", "abcdefghjkmnpqrs", "ABCDEFGHJKMNPQR", "ABCDEFGHJKMNPQRST", "ABCDEFGHJKMNPQR1"):
+    # A build's files: its id and their workbook. Links given before carry the id alone.
+    assert [workbook_file_id(file_id, workbook) for workbook in WORKBOOKS] == [
+        f"{file_id}-data-dictionary",
+        f"{file_id}-sttm",
+    ]
+    assert all(is_file_id(workbook_file_id(file_id, workbook)) for workbook in WORKBOOKS)
+    for bad in (
+        "",
+        "abcdefghjkmnpqrs",
+        "ABCDEFGHJKMNPQR",
+        "ABCDEFGHJKMNPQRST",
+        "ABCDEFGHJKMNPQR1",
+        f"{file_id}-",
+        f"{file_id}-STTM",
+        f"{file_id}-data_dictionary",
+        f"{file_id}-sttm-sttm",
+        f"{file_id}-sttm.xlsx",
+        "ABCDEFGHJKMNPQR-sttm",
+    ):
         assert not is_file_id(bad), bad
     for letter in "ILO":
         assert not is_file_id("ABCDEFGHJKMNPQR" + letter)

@@ -4,27 +4,34 @@ The session engine is tested in ``test_sttm_engine.py``. These drive the layers
 around it:
 
 - the tools, called the way the agent calls them (a ``ToolRuntime`` over the
-  sttm-agent's state, its task quoting the analyst's message and the turn's run
-  id in its config): a moderate session from the analyst's first message to
-  approval and export, the review modes, approval by the signed-in user, new
-  versions, what each tool says without a quoted message or a run id, which
-  source each part of an update may come from, that only the quoted message is
-  recorded, that a review is accepted only in a later turn, that no STTM call
-  runs after a session change in the same step, that of the STTM tasks sent in
-  one step only the first to change a session may change any, which session a
-  call works on, and what a call that changes nothing returns;
+  sttm-agent's state, with the analyst's message as the sttm-agent read it from
+  the conversation and the turn's run id in its config): a moderate session
+  from the analyst's first message to approval and export, the review modes,
+  approval by the signed-in user, new versions, what each tool says without the
+  analyst's message or an id for it, which source each part of an update may
+  come from, that only the analyst's message is recorded, not the task, that a
+  PDF the analyst attaches is read like a pasted message, that a source keeps
+  the session it has, that a review is accepted only in a later turn, that no
+  STTM call runs after a session change in the same step, that of the STTM
+  tasks sent in one step only the first to change a session may change any,
+  which session a call works on, and what a call that changes nothing returns;
+- the sttm-agent's input (:func:`prepare`): the task, the analyst's latest
+  message read in full, their earlier messages and its previous answer, and
+  the message reaching the tools of the graph it runs;
 - the workbook tool: the files it keeps for the signed-in analyst and links in
   its answer, the layout it keeps for a session and its later versions (an
   approved session's too, which it leaves as it was), the steps it refuses by
   number, the same-step and same-task rules for a layout, and why it offers no
   workbook;
-- registration: the setting, the roster, the sessions and layouts channels, the
-  shipped access-control files (the sttm-agent is for INT only), the rule files
-  the prompt lists and the safety classifier's STTM paragraph;
+- registration: the setting, the roster (a fork whose graph has the stack of a
+  declarative subagent), the sessions and layouts channels, the shipped
+  access-control files (the sttm-agent is for INT only), the rule files the
+  prompt lists and the safety classifier's STTM paragraph;
 - the REAL agent (``_build_agent_sync``) around the stand-in model: an INT caller
-  reaches the sttm-agent, whose tools record the analyst's message as its task
-  quotes it; of two STTM tasks sent in one step only one changes the sessions;
-  and an EXT caller is never offered the sttm-agent and cannot call it.
+  reaches the sttm-agent, which reads the analyst's message from the
+  conversation for its tools to record; of two STTM tasks sent in one step only
+  one changes the sessions; and an EXT caller is never offered the sttm-agent
+  and cannot call it.
 
 Runs standalone (``python test_sttm_agent.py``) or under pytest.
 """
@@ -43,12 +50,16 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import deepagents.middleware.subagents as deepagents_subagents
+from deepagents.middleware.subagents import _FORK_TASK_PREAMBLE
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils import column_index_from_string
 from pydantic import Field
 from test_access_control import (
     _ADF,
@@ -64,7 +75,8 @@ from test_access_control import (
     _RecordingStandIn,
 )
 from test_patch_tool_calls import _user
-from test_sttm_engine import _INSTRUCTIONS, _SPEC, _rule_files
+from test_sttm_documents import _block, _pdf, _tsv
+from test_sttm_engine import _INSTRUCTIONS, _SPEC, _inputs, _rule_files
 from test_sttm_workbook import (
     _column,
     _Down,
@@ -76,19 +88,31 @@ from test_sttm_workbook import (
 )
 
 import v1.core.tools.sttm.tools as tools_mod
+import v1.core.tools.sttm.workbook as workbook_mod
 from v1.core.config import Settings
 from v1.core.middlewares.access_control import TASK_TOOL_NAME, load_access_policy
 from v1.core.middlewares.azure_links import AzureLinksMiddleware
 from v1.core.middlewares.safety import SAFETY_CLASSIFIER_SYSTEM_PROMPT
-from v1.core.prompts.sttm import STTM_SUBAGENT_DESCRIPTION, sttm_subagent_prompt
+from v1.core.prompts.sttm import (
+    STTM_SUBAGENT_DESCRIPTION,
+    STTM_SUBAGENT_PROMPT,
+    sttm_subagent_prompt,
+)
 from v1.core.subagents import ALL_SUBAGENTS, SERVICENOW_SUBAGENT, STTM_SUBAGENT
+from v1.core.subagents.sttm import runnable as runnable_mod
+from v1.core.subagents.sttm.runnable import (
+    MAX_ANSWER_CHARS,
+    MAX_EARLIER_CHARS,
+    STTM_RUNNABLE,
+    prepare,
+)
 from v1.core.tools.sttm import STTM_TOOL_NAMES, STTM_TOOLS
 from v1.core.tools.sttm.files import KEEP, NAMESPACE, download_url
 from v1.core.tools.sttm.rules import AUTHORING_DIR, AUTHORING_MOUNT, EXPECTED_RULE_FILES
 from v1.core.tools.sttm.session import Session, timestamp
 from v1.core.tools.sttm.state import merge_by_revision, merge_sessions
 from v1.core.tools.sttm.tools import (
-    MESSAGE_OPEN,
+    MESSAGE_KEY,
     SESSION_CHANGING_TOOLS,
     sttm_advance,
     sttm_record_input,
@@ -114,9 +138,8 @@ _M2 = (
     "forward."
 )
 _NO_MESSAGE = (
-    "Not done: The task does not quote the analyst's message between <analyst_message> tags, "
-    "so nothing can be recorded. Answer that the task has to quote the analyst's latest "
-    "message, exactly as they sent it, between those tags."
+    "Not done: The analyst's message did not reach this tool, so nothing can be recorded. This "
+    "is a configuration problem: tell the analyst, and do not retry."
 )
 _NO_TURN = (
     "Not done: This run has no run id to tell the analyst's messages apart, so nothing can be "
@@ -136,20 +159,21 @@ _TABLE_READ = (
 # -- the tools ---------------------------------------------------------------------
 
 
-def _task(text: str, context: str = "") -> str:
-    """A task to the sttm-agent: the analyst's message quoted, then the orchestrator's context."""
+def _fork(content: str | list, task: str = "") -> list[HumanMessage]:
+    """A fork's messages: the analyst's message ``content``, then the orchestrator's task."""
 
-    return f"<analyst_message>\n{text}\n</analyst_message>" + (f"\n{context}" if context else "")
+    return [HumanMessage(content=content), HumanMessage(content=_FORK_TASK_PREAMBLE + task)]
 
 
 class _Conversation:
     """One conversation's state, with the tools called on it the way the agent calls them.
 
-    Each analyst message is a turn: a task quoting it, run under the turn's id.
-    The clock moves on a minute with each call, so the session changed last is
-    always the one a call last changed. ``store`` is the platform's store the
-    tools see (the workbook tool keeps its files there); by default there is none.
-    Every call runs in the thread ``thread-1``.
+    Each analyst message is a turn: the sttm-agent's input prepared from it
+    (:func:`prepare`), its tools called with the message it read, under the
+    turn's id. The clock moves on a minute with each call, so the session
+    changed last is always the one a call last changed. ``store`` is the
+    platform's store the tools see (the workbook tool keeps its files there); by
+    default there is none. Every call runs in the thread ``thread-1``.
     """
 
     def __init__(self, store: Any = None) -> None:
@@ -162,15 +186,18 @@ class _Conversation:
         self.store = store
         self.thread_id = "thread-1"
         self.turn: str | None = None
+        # The analyst's message the tools are handed; none until the first turn.
+        self.message: dict[str, Any] | None = None
         self.calls = 0
         # Whether the last call answered with a Command (a state update).
         self.updated = False
 
-    def say(self, turn: str, text: str, context: str = "") -> None:
-        """A task quoting the analyst's message ``text``, in the turn ``turn``."""
+    def say(self, turn: str, content: str | list, task: str = "") -> None:
+        """The analyst's message ``content`` in the turn ``turn``, with the task ``task``."""
 
         self.turn = turn
-        self.state["messages"] = [HumanMessage(content=_task(text, context))]
+        inner, self.message = prepare({"messages": _fork(content, task)})
+        self.state["messages"] = inner["messages"]
 
     def call(
         self,
@@ -192,6 +219,8 @@ class _Conversation:
         at = NOW + timedelta(minutes=self.calls)
         config: dict[str, Any] = {"metadata": {"run_id": self.turn}} if self.turn else {}
         config["configurable"] = {"thread_id": self.thread_id}
+        if self.message is not None:
+            config["configurable"][MESSAGE_KEY] = self.message
         if task:
             step, task_id = task
             config["configurable"].update(
@@ -261,13 +290,14 @@ def _moderate_session() -> tuple[_Conversation, dict[str, str]]:
             review_mode="moderate",
         )
         said["record"] = conv.call(
-            sttm_record_input, kinds=["source_system_instructions", "specification"]
+            sttm_record_input, inputs=_inputs("source_system_instructions", "specification")
         )
         said["spec values"] = conv.call(
             sttm_update,
             source="analyst",
             details={
                 "primary_key": ["CUSTOMER_ID"],
+                "join_keys": ["ACCOUNT_NO"],
                 "cmdb_number": "APP-1234",
                 "delimiter": "pipe",
             },
@@ -331,19 +361,23 @@ def test_a_session_reads_the_inputs_and_refuses_values_the_analyst_did_not_give(
         "Still needed: Source-system instructions, Source specification. Record what the "
         "analyst's message holds (sttm_record_input) and ask for the rest."
     )
+    # Instructions are recorded with the words that hold them, for the analyst to check.
     assert said["record"] == (
         f"Session {sid}: recorded the analyst's message as Source-system instructions, Source "
         "specification.\n"
+        '- Source-system instructions, from: "Source-system instructions: CoreBank, daily '
+        'accounts feed"\n'
         "Specification: 3 attribute(s) read from this message, 3 in the session.\n"
         f"{_TABLE_READ}\n"
         "Next: set the file details and derived fields the analyst gave (sttm_update), then "
         "sttm_advance."
     )
-    # The specification's table is not the analyst's word for a key or a file detail.
+    # The specification's table is not the analyst's word for a key or a file detail. The
+    # key it gives, sent again, is left as it gave it: nothing to refuse or ask.
     assert said["spec values"] == (
         f"Session {sid}: nothing changed. Refused (3):\n"
-        "- Primary key: 'CUSTOMER_ID' is not in the analyst's messages to this session. Ask "
-        "the analyst.\n"
+        "- Join keys: 'ACCOUNT_NO' is not in the analyst's messages to this session. Ask the "
+        "analyst.\n"
         "- CMDB application number: 'APP-1234' is not in the analyst's messages to this "
         "session. Ask the analyst.\n"
         "- Delimiter: 'pipe' is not in the analyst's messages to this session. Ask the analyst."
@@ -423,6 +457,9 @@ def test_a_moderate_session_stops_at_the_data_dictionary_and_sttm_reviews() -> N
         f"Session {sid}: built the Raw-to-Curated and Curated-to-ASL STTMs.\n"
         "- Raw-to-Curated STTM: 3 row(s); required, not decided yet: raw_path (3 row(s)),"
     )
+    # The optional columns only the analyst or a rule file fills are named too.
+    assert "; optional, still empty: logic_type\n" in said["build sttm"]
+    assert "; optional, still empty: constraints, report_usage\n" in said["build sttm"]
     assert said["gate 3"].startswith(
         f"Session {sid}: the STTM review (gate 3) is open. Show the analyst the "
         "Raw-to-Curated and Curated-to-ASL STTMs, below,"
@@ -507,10 +544,10 @@ def test_an_export_writes_the_session_to_the_conversations_files() -> None:
     assert files[f"{stem}-summary.md"]["content"].startswith(f"### STTM session {sid}: ")
 
 
-def test_every_tool_that_records_needs_the_quoted_message_and_a_run_id() -> None:
+def test_every_tool_that_records_needs_the_analysts_message_and_an_id_for_it() -> None:
     calls = [
         (sttm_start_session, {"source_system": "CoreBank", "source": "daily accounts feed"}),
-        (sttm_record_input, {"kinds": ["specification"]}),
+        (sttm_record_input, {"inputs": _inputs("specification")}),
         (sttm_update, {"source": "analyst", "details": {"frequency": "daily"}}),
         (sttm_update, {"source": "rule", "rule_file": "sttm-mapping.md", "audit_fields": ["X"]}),
         (
@@ -526,17 +563,18 @@ def test_every_tool_that_records_needs_the_quoted_message_and_a_run_id() -> None
 
     conv = _Conversation()
     conv.turn = "m1"
-    # No task; a task that only describes the message; a quote left open.
-    for task in (
-        None,
-        "The analyst wants an STTM for CoreBank, daily accounts feed.",
-        "<analyst_message>\nStart an STTM for CoreBank, daily accounts feed.",
-    ):
-        conv.state["messages"] = [] if task is None else [HumanMessage(content=task)]
-        for tool, args in calls:
-            assert conv.call(tool, **args) == _NO_MESSAGE, (task, tool.name)
-            assert not conv.updated, (task, tool.name)
-    # A quoted message with no run id is no better: what is recorded is keyed by it.
+    # The sttm-agent handed its tools no message; a task quoting one is no stand-in.
+    conv.state["messages"] = [
+        HumanMessage(
+            content="<analyst_message>\nStart an STTM for CoreBank, daily accounts feed.\n"
+            "</analyst_message>"
+        )
+    ]
+    for tool, args in calls:
+        assert conv.call(tool, **args) == _NO_MESSAGE, tool.name
+        assert not conv.updated, tool.name
+    # A message with no id, in a run with no run id, is no better: what is recorded
+    # is keyed by it.
     conv.say("m1", "Start an STTM for CoreBank, daily accounts feed.")
     conv.turn = None
     for tool, args in calls:
@@ -544,11 +582,18 @@ def test_every_tool_that_records_needs_the_quoted_message_and_a_run_id() -> None
         assert not conv.updated, tool.name
     assert conv.state["sttm_sessions"] == {}
 
+    # The message's own id comes before the run's.
+    conv.say("run-7", "Start an STTM for CoreBank, daily accounts feed.")
+    assert conv.message is not None
+    conv.message["id"] = "msg-7"
+    conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
+    assert list(conv.session().messages) == ["msg-7"]
+
 
 def test_a_call_works_on_the_session_named_or_on_the_one_changed_last() -> None:
     conv = _Conversation()
     conv.say("m1", "One session for the daily accounts feed and one for the card feed.")
-    assert conv.call(sttm_record_input, kinds=["specification"]) == (
+    assert conv.call(sttm_record_input, inputs=_inputs("specification")) == (
         "Not done: There is no STTM session in this conversation yet; start one with "
         "sttm_start_session."
     )
@@ -561,7 +606,7 @@ def test_a_call_works_on_the_session_named_or_on_the_one_changed_last() -> None:
     conv.say("m2", f"{_INSTRUCTIONS}\n{_SPEC}")
     recorded = conv.call(
         sttm_record_input,
-        kinds=["source_system_instructions", "specification"],
+        inputs=_inputs("source_system_instructions", "specification"),
         session_id=accounts.lower(),
     )
     assert recorded.startswith(f"Session {accounts}: recorded the analyst's message")
@@ -579,13 +624,32 @@ def test_a_call_that_changes_nothing_leaves_the_state_alone() -> None:
     conv = _Conversation()
     conv.say("m1", _first_message())
     conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
-    conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"])
+    conv.call(sttm_record_input, inputs=_inputs("source_system_instructions", "specification"))
     sid = conv.session().id
     before = json.dumps(conv.state["sttm_sessions"], sort_keys=True)
 
-    assert conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"]) == (
+    assert conv.call(
+        sttm_record_input, inputs=_inputs("source_system_instructions", "specification")
+    ) == (
         f"Session {sid}: this message is already recorded as Source-system instructions, "
         "Source specification; nothing changed."
+    )
+    assert not conv.updated
+    # An input refused next to them is reported, with why.
+    assert conv.call(
+        sttm_record_input,
+        inputs=[*_inputs("specification"), {"kind": "derived_fields", "passage": "none"}],
+    ) == (
+        f"Session {sid}: this message is already recorded as Source specification; nothing "
+        "changed.\n"
+        "Not recorded: Derived-field definitions.\n"
+        "- The passage for Derived-field definitions is missing, under 4 words, or not in the "
+        "analyst's message (for instructions and derived fields, outside the specification's "
+        "tables). Give each input but a specification with words of the message that hold it, "
+        "copied exactly. If the message does not hold that input, do not record it: ask the "
+        "analyst for it.\n"
+        "- When the analyst says there are no derived fields, that is "
+        "sttm_update(no_derived_fields=True), not an input."
     )
     assert not conv.updated
     assert conv.call(sttm_update, source="analyst") == "Not done: nothing was given to set."
@@ -641,7 +705,9 @@ def test_every_review_stops_by_default_and_extensive_offers_every_row() -> None:
                 source="daily accounts feed",
                 review_mode=None if mode == "default" else mode,
             )
-            conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"])
+            conv.call(
+                sttm_record_input, inputs=_inputs("source_system_instructions", "specification")
+            )
             gate_1[mode] = (conv.session().id, conv.call(sttm_advance))
 
     for mode, (sid, text) in gate_1.items():
@@ -669,7 +735,7 @@ def _fast_session_at_summary() -> _Conversation:
         source="daily accounts feed",
         review_mode="fast",
     )
-    conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"])
+    conv.call(sttm_record_input, inputs=_inputs("source_system_instructions", "specification"))
     for _ in range(3):  # Data Dictionary, both STTMs, the final summary
         last = conv.call(sttm_advance)
     assert last.startswith(f"Session {conv.session().id}: every review is done."), last
@@ -761,55 +827,140 @@ def test_a_new_version_copies_an_approved_session_and_leaves_it_as_it_was() -> N
     )
 
 
-def test_a_new_session_for_the_same_source_takes_its_instructions_but_not_its_table() -> None:
+def test_a_source_keeps_its_session_until_the_analyst_asks_for_a_new_one() -> None:
     conv = _Conversation()
     conv.say("m1", _first_message())
     conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
-    conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"])
+    conv.call(sttm_record_input, inputs=_inputs("source_system_instructions", "specification"))
     (first,) = conv.state["sttm_sessions"]
 
-    conv.say("m2", "Start another session for the same feed.")
-    started = conv.call(sttm_start_session, source_system="CoreBank", source="Daily Accounts Feed")
+    # A later message about the same source carries on with its session.
+    conv.say("m2", "The daily accounts feed is pipe delimited.")
+    assert conv.call(
+        sttm_start_session, source_system="CoreBank", source="Daily Accounts Feed"
+    ) == (
+        f"Not done: CoreBank / Daily Accounts Feed already has session(s) {first}, not approved "
+        f"yet, so no new session was started. Carry on with session {first}: record this "
+        f"message's inputs and changes with session_id={first}. Only if the analyst asked for a "
+        "new session, call again with new_session=true."
+    )
+    assert not conv.updated and list(conv.state["sttm_sessions"]) == [first]
+
+    # Asked for, the new one takes the instructions but not the table.
+    conv.say("m3", "Start another session for the same feed.")
+    started = conv.call(
+        sttm_start_session,
+        source_system="CoreBank",
+        source="Daily Accounts Feed",
+        new_session=True,
+    )
     (second,) = set(conv.state["sttm_sessions"]) - {first}
     assert started == (
         f"Started STTM session {second} for CoreBank / Daily Accounts Feed.\n"
         f"- Source-system instructions: carried over from session {first}\n"
-        f"- Session(s) {first} for the same source are not approved yet; carry on with one of "
-        "them unless the analyst asked for a new session.\n"
+        f"- Session(s) {first} for the same source are not approved yet; the analyst asked for a "
+        "new one.\n"
         "Review mode: none chosen, so every review stops.\n"
         "Still needed: Source specification. Record what the analyst's message holds "
         "(sttm_record_input) and ask for the rest."
     )
     session = conv.session(second)
     assert session.attributes == []
-    assert "Source system: CoreBank." in session.messages["m1"]
+    assert _INSTRUCTIONS in session.messages["m1"]
     assert "CUSTOMER_ID" not in session.messages["m1"]
+    # The instructions keep the words they were recorded from.
+    (carried,) = session.inputs
+    assert carried.passage == _INSTRUCTIONS.removesuffix(".") and carried.inherited_from == first
 
 
-def test_a_quote_with_no_text_is_not_recorded() -> None:
+def test_a_message_with_no_text_is_not_recorded() -> None:
     conv = _Conversation()
     conv.say("m0", "Start an STTM for CoreBank, daily accounts feed.")
     conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
-    # The analyst sent only a file, which the task names outside the tags.
-    conv.say("m1", "", context="The analyst attached spec.pdf.")
-    assert conv.call(sttm_record_input, kinds=["specification"]) == (
+    # The analyst sent only a screenshot of the specification, which cannot be read.
+    screenshot = {
+        "type": "image",
+        "base64": "aGk=",
+        "mime_type": "image/png",
+        "extras": {"filename": "spec.png"},
+    }
+    conv.say("m1", [screenshot], task="Record the specification the analyst sent.")
+    unread = "spec.png was not read: images cannot be read. Ask for its content as text."
+    # The sttm-agent is told why, and so is a tool asked to record it.
+    assert conv.state["messages"][0].text.endswith(f"<notes>\n- {unread}\n</notes>")
+    assert conv.call(sttm_record_input, inputs=_inputs("specification")) == (
         "Not done: The analyst's message has no text to record. Ask the analyst to paste the "
-        "content as text; a specification as a table with a header row, pipe- or tab-separated."
+        "content as text or attach it as a PDF with selectable text; a specification as a table "
+        f"with a header row, pipe- or tab-separated. {unread}"
     )
     assert conv.session().attributes == []
 
 
-def test_only_the_quoted_message_is_recorded() -> None:
+# _SPEC's rows of cells, for a PDF.
+_SPEC_ROWS = [
+    [cell.strip() for cell in line.strip("|").split("|")]
+    for line in _SPEC.splitlines()
+    if not line.startswith("|---")
+]
+
+
+def test_a_pdf_the_analyst_attaches_is_read_like_a_pasted_message() -> None:
+    def recorded(content: str | list) -> tuple[_Conversation, str]:
+        conv = _Conversation()
+        conv.say("m1", content)
+        conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
+        answer = conv.call(
+            sttm_record_input, inputs=_inputs("source_system_instructions", "specification")
+        )
+        return conv, answer
+
+    def attributes(conv: _Conversation) -> list[dict[str, Any]]:
+        return [attribute.model_dump(exclude={"line"}) for attribute in conv.session().attributes]
+
+    pasted, _ = recorded(_first_message())
+    request = {"type": "text", "text": "Start an STTM for CoreBank, daily accounts feed."}
+    # The source-system instructions and the specification are in the PDF only.
+    pdf = _pdf([_INSTRUCTIONS, "Specification:", _SPEC_ROWS])
+    conv, answer = recorded([request, _block(pdf, "accounts spec.pdf")])
+    assert len(attributes(conv)) == 3 and attributes(conv) == attributes(pasted)
+    assert '- Source-system instructions, from: "Source-system instructions: CoreBank, ' in answer
+    instructions, _ = conv.session().inputs
+    assert instructions.passage == _INSTRUCTIONS.removesuffix(".")
+    # The sttm-agent reads the PDF with the message.
+    assert conv.state["messages"][0].text.endswith(
+        "<analyst_message>\nStart an STTM for CoreBank, daily accounts feed.\n\n"
+        '<document name="accounts spec.pdf" pages="1">\n'
+        f"{_INSTRUCTIONS}\nSpecification:\n{_tsv(_SPEC_ROWS)}\n</document>\n</analyst_message>"
+    )
+
+    # A table without lines between its columns is not guessed at; the instructions with it
+    # are recorded all the same.
+    pdf = _pdf([_INSTRUCTIONS, _SPEC_ROWS], ruled=False)
+    conv, answer = recorded([request, _block(pdf, "accounts spec.pdf")])
+    assert (
+        "Not recorded: Source specification.\n"
+        "- The specification's table in accounts spec.pdf has no lines between its columns "
+        "(line 5), so they cannot be told apart. Ask the analyst to paste the table with each "
+        "row on its own line and its cells separated by tabs or pipes: copied straight from the "
+        "spreadsheet or document, or as a Markdown table; or to attach a PDF of it with grid "
+        "lines.\n"
+        "Still needed: Source specification."
+    ) in answer
+    assert [r.kind for r in conv.session().inputs] == ["source_system_instructions"]
+    assert conv.session().attributes == []
+
+
+def test_only_the_analysts_message_is_recorded_not_the_task() -> None:
     conv = _Conversation()
-    conv.say("m1", _first_message(), context="Earlier the analyst said CUSTOMER_ID is the key.")
+    conv.say("m1", _first_message(), task="Earlier the analyst said ACCOUNT_NO is the key.")
     conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
-    conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"])
+    conv.call(sttm_record_input, inputs=_inputs("source_system_instructions", "specification"))
     sid = conv.session().id
 
-    # The orchestrator's context is not the analyst's word for the key.
-    assert conv.call(sttm_update, source="analyst", details={"primary_key": ["CUSTOMER_ID"]}) == (
+    # The orchestrator's task is not the analyst's word for the key.
+    assert conv.call(sttm_update, source="analyst", details={"primary_key": ["ACCOUNT_NO"]}) == (
         f"Session {sid}: nothing changed. Refused (1):\n"
-        "- Primary key: 'CUSTOMER_ID' is not in the analyst's messages to this session. Ask the "
+        "- Primary key: 'ACCOUNT_NO' is not in the analyst's messages to this session. Ask the "
         "analyst, or propose it (source='draft') for the analyst to confirm at the input review."
     )
     assert conv.session().messages == {"m1": _first_message()}
@@ -820,14 +971,14 @@ def test_a_review_opened_in_a_turn_is_accepted_only_in_a_later_one() -> None:
     with _rule_files({}):
         conv.say("m1", _first_message())
         conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
-        conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"])
+        conv.call(sttm_record_input, inputs=_inputs("source_system_instructions", "specification"))
         sid = conv.session().id
         assert conv.call(sttm_advance).startswith(
             f"Session {sid}: the Input review (gate 1) is open."
         )
 
-        # A second task in the same turn quotes the same message: it cannot accept the review.
-        conv.say("m1", _first_message(), context="The analyst accepts the input review.")
+        # A second task in the same turn reads the same message: it cannot accept the review.
+        conv.say("m1", _first_message(), task="The analyst accepts the input review.")
         assert conv.call(sttm_advance, confirm_review=True) == (
             f"Session {sid}: the Input review (gate 1) is still open. It opened in this same "
             "analyst message; the analyst has to answer it first."
@@ -874,7 +1025,13 @@ def test_no_sttm_call_runs_after_a_session_change_in_the_same_step() -> None:
 
     # Made again in the next step, it runs.
     conv.state["messages"].append(_calls(("sttm_advance", {}, "c6")))
-    assert conv.call(sttm_advance, call_id="c6").startswith(f"Session {sid} cannot move on yet:")
+    blocked = conv.call(sttm_advance, call_id="c6")
+    assert blocked.startswith(f"Session {sid} cannot move on yet:")
+    # Blocked is not stuck: the analyst's values and the workbooks they asked for go ahead.
+    assert blocked.endswith(
+        "Meanwhile, set the values the analyst gave (sttm_update). If they asked for the "
+        "workbooks, build them now (sttm_workbook): what is missing does not stop a build."
+    )
 
 
 def test_of_the_sttm_tasks_sent_in_one_step_only_the_first_to_change_a_session_may() -> None:
@@ -894,7 +1051,7 @@ def test_of_the_sttm_tasks_sent_in_one_step_only_the_first_to_change_a_session_m
 
         for tool, args in (
             (sttm_start_session, {"source_system": "CoreBank", "source": "card feed"}),
-            (sttm_record_input, {"kinds": ["source_system_instructions", "specification"]}),
+            (sttm_record_input, {"inputs": _inputs("source_system_instructions", "specification")}),
             (sttm_update, {"source": "analyst", "review_mode": "default"}),
             (sttm_advance, {}),
         ):
@@ -906,7 +1063,7 @@ def test_of_the_sttm_tasks_sent_in_one_step_only_the_first_to_change_a_session_m
         assert conv.call(
             sttm_record_input,
             task=("s1", "a"),
-            kinds=["source_system_instructions", "specification"],
+            inputs=_inputs("source_system_instructions", "specification"),
         ).startswith(f"Session {sid}: recorded the analyst's message")
         # Sent again, in a later step, b runs; a call made outside a graph always does.
         assert conv.call(sttm_advance, task=("s2", "b")).startswith(
@@ -931,7 +1088,7 @@ def test_an_update_takes_each_value_only_from_a_source_it_may_come_from() -> Non
     with _rule_files({"sttm-mapping.md": "Audit fields: LOAD_TS, BATCH_ID."}):
         conv.say("m1", _first_message(" No derived fields."))
         conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
-        conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"])
+        conv.call(sttm_record_input, inputs=_inputs("source_system_instructions", "specification"))
         sid = conv.session().id
 
         # Each part is checked on its own; nothing here may come from a rule file.
@@ -993,6 +1150,150 @@ def test_the_sessions_reducer_keeps_the_highest_revision() -> None:
     assert merge_sessions(existing, None) == existing and merge_sessions(None, None) == {}
 
 
+# -- the sttm-agent's input --------------------------------------------------------
+
+
+def _prepared(*messages: Any, task: str = "A task.") -> tuple[str, dict[str, Any]]:
+    """The sttm-agent's input from a fork of ``messages`` with ``task``, and its message."""
+
+    inner, message = prepare({"messages": [*messages, HumanMessage(_FORK_TASK_PREAMBLE + task)]})
+    (prepared,) = inner["messages"]
+    return prepared.text, message
+
+
+def test_the_sttm_agent_reads_the_analysts_latest_message_in_full() -> None:
+    latest = f"{_INSTRUCTIONS}\n{_SPEC}"
+    sessions = {"S1": {"revision": 0}}
+    inner, message = prepare(
+        {
+            "messages": [
+                HumanMessage("Start an STTM for CoreBank, daily accounts feed.", id="h1"),
+                _calls(_sttm_task("Start the session.", "call_1")),
+                ToolMessage(
+                    "Session S1 is started. Paste the specification.", tool_call_id="call_1"
+                ),
+                AIMessage("The session is started. Please paste the specification."),
+                HumanMessage(latest, id="h2"),
+                HumanMessage(_FORK_TASK_PREAMBLE + "Record the inputs."),
+            ],
+            "sttm_sessions": sessions,
+        }
+    )
+    # The tools get the message, under its id; the model gets it with what led to it.
+    assert message == {"id": "h2", "text": latest, "notes": []}
+    (prepared,) = inner.pop("messages")
+    assert inner == {"sttm_sessions": sessions}
+    assert prepared.text == (
+        "<task>\nRecord the inputs.\n</task>\n\n"
+        "<earlier_messages>\n<message>\nStart an STTM for CoreBank, daily accounts feed.\n"
+        "</message>\n</earlier_messages>\n\n"
+        "<previous_answer>\nSession S1 is started. Paste the specification.\n</previous_answer>\n\n"
+        f"<analyst_message>\n{latest}\n</analyst_message>"
+    )
+
+    # With no message from the analyst there is nothing to record, and nothing to keep it under.
+    text, message = _prepared(task="")
+    assert message == {"id": "", "text": "", "notes": []}
+    assert text == "<task>\n\n</task>\n\n<analyst_message>\n\n</analyst_message>"
+    assert prepare({"messages": []})[1] == message
+    assert _prepared(HumanMessage("Hi."))[1] == {"id": "", "text": "Hi.", "notes": []}
+
+
+def test_the_analysts_earlier_messages_are_the_most_recent_that_fit_without_tables() -> None:
+    pdf = {
+        "type": "file",
+        "base64": "JVBERi0=",
+        "mime_type": "application/pdf",
+        "extras": {"filename": "accounts spec.pdf"},
+    }
+    # Two fit, the third does not.
+    words = "word " * (MAX_EARLIER_CHARS // 12)
+    summary = HumanMessage(
+        "A summary of the conversation so far.", additional_kwargs={"lc_source": "summarization"}
+    )
+    text, message = _prepared(
+        summary,
+        HumanMessage(f"oldest {words}"),
+        HumanMessage(f"older {words}"),
+        HumanMessage(f"old {words}"),
+        # Only a table: left out.
+        HumanMessage(_SPEC),
+        HumanMessage([{"type": "text", "text": f"The spec, and its PDF:\n{_SPEC}"}, pdf]),
+        HumanMessage("Approve it.", id="h7"),
+    )
+    assert message["id"] == "h7" and message["text"] == "Approve it."
+    earlier = text.split("<earlier_messages>\n", 1)[1].split("\n</earlier_messages>", 1)[0]
+    assert earlier == "\n".join(
+        [
+            "(older messages left out)",
+            f"<message>\nolder {words.strip()}\n</message>",
+            f"<message>\nold {words.strip()}\n</message>",
+            "<message>\nThe spec, and its PDF:\n[attached: accounts spec.pdf]\n</message>",
+        ]
+    )
+    assert "summary" not in text and "CUSTOMER_ID" not in text
+
+
+def test_the_previous_answer_is_the_end_of_the_sttm_agents_last_one() -> None:
+    ending = "The session is ready for review."
+    long_answer = "x" * MAX_ANSWER_CHARS + ending
+    servicenow = (TASK_TOOL_NAME, {"description": "Find tickets.", "subagent_type": _SERVICENOW})
+    text, _ = _prepared(
+        HumanMessage("Start it."),
+        _calls(_sttm_task("Start it.", "call_1")),
+        ToolMessage("The first answer.", tool_call_id="call_1"),
+        _calls(_sttm_task("Go on.", "call_2"), (*servicenow, "call_3")),
+        ToolMessage(long_answer, tool_call_id="call_2"),
+        ToolMessage("The ServiceNow agent's answer.", tool_call_id="call_3"),
+        HumanMessage("Go on."),
+    )
+    previous = text.split("<previous_answer>\n", 1)[1].split("\n</previous_answer>", 1)[0]
+    assert previous == "…" + long_answer[-MAX_ANSWER_CHARS:] and previous.endswith(ending)
+    # None yet: no part.
+    assert "<previous_answer>" not in _prepared(HumanMessage("Start it."))[0]
+
+
+def test_the_sttm_agent_hands_its_graph_the_input_and_its_tools_the_message() -> None:
+    seen: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    def graph(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+        seen.append((state, dict(config["configurable"])))
+        return {"messages": [*state["messages"], AIMessage("Done.")]}
+
+    fork = {
+        "messages": [
+            HumanMessage("Approve it.", id="h9"),
+            HumanMessage(_FORK_TASK_PREAMBLE + "Go."),
+        ]
+    }
+    config: RunnableConfig = {"configurable": {"thread_id": "thread-1"}}
+    saved = STTM_RUNNABLE.graph
+    try:
+        STTM_RUNNABLE.graph = None
+        try:
+            STTM_RUNNABLE.invoke(fork, config)
+        except RuntimeError as exc:
+            assert str(exc) == "The sttm-agent's graph is not installed: build the agent first."
+        else:
+            raise AssertionError("ran without a graph")
+        runnable_mod.install(RunnableLambda(graph))
+        answers = [
+            STTM_RUNNABLE.invoke(fork, config),
+            asyncio.run(STTM_RUNNABLE.ainvoke(fork, config)),
+        ]
+    finally:
+        STTM_RUNNABLE.graph = saved
+
+    inner, message = prepare(fork)
+    assert message == {"id": "h9", "text": "Approve it.", "notes": []}
+    assert [state for state, _ in seen] == [inner, inner]
+    assert [configurable for _, configurable in seen] == 2 * [
+        {"thread_id": "thread-1", MESSAGE_KEY: message}
+    ]
+    assert [answer["messages"][-1].text for answer in answers] == ["Done.", "Done."]
+    assert config == {"configurable": {"thread_id": "thread-1"}}
+
+
 # -- the workbook tool -------------------------------------------------------------
 
 
@@ -1011,7 +1312,9 @@ _SHOW_LAYOUT = (
     "Show the analyst the layout below, numbered as here, so they can check how their request "
     "was read."
 )
-_LINK = re.compile(r"\[(Data Dictionary|STTM) workbook\]\(/api/sttm/files/([A-Z]{16})\)")
+_LINK = re.compile(
+    r"\[(Data Dictionary|STTM) workbook\]\(/api/sttm/files/([A-Z]{16}-(?:data-dictionary|sttm))\)"
+)
 _HIDE_LENGTH = {"op": "hide_columns", "sheet": "dd", "columns": ["Length"]}
 _ORANGE = {
     "op": "highlight",
@@ -1040,7 +1343,7 @@ def _recorded(store: Any = None) -> _Conversation:
     with _rule_files({}):
         conv.say("m1", _first_message())
         conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
-        conv.call(sttm_record_input, kinds=["source_system_instructions", "specification"])
+        conv.call(sttm_record_input, inputs=_inputs("source_system_instructions", "specification"))
     return conv
 
 
@@ -1080,6 +1383,10 @@ def test_the_workbooks_are_kept_for_the_signed_in_analyst_and_linked_in_the_answ
         built = conv.call(sttm_workbook)
     at = NOW + timedelta(minutes=conv.calls)
     links = _links(built)
+    # The two files share the build's id, and each link ends as its label begins: one copied
+    # with the other's id still opens its own file.
+    build_id = links["STTM"].removesuffix("-sttm")
+    assert links == {"Data Dictionary": f"{build_id}-data-dictionary", "STTM": f"{build_id}-sttm"}
     assert built == (
         f"Session {sid} (version 1, not approved yet): built both workbooks from the session as "
         "it is now.\n"
@@ -1098,7 +1405,7 @@ def test_the_workbooks_are_kept_for_the_signed_in_analyst_and_linked_in_the_answ
         f"- Data Dictionary: {_DD_COLUMNS}\n"
         "- Raw-to-Curated: Attribute, Raw path, Raw file, INTG path, INTG table, INTG column, "
         "INTG type, Curated path, Curated table, Curated column, Curated type, Transformation "
-        "rule, PII/PCI\n"
+        "rule, Logic type, PII/PCI\n"
         "- Curated-to-ASL: Attribute, Curated table, Curated column, ASL table, ASL column, ASL "
         "type, Business attribute name, Constraints, Logic, Sensitivity, Report usage"
     )
@@ -1135,12 +1442,34 @@ def test_the_workbooks_are_kept_for_the_signed_in_analyst_and_linked_in_the_answ
     with _analyst(_template_files()):
         again = conv.call(sttm_workbook)
     assert re.search(
-        r"^- \[Data Dictionary workbook\]\(/api/sttm/files/[A-Z]{16}\), from the organization's "
+        r"^- \[Data Dictionary workbook\]\(/api/sttm/files/[A-Z]{16}-data-dictionary\), from the "
+        r"organization's "
         r"template\. Sheets: Instructions, File Details, Data Dictionary, Values, About\.",
         again,
         re.MULTILINE,
     ), again
     assert len(_kept(store)) == 4
+
+
+def test_workbooks_built_before_the_inputs_are_in_say_what_is_missing() -> None:
+    conv = _Conversation(InMemoryStore())
+    with _rule_files({}):
+        conv.say("m1", _first_message())
+        conv.call(sttm_start_session, source_system="CoreBank", source="daily accounts feed")
+        conv.call(sttm_record_input, inputs=_inputs("specification"))
+    with _analyst():
+        lines = conv.call(sttm_workbook).splitlines()
+    missing = (
+        "Not complete yet (tell the analyst, with the links): Source-system instructions: not "
+        "given yet."
+    )
+    # Right after the links, for the analyst to read with them.
+    assert lines[lines.index(missing) - 1].startswith(_EACH_LINK)
+
+    with _rule_files({}):
+        conv.call(sttm_record_input, inputs=_inputs("source_system_instructions"))
+    with _analyst():
+        assert "Not complete yet" not in conv.call(sttm_workbook)
 
 
 def test_a_layout_is_kept_for_the_session_and_its_later_versions() -> None:
@@ -1362,7 +1691,14 @@ def test_no_workbook_is_offered_without_a_signed_in_analyst_or_a_place_to_keep_i
             "Not done: the workbooks were built but could not be kept for download, because of a "
             "problem on our side, so nothing was changed. Tell the analyst, and do not retry now."
         )
-    assert logged == [f"Could not keep the workbooks of STTM session {sid}"]
+    # One line says which build failed, how far it got, and why.
+    (line,) = logged
+    assert line.startswith(f"Could not keep the workbooks of STTM session {sid} v1 ("), line
+    assert "data_dictionary generic (the template data-dictionary.xlsx is not in" in line, line
+    assert (
+        "): ConnectionError: the store is down at v1/test/v1/utils/test_sttm_workbook.py:" in line
+    )
+    assert line.endswith(" in abatch"), line
     assert not conv.updated
 
     def broken(*args: Any, **kwargs: Any) -> Any:
@@ -1379,9 +1715,62 @@ def test_no_workbook_is_offered_without_a_signed_in_analyst_or_a_place_to_keep_i
             )
     finally:
         tools_mod.build_workbooks = saved
-    assert logged == ["Could not build the workbooks of an STTM session"]
+    (line,) = logged
+    assert line.startswith(f"Could not build the workbooks of STTM session {sid} v1 ("), line
+    assert (
+        ", with 1 layout step(s): ValueError: a bug at v1/test/v1/utils/test_sttm_agent.py:" in line
+    )
+    assert line.endswith(" in broken"), line
     assert not conv.updated and _kept(conv.store) == {}
     assert conv.state["sttm_layouts"] == {}
+
+
+def test_a_failed_build_says_where_it_failed_and_a_good_one_is_logged() -> None:
+    conv = _recorded(InMemoryStore())
+    sid = conv.session().id
+
+    def unwritable(*args: Any, **kwargs: Any) -> Any:
+        return column_index_from_string("not a column")  # raises in openpyxl
+
+    saved = workbook_mod._render
+    workbook_mod._render = unwritable
+    try:
+        with _analyst(), _logged(tools_mod.logger) as logged:
+            assert conv.call(sttm_workbook).startswith("Not done: the workbooks could not be built")
+    finally:
+        workbook_mod._render = saved
+    # The library's frame, then ours, then what the build was doing.
+    (line,) = logged
+    assert line.startswith(f"Could not build the workbooks of STTM session {sid} v1 ("), line
+    assert ", with 0 layout step(s): ValueError: " in line, line
+    assert " at openpyxl/utils/cell.py:" in line, line
+    assert " via v1/test/v1/utils/test_sttm_agent.py:" in line, line
+    assert line.endswith(
+        " in unwritable, while writing the data_dictionary workbook, laid out from the "
+        "session's own columns"
+    ), line
+
+    with _analyst(_template_files()), _logged(tools_mod.logger) as logged:
+        assert conv.call(sttm_workbook).startswith(f"Session {sid} ")
+    (line,) = logged
+    assert line.startswith(f"Built the workbooks of STTM session {sid} v1 ("), line
+    assert re.search(
+        r", with 0 layout step\(s\): data_dictionary from the template, \d+ bytes; "
+        r"sttm from the template, \d+ bytes$",
+        line,
+    ), line
+
+
+def test_a_workbook_offered_to_no_one_is_logged() -> None:
+    conv = _recorded()
+    with _analyst(), _logged(tools_mod.logger) as logged:
+        assert conv.call(sttm_workbook) == _NOT_CONFIGURED
+    with _signed_in(), _logged(tools_mod.logger) as logged_too:
+        assert conv.call(sttm_workbook) == _NOT_CONFIGURED
+    assert [line.split(": ", 1)[1] for line in logged + logged_too] == [
+        "the run has no store",
+        "the run has no signed-in user",
+    ], (logged, logged_too)
 
 
 def test_no_sttm_call_runs_after_a_layout_change_in_the_same_step() -> None:
@@ -1473,9 +1862,13 @@ def test_the_sttm_agent_is_off_until_it_is_turned_on() -> None:
     assert "sttm-agent" not in {name for name, _ in on.unconfigured_capabilities}
 
 
-def test_the_sttm_agent_is_registered_with_its_tools_and_no_middleware_of_its_own() -> None:
+def test_the_sttm_agent_is_registered_as_a_fork_with_its_tools() -> None:
     assert STTM_SUBAGENT in ALL_SUBAGENTS
     assert STTM_SUBAGENT["name"] == "sttm-agent"
+    # A fork is handed the conversation, from which it reads the analyst's message.
+    assert STTM_SUBAGENT["runnable"] is STTM_RUNNABLE and STTM_SUBAGENT["mode"] == "fork"
+    # Its prompt and middleware are its graph's (the next test).
+    assert not {"system_prompt", "middleware"} & set(STTM_SUBAGENT)
     assert STTM_SUBAGENT["tools"] == STTM_TOOLS
     assert [tool.name for tool in STTM_TOOLS] == [
         "sttm_start_session",
@@ -1487,8 +1880,53 @@ def test_the_sttm_agent_is_registered_with_its_tools_and_no_middleware_of_its_ow
     ]
     assert {tool.name for tool in STTM_TOOLS} == STTM_TOOL_NAMES
     assert STTM_TOOL_NAMES - SESSION_CHANGING_TOOLS == {"sttm_show"}
-    # Only the Azure links check every subagent has.
-    assert [type(m) for m in STTM_SUBAGENT["middleware"]] == [AzureLinksMiddleware]
+
+
+def test_the_sttm_agents_graph_has_the_stack_of_a_declarative_subagent() -> None:
+    """The graph the sttm-agent runs, next to the one deepagents builds for a
+    declarative subagent with its prompt and tools and, as every subagent has,
+    only the Azure links check: the same model, middleware, tools and prompt."""
+
+    declared = {
+        "name": "sttm-declared",
+        "description": "The sttm-agent, declared.",
+        "system_prompt": STTM_SUBAGENT_PROMPT,
+        "tools": STTM_TOOLS,
+        "middleware": [AzureLinksMiddleware(label="sttm-agent's answer")],
+    }
+    built: dict[str, dict[str, Any]] = {}
+
+    def recording(create_agent: Any) -> Any:
+        def record(model: Any, **kwargs: Any) -> Any:
+            built[kwargs["name"]] = {"model": model, **kwargs}
+            return create_agent(model, **kwargs)
+
+        return record
+
+    saved = (deepagents_subagents.create_agent, runnable_mod.create_agent)
+    deepagents_subagents.create_agent = recording(saved[0])
+    runnable_mod.create_agent = recording(saved[1])
+    model = _recorder([])
+    try:
+        with _agent(model, _policy({}), [SERVICENOW_SUBAGENT, STTM_SUBAGENT, declared]):
+            pass
+    finally:
+        deepagents_subagents.create_agent, runnable_mod.create_agent = saved
+
+    ours, theirs = built["sttm-agent"], built["sttm-declared"]
+    assert ours["model"] is theirs["model"] is model
+    assert [(type(m), m.name) for m in ours["middleware"]] == [
+        (type(m), m.name) for m in theirs["middleware"]
+    ]
+    assert AzureLinksMiddleware in {type(m) for m in ours["middleware"]}
+    assert [(tool.name, tool.description) for tool in ours["tools"]] == [
+        (tool.name, tool.description) for tool in theirs["tools"]
+    ]
+    assert ours["system_prompt"] == theirs["system_prompt"]
+    assert STTM_SUBAGENT_PROMPT in ours["system_prompt"]
+    assert ours["state_schema"] is theirs["state_schema"]
+    assert ours["response_format"] is theirs["response_format"] is None
+    assert set(ours) == set(theirs)
 
 
 def test_the_sessions_and_layouts_are_channels_of_the_agents_own_state() -> None:
@@ -1557,8 +1995,11 @@ def test_the_description_says_when_to_delegate_not_how_the_work_is_done() -> Non
         "review modes (fast, moderate, extensive)",
         "Send it every analyst message that continues an STTM session",
         "Send it one task at a time",
-        "Quote the analyst's latest message in every task exactly as they sent it, between "
-        "<analyst_message> and </analyst_message>",
+        "typed, pasted or in an attached PDF",
+        (
+            "It reads the analyst's latest message itself, with the files attached to it, so "
+            "the task need not copy it"
+        ),
         "Pass its tables, questions, numbered layouts and download links on to the analyst",
         "Not for questions about how an existing field is already documented as mapped",
     ):
@@ -1597,12 +2038,16 @@ def _recorder(replies: list[AIMessage]) -> _Recorder:
     )
 
 
+# The task at the head of the sttm-agent's input (prepare).
+_TASK = re.compile(r"\A<task>\n(.*?)\n</task>", re.DOTALL)
+
+
 class _Scripted(_Recorder):
     """The recorder, replying by whose call it is rather than in turn.
 
     Tasks sent together run at the same time, so their model calls interleave.
-    ``script`` holds each task's replies under its description, and the
-    orchestrator's under "".
+    ``script`` holds each sttm-agent task's replies under the task's
+    description, and the orchestrator's under "".
     """
 
     script: dict[str, list[AIMessage]] = Field(default_factory=dict)
@@ -1611,8 +2056,8 @@ class _Scripted(_Recorder):
         first = messages[0] if messages else None
         if isinstance(first, SystemMessage) and first.content == SAFETY_CLASSIFIER_SYSTEM_PROMPT:
             return super()._reply(messages)
-        task = next((m.text for m in messages if isinstance(m, HumanMessage)), "")
-        replies = self.script[task if task.startswith(MESSAGE_OPEN) else ""]
+        task = next((_TASK.match(m.text) for m in messages if isinstance(m, HumanMessage)), None)
+        replies = self.script[task.group(1) if task else ""]
         return ChatResult(generations=[ChatGeneration(message=replies.pop(0))])
 
 
@@ -1659,18 +2104,21 @@ def _split(model: _Recorder) -> tuple[list[tuple[dict, list]], list[tuple[dict, 
     return orchestrator, subagents
 
 
-def _sttm_task(text: str, call_id: str, context: str = "") -> tuple[str, dict, str]:
-    """The orchestrator's task to the sttm-agent, quoting the analyst's message ``text``."""
+def _sttm_task(description: str, call_id: str) -> tuple[str, dict, str]:
+    """The orchestrator's task ``description`` to the sttm-agent."""
 
-    return (TASK_TOOL_NAME, {"description": _task(text, context), "subagent_type": _STTM}, call_id)
+    return (TASK_TOOL_NAME, {"description": description, "subagent_type": _STTM}, call_id)
 
 
 def test_an_int_caller_runs_an_sttm_session_through_the_orchestrator() -> None:
     turn_1 = "Start an STTM session for CoreBank, daily accounts feed."
     turn_2 = f"{_INSTRUCTIONS}\n{_SPEC}"
+    # The tasks do not copy the analyst's messages: the sttm-agent reads them.
+    task_1 = "Start the STTM session the analyst asks for."
+    task_2 = "Record the inputs the analyst sent."
     model = _recorder(
         [
-            _calls(_sttm_task(turn_1, "call_task_1")),
+            _calls(_sttm_task(task_1, "call_task_1")),
             _calls(
                 (
                     "sttm_start_session",
@@ -1680,11 +2128,11 @@ def test_an_int_caller_runs_an_sttm_session_through_the_orchestrator() -> None:
             ),
             AIMessage(content="Session started. Please paste the specification."),
             AIMessage(content="The session is started. Please paste the specification."),
-            _calls(_sttm_task(turn_2, "call_task_2")),
+            _calls(_sttm_task(task_2, "call_task_2")),
             _calls(
                 (
                     "sttm_record_input",
-                    {"kinds": ["source_system_instructions", "specification"]},
+                    {"inputs": _inputs("source_system_instructions", "specification")},
                     "call_record",
                 )
             ),
@@ -1709,13 +2157,22 @@ def test_an_int_caller_runs_an_sttm_session_through_the_orchestrator() -> None:
         assert "read_file" in offered  # for the rule files
         assert not {"ls", "grep", "task"} & set(offered), sorted(offered)
 
-    # The subagent starts from its task, and nothing is added to it.
-    for (_, messages), text in ((subagents[0], turn_1), (subagents[2], turn_2)):
-        humans = [str(m.content) for m in messages if isinstance(m, HumanMessage)]
-        assert humans == [_task(text)], humans
+    # The sttm-agent's input is its task and the analyst's message as they sent it; from
+    # the second turn on, also their earlier message and its previous answer.
+    first = f"<task>\n{task_1}\n</task>\n\n<analyst_message>\n{turn_1}\n</analyst_message>"
+    second = (
+        f"<task>\n{task_2}\n</task>\n\n"
+        f"<earlier_messages>\n<message>\n{turn_1}\n</message>\n</earlier_messages>\n\n"
+        "<previous_answer>\nSession started. Please paste the specification.\n"
+        "</previous_answer>\n\n"
+        f"<analyst_message>\n{turn_2}\n</analyst_message>"
+    )
+    for (_, messages), expected in ((subagents[0], first), (subagents[2], second)):
+        humans = [m.text for m in messages if isinstance(m, HumanMessage)]
+        assert humans == [expected], humans
 
-    # The session came back to the orchestrator's state, recorded from the quoted words,
-    # each turn's message under that turn's run id.
+    # The session came back to the orchestrator's state, recorded from the analyst's
+    # messages, each under its id in the conversation.
     (session,) = (Session.model_validate(data) for data in state["sttm_sessions"].values())
     assert [attribute.name for attribute in session.attributes] == [
         "CUSTOMER_ID",
@@ -1725,7 +2182,8 @@ def test_an_int_caller_runs_an_sttm_session_through_the_orchestrator() -> None:
     (specification,) = [record for record in session.inputs if record.kind == "specification"]
     assert session.messages[specification.message_id] == turn_2
     assert list(session.messages.values()) == [turn_1, turn_2]
-    assert all(uuid.UUID(message_id) for message_id in session.messages)
+    sent = [m.id for m in state["messages"] if isinstance(m, HumanMessage)]
+    assert list(session.messages) == sent and all(sent), (list(session.messages), sent)
     assert "user_message" not in state
 
     results = {m.tool_call_id: m for m in state["messages"] if isinstance(m, ToolMessage)}
@@ -1734,11 +2192,14 @@ def test_an_int_caller_runs_an_sttm_session_through_the_orchestrator() -> None:
 
 
 def test_of_two_sttm_tasks_sent_in_one_step_only_one_changes_the_sessions() -> None:
-    turn = "Start STTM sessions for CoreBank: the daily accounts feed and the card feed."
-    accounts, cards, again = (
+    turn = (
+        "Start STTM sessions for CoreBank: the daily accounts feed, the card feed and the "
+        "monthly balances."
+    )
+    accounts, cards, balances = (
         "Start the daily accounts feed's session.",
         "Start the card feed's session.",
-        "Start the card feed's session; sent again, on its own.",
+        "Start the monthly balances' session, on its own.",
     )
 
     def start(source: str, call_id: str) -> list[AIMessage]:
@@ -1748,16 +2209,13 @@ def test_of_two_sttm_tasks_sent_in_one_step_only_one_changes_the_sessions() -> N
     model = _scripted(
         {
             "": [
-                _calls(
-                    _sttm_task(turn, "call_task_a", accounts),
-                    _sttm_task(turn, "call_task_b", cards),
-                ),
-                _calls(_sttm_task(turn, "call_task_c", again)),
-                AIMessage(content="Both sessions are started."),
+                _calls(_sttm_task(accounts, "call_task_a"), _sttm_task(cards, "call_task_b")),
+                _calls(_sttm_task(balances, "call_task_c")),
+                AIMessage(content="The sessions are started."),
             ],
-            _task(turn, accounts): start("daily accounts feed", "call_start_a"),
-            _task(turn, cards): start("card feed", "call_start_b"),
-            _task(turn, again): start("card feed", "call_start_c"),
+            accounts: start("daily accounts feed", "call_start_a"),
+            cards: start("card feed", "call_start_b"),
+            balances: start("monthly balances", "call_start_c"),
         }
     )
     with _rule_files({}), _agent(model, _E2E_POLICY, _ROSTER) as graph:
@@ -1767,14 +2225,14 @@ def test_of_two_sttm_tasks_sent_in_one_step_only_one_changes_the_sessions() -> N
     # What sttm_start_session answered in each task, by the task.
     answers: dict[str, str] = {}
     for _, messages in _split(model)[1]:
-        task = next(m.text for m in messages if isinstance(m, HumanMessage))
+        task = next(_TASK.match(m.text) for m in messages if isinstance(m, HumanMessage))
         for message in messages:
             if isinstance(message, ToolMessage):
-                answers[task] = message.text
-    together = [answers[_task(turn, context)] for context in (accounts, cards)]
+                answers[task.group(1)] = message.text
+    together = [answers[accounts], answers[cards]]
     # Which of the two changes first is up to the scheduler; the other changes nothing.
     assert sorted(answer == _CLAIMED for answer in together) == [False, True], together
-    assert answers[_task(turn, again)].startswith("Started STTM session "), answers
+    assert answers[balances].startswith("Started STTM session "), answers
     assert len(state["sttm_sessions"]) == 2
 
 

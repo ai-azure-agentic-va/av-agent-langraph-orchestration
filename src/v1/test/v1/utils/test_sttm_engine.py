@@ -5,9 +5,16 @@ details, the derived and audit fields, the three tables and the review gates.
 The tests drive it directly:
 
 - reading a pasted specification: header roles, types, lengths and required
-  flags, and the tables and rows it does not read;
+  flags, HTML and MDX tables, chat prefixes, and the tables and rows it does
+  not read (values tables, tables that lost their line breaks);
 - missing inputs: nothing is generated before the instructions and the
-  specification are in, and what is still open is listed;
+  specification are in, and what is still open is listed; a message with
+  several sources' specifications gives each session the table its passage
+  chooses;
+- passages: an input but the specification is recorded only with words copied
+  from the analyst's message, outside the specification's tables, instructions
+  only from a part of it the analyst names as instructions, and the views
+  quote them;
 - nothing invented: a key, a file detail, a derived field or a value the
   analyst did not give is refused, and a pasted specification (even a replaced
   or inherited one) is not the analyst's word;
@@ -33,9 +40,11 @@ from typing import Any
 
 import v1.core.tools.sttm.rules as rules_mod
 from v1.core.tools.sttm.export import export_session
+from v1.core.tools.sttm.render import inputs_view, summary_view
 from v1.core.tools.sttm.rules import available_rule_files, rule_files_summary
 from v1.core.tools.sttm.session import (
     CHECKS,
+    MAX_PASSAGE_CHARS,
     Change,
     Session,
     SessionError,
@@ -43,6 +52,7 @@ from v1.core.tools.sttm.session import (
     Tables,
     advance,
     approve,
+    find_passage,
     gaps,
     input_blockers,
     new_session_id,
@@ -60,7 +70,7 @@ from v1.core.tools.sttm.spec import parse_specification, without_attribute_table
 
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
 
-_INSTRUCTIONS = "Source system: CoreBank. Source: daily accounts feed."
+_INSTRUCTIONS = "Source-system instructions: CoreBank, daily accounts feed."
 # Lines 2-6 of the first analyst message; CUSTOMER_ID is on line 4.
 _SPEC = (
     "| Field Name | Data Type | Length | Required | Description | Key |\n"
@@ -82,6 +92,31 @@ def _msg(message_id: str, text: str) -> dict[str, Any]:
     return {"id": message_id, "text": text}
 
 
+def _document(name: str, text: str) -> str:
+    """An attached file's text, as a message holds it."""
+
+    return f'<document name="{name}" pages="1">\n{text}\n</document>'
+
+
+def _skill(name: str, text: str) -> str:
+    """A skill's block, as the frontend adds it to a message."""
+
+    return (
+        f'<user_skill name="{name}">\nFor this message, use my skill "{name}". These are my own '
+        "instructions for this kind of task; follow them when you work on my request and compose "
+        f"your answer.\n\n{text}\n</user_skill>"
+    )
+
+
+def _inputs(*kinds: str, passage: str = _INSTRUCTIONS) -> list[dict[str, str]]:
+    """record_input's inputs: each kind, all but the specification with ``passage``."""
+
+    return [
+        {"kind": kind} if kind == "specification" else {"kind": kind, "passage": passage}
+        for kind in kinds
+    ]
+
+
 def _new() -> Session:
     session, _ = start_session(
         {},
@@ -99,7 +134,7 @@ def _with_spec() -> Session:
     session = _new()
     record_input(
         session,
-        ["source_system_instructions", "specification"],
+        _inputs("source_system_instructions", "specification"),
         _msg("m1", f"{_INSTRUCTIONS}\n{_SPEC}"),
         replace=False,
         now=NOW,
@@ -287,6 +322,197 @@ def test_only_attribute_tables_are_taken_out_of_a_message() -> None:
     assert without_attribute_tables(other) == other
 
 
+# A documentation page's table as an MDX component: cells over several lines,
+# with markup and entities in them.
+_MDX = """# widget Object
+
+<Table align={["left","left","left"]}>
+  <thead>
+    <tr>
+      <th>
+        Property
+      </th>
+      <th>Data Type (length)</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <span style={{ color: '#AA4A44' }}>`legacyCode`</span>
+      </td>
+      <td>deprecated</td>
+      <td>deprecated</td>
+    </tr>
+    <tr>
+      <td>`parts`</td>
+      <td>array</td>
+      <td>Its parts &amp; their <b>order</b></td>
+    </tr>
+    <tr>
+      <td>`stateCode`</td>
+      <td>string (2)</td>
+      <td>Two-letter state code</td>
+    </tr>
+  </tbody>
+</Table>
+
+Map widget to the curated layer."""
+
+
+def test_an_html_or_mdx_table_is_read_by_its_cells() -> None:
+    parsed = parse_specification(_MDX)
+    one_line = "<table><tr><th>Field</th><th>Type</th></tr><tr><td>ID</td><td>INT</td></tr></table>"
+
+    assert parsed.tables == [
+        (
+            "Table at line 3: 3 attribute(s); columns name = 'Property', data_type = "
+            "'Data Type (length)', description = 'Description'"
+        )
+    ]
+    assert [(a.name, a.line, a.data_type, a.length, a.description) for a in parsed.attributes] == [
+        ("legacyCode", 14, "deprecated", None, "deprecated"),
+        ("parts", 21, "array", None, "Its parts & their order"),
+        ("stateCode", 26, "string", "2", "Two-letter state code"),
+    ]
+    assert parsed.table_lines == set(range(3, 33))
+    assert without_attribute_tables(_MDX) == "# widget Object\n\n\nMap widget to the curated layer."
+    assert [(a.name, a.data_type) for a in parse_specification(one_line).attributes] == [
+        ("ID", "INT")
+    ]
+
+
+def test_chat_prefixes_copied_with_a_message_are_not_read_as_cells() -> None:
+    # Copied from a chat window: the sender's initials, and "You:" before each message.
+    copied = parse_specification(
+        "XY\nYou:Start an STTM session for source system DEMO, source orders.\n"
+        "You:| Attribute | Data Type | Description |\n|---|---|---|\n"
+        "| ORDER_ID | VARCHAR(36) | Order id |\n| AMOUNT | DECIMAL(12,2) | Amount |"
+    )
+    inline = parse_specification(
+        "XY You:| Attribute | Data Type | Description |\n|---|---|---|\n"
+        "| ORDER_ID | VARCHAR(36) | Order id |"
+    )
+
+    assert copied.tables == [
+        (
+            "Table at line 3: 2 attribute(s); columns name = 'Attribute', data_type = "
+            "'Data Type', description = 'Description'"
+        )
+    ]
+    assert [(a.name, a.data_type, a.length) for a in copied.attributes] == [
+        ("ORDER_ID", "VARCHAR", "36"),
+        ("AMOUNT", "DECIMAL", "12,2"),
+    ]
+    assert [(a.name, a.line) for a in inline.attributes] == [("ORDER_ID", 3)]
+
+
+def test_a_property_name_column_names_the_attributes() -> None:
+    parsed = parse_specification(
+        "Property name\tFormat\tNotes\norderId\tstring\tthe id\ntotal\tnumber\tthe amount"
+    )
+
+    assert parsed.tables == [
+        (
+            "Table at line 1: 2 attribute(s); columns name = 'Property name', data_type = "
+            "'Format', description = 'Notes'"
+        )
+    ]
+
+
+def test_a_table_of_values_for_attributes_already_listed_is_not_more_specification() -> None:
+    values = (
+        "Handling per attribute:\n\n| Attribute | Handling | Description |\n|---|---|---|\n"
+        "| ORDER_ID | keep | the key |\n| AMOUNT | round | to cents |"
+    )
+    text = (
+        "| Attribute | Data Type | Description |\n|---|---|---|\n"
+        f"| ORDER_ID | VARCHAR(36) | Order id |\n| AMOUNT | DECIMAL(12,2) | Amount |\n\n{values}"
+    )
+
+    parsed = parse_specification(text)
+
+    assert [a.name for a in parsed.attributes] == ["ORDER_ID", "AMOUNT"]
+    assert parsed.notes == [
+        (
+            "Skipped the table at line 8: every attribute in it is in an earlier table, so it "
+            "gives values for them, not the specification."
+        )
+    ]
+    # They are the analyst's values, not the specification's.
+    assert without_attribute_tables(text) == f"\n{values}"
+
+
+_FLATTENED = "| Attribute | Type | Description | |---|---|---| | A | VARCHAR | x | | B | INT | y |"
+
+
+def test_a_table_that_lost_its_line_breaks_is_reported_not_read() -> None:
+    note = (
+        "Line {} looks like a table that lost its columns or line breaks when it was copied, so "
+        "it was not read."
+    )
+    flattened = [
+        _FLATTENED,
+        "Here it is: | Attribute | Type | Description | |---|---|---| | A | VARCHAR | x |",
+        (
+            "XY You:Attribute Name Data Type Length Nullable Primary Key Description ORDER_ID "
+            "VARCHAR 36 N Y Order id AMOUNT DECIMAL 12 N N Amount"
+        ),
+    ]
+    # Prose that names the columns, a header with no rows yet, a whole table.
+    read = [
+        (
+            "Name, type, length and description for each field are below.\n"
+            "Field name data type and length come from the vendor."
+        ),
+        "| Attribute | Type | Description |",
+        _SPEC,
+    ]
+
+    for text in flattened:
+        parsed = parse_specification(text)
+        assert (parsed.attributes, parsed.flattened, parsed.notes) == ([], [1], [note.format(1)])
+    later = parse_specification(f"Here is the spec:\n{_FLATTENED}")
+    assert (later.flattened, later.notes) == ([2], [note.format(2)])
+    assert [parse_specification(text).flattened for text in read] == [[], [], []]
+
+
+def test_a_flattened_specification_is_refused_with_how_to_paste_it_again() -> None:
+    session = _new()
+    unread = "spec.pdf has no text to read (a scanned document?)."
+    message = {"id": "m1", "text": f"{_INSTRUCTIONS}\n{_FLATTENED}", "notes": [unread]}
+    reason = (
+        "The specification in the analyst's message lost its columns or line breaks when it was "
+        "copied (line 2). Ask the analyst to paste it again with each row on its own line and "
+        "its cells separated by tabs or pipes: copied straight from the spreadsheet or document, "
+        f"or as a Markdown table. {unread}"
+    )
+
+    error = _refused(
+        lambda: record_input(session, _inputs("specification"), message, replace=False, now=NOW)
+    )
+
+    assert error == f"Nothing was recorded. {reason}"
+    assert session.inputs == [] and session.attributes == [] and "m1" not in session.messages
+
+    # The instructions in the same message are recorded all the same.
+    recorded = record_input(
+        session,
+        _inputs("source_system_instructions", "specification"),
+        message,
+        replace=False,
+        now=NOW,
+    )
+
+    assert (recorded.recorded, recorded.refused, recorded.reasons) == (
+        ["Source-system instructions"],
+        ["Source specification"],
+        [reason],
+    )
+    assert [r.kind for r in session.inputs] == ["source_system_instructions"]
+    assert session.attributes == []
+
+
 # -- sessions and inputs ---------------------------------------------------------
 
 
@@ -319,7 +545,7 @@ def test_nothing_is_generated_before_the_instructions_and_the_specification() ->
     ]
     assert not any(session.generated.values()) and session.status == "draft"
 
-    record_input(session, ["specification"], _msg("m2", _SPEC), replace=False, now=NOW)
+    record_input(session, _inputs("specification"), _msg("m2", _SPEC), replace=False, now=NOW)
     assert input_blockers(session) == ["Source-system instructions: not given yet."]
 
 
@@ -328,12 +554,13 @@ def test_a_message_with_no_text_is_not_recorded() -> None:
     message = _msg("m1", "  \n")
 
     error = _refused(
-        lambda: record_input(session, ["specification"], message, replace=False, now=NOW)
+        lambda: record_input(session, _inputs("specification"), message, replace=False, now=NOW)
     )
 
     assert error == (
         "The analyst's message has no text to record. Ask the analyst to paste the content "
-        "as text; a specification as a table with a header row, pipe- or tab-separated."
+        "as text or attach it as a PDF with selectable text; a specification as a table with "
+        "a header row, pipe- or tab-separated."
     )
     assert session.inputs == []
 
@@ -343,11 +570,11 @@ def test_a_specification_with_no_attribute_table_is_not_recorded() -> None:
     message = _msg("m1", "The specification is on the file share.")
 
     error = _refused(
-        lambda: record_input(session, ["specification"], message, replace=False, now=NOW)
+        lambda: record_input(session, _inputs("specification"), message, replace=False, now=NOW)
     )
 
     assert error.startswith(
-        "No attribute table was found in the analyst's message, so nothing was recorded."
+        "Nothing was recorded. No attribute table was found in the analyst's message."
     )
     assert session.inputs == [] and session.attributes == []
 
@@ -356,7 +583,7 @@ def test_an_unknown_input_kind_is_refused() -> None:
     session = _new()
 
     error = _refused(
-        lambda: record_input(session, ["spec"], _msg("m1", _SPEC), replace=False, now=NOW)
+        lambda: record_input(session, _inputs("spec"), _msg("m1", _SPEC), replace=False, now=NOW)
     )
 
     assert error == (
@@ -370,7 +597,7 @@ def test_duplicate_attribute_names_block_generation_until_the_analyst_decides() 
     duplicated = f"{_INSTRUCTIONS}\n{_SPEC}\n| CUSTOMER_ID | INT | | Y | Customer number | |"
     record_input(
         session,
-        ["source_system_instructions", "specification"],
+        _inputs("source_system_instructions", "specification"),
         _msg("m1", duplicated),
         replace=False,
         now=NOW,
@@ -392,15 +619,180 @@ def test_a_specification_and_an_asl_schema_in_one_message_are_refused() -> None:
 
     error = _refused(
         lambda: record_input(
-            session, ["specification", "asl_schema"], _msg("m1", text), replace=False, now=NOW
+            session,
+            _inputs("specification", "asl_schema", passage="Column Type CUST_ID STRING"),
+            _msg("m1", text),
+            replace=False,
+            now=NOW,
         )
     )
 
     assert error.startswith(
-        "The message holds more than one attribute table and is being recorded as both the "
-        "specification and the ASL schema"
+        "Nothing was recorded. The message holds more than one attribute table and is being "
+        "recorded as both the specification and the ASL schema"
     )
     assert session.inputs == [] and session.attributes == []
+
+    # Instructions sent with them are recorded; neither table is.
+    recorded = record_input(
+        session,
+        _inputs("source_system_instructions")
+        + _inputs("specification", "asl_schema", passage="Column Type CUST_ID STRING"),
+        _msg("m2", f"{_INSTRUCTIONS}\n{text}"),
+        replace=False,
+        now=NOW,
+    )
+
+    assert (recorded.recorded, recorded.refused) == (
+        ["Source-system instructions"],
+        ["Source specification", "ASL schema export"],
+    )
+    assert [r.kind for r in session.inputs] == ["source_system_instructions"]
+    assert session.attributes == []
+
+
+def _two_specifications(customer_key: str = "CUSTOMER_ID") -> dict[str, Any]:
+    """A message with two sources' specifications, each under its own heading."""
+
+    head = "| Attribute Name | Data Type | Length |\n|---|---|---|\n"
+    return _msg(
+        "m1",
+        f"{_INSTRUCTIONS}\n\nAccounts specification:\n\n{head}"
+        "| ACCOUNT_ID | VARCHAR | 20 |\n| CUSTOMER_ID | VARCHAR | 20 |\n\n"
+        f"Customers specification:\n\n{head}"
+        f"| {customer_key} | VARCHAR | 20 |\n| FULL_NAME | VARCHAR | 100 |",
+    )
+
+
+def _two_sessions(message: dict[str, Any]) -> tuple[Session, Session]:
+    """The accounts and the customers sessions, both started from ``message``."""
+
+    accounts, _ = start_session(
+        {}, source_system="CoreBank", source="accounts", message=message, now=NOW
+    )
+    customers, _ = start_session(
+        {accounts.id: accounts},
+        source_system="CoreBank",
+        source="customers",
+        message=message,
+        now=NOW,
+    )
+    return accounts, customers
+
+
+def _specification(
+    session: Session, message: dict, other: Session, passage: str = "", replace: bool = False
+):
+    """record_input of the specification, with the conversation's ``other`` session."""
+
+    return record_input(
+        session,
+        [{"kind": "specification", "passage": passage}],
+        message,
+        replace=replace,
+        now=NOW,
+        others=[other],
+    )
+
+
+def test_each_sources_specification_is_read_from_its_own_table_of_a_message() -> None:
+    message = _two_specifications()
+    accounts, customers = _two_sessions(message)
+
+    # Read together, the tables share CUSTOMER_ID.
+    error = _refused(lambda: _specification(accounts, message, customers))
+    assert error == (
+        "Nothing was recorded. The attribute tables in the analyst's message share attribute "
+        "names (CUSTOMER_ID). If they are the specifications of different sources, record each "
+        "session's specification with the passage of its own table: the heading above it or a "
+        "row of it. If they are one source's, ask the analyst to send its specification again "
+        "with each attribute once."
+    )
+
+    # The heading above a table, or a row of it, chooses that table alone.
+    by_heading = _specification(accounts, message, customers, "Accounts specification")
+    by_row = _specification(customers, message, accounts, "FULL_NAME VARCHAR 100")
+
+    assert [a.name for a in accounts.attributes] == ["ACCOUNT_ID", "CUSTOMER_ID"]
+    assert [a.name for a in customers.attributes] == ["CUSTOMER_ID", "FULL_NAME"]
+    assert (by_heading.passages, by_row.passages, by_row.notes) == (
+        {"Source specification": "Accounts specification"},
+        {"Source specification": "FULL_NAME | VARCHAR | 100"},
+        [],
+    )
+    # The views quote the passage that chose it.
+    assert '  - Passage: "Accounts specification"' in inputs_view(accounts).splitlines()
+    assert (
+        '  - Source specification: "Accounts specification"' in summary_view(accounts).splitlines()
+    )
+
+    # Words both tables have, or neither, choose none; nothing changes.
+    for passage, problem in [
+        (
+            "Attribute Name Data Type",
+            (
+                "is in the heading or rows of more than one attribute table: give words that "
+                "only its own table's heading or rows have"
+            ),
+        ),
+        (
+            _INSTRUCTIONS,
+            (
+                "is not the heading above an attribute table of the analyst's message or a row "
+                "of it, copied exactly (2 words or more)"
+            ),
+        ),
+    ]:
+        error = _refused(
+            lambda passage=passage: _specification(
+                customers, message, accounts, passage, replace=True
+            )
+        )
+        assert error == (
+            f"Nothing was recorded. The passage for the Source specification {problem}. Leave "
+            "it out when the message holds only this source's tables."
+        )
+    assert [a.name for a in customers.attributes] == ["CUSTOMER_ID", "FULL_NAME"]
+
+
+def test_sessions_recording_one_message_each_choose_their_own_table() -> None:
+    message = _two_specifications(customer_key="CUST_NO")
+    accounts, customers = _two_sessions(message)
+
+    # With no name in common, the first session to record the message reads every table ...
+    _specification(accounts, message, customers)
+    assert [a.name for a in accounts.attributes] == [
+        "ACCOUNT_ID",
+        "CUSTOMER_ID",
+        "CUST_NO",
+        "FULL_NAME",
+    ]
+
+    # ... so the next one has to choose its table, and is told the first one has to too.
+    again = (
+        f"Record the specification of session {accounts.id} again with replace=True and the "
+        "passage of its own table, as it read every table of the message."
+    )
+    error = _refused(lambda: _specification(customers, message, accounts))
+    assert error == (
+        "Nothing was recorded. The analyst's message holds more than one attribute table, and "
+        f"session {accounts.id} (CoreBank / accounts) recorded its specification from it too: "
+        "give each session's specification the passage of its own table (the heading above it "
+        f"or a row of it), so each reads that table alone. {again}"
+    )
+    recorded = _specification(customers, message, accounts, "Customers specification")
+    assert [a.name for a in customers.attributes] == ["CUST_NO", "FULL_NAME"]
+    assert recorded.notes == [again]
+
+    # Recorded again from the same message, the first keeps only its own table; the
+    # message is still its specification, not a replaced one.
+    redone = _specification(accounts, message, customers, "Accounts specification", replace=True)
+    assert (redone.recorded, redone.notes) == (["Source specification"], [])
+    assert [a.name for a in accounts.attributes] == ["ACCOUNT_ID", "CUSTOMER_ID"]
+    assert [(r.kind, r.message_id, r.passage) for r in accounts.inputs] == [
+        ("specification", "m1", "Accounts specification")
+    ]
+    assert accounts.replaced_specifications == []
 
 
 def test_the_gaps_list_what_the_analyst_has_not_given() -> None:
@@ -420,7 +812,7 @@ def test_the_gaps_list_what_the_analyst_has_not_given() -> None:
     untyped = _new()
     record_input(
         untyped,
-        ["specification"],
+        _inputs("specification"),
         _msg(
             "m1",
             "| Field Name | Data Type |\n|---|---|\n| CUSTOMER_ID | VARCHAR |\n| OPEN_DATE | |",
@@ -430,7 +822,13 @@ def test_the_gaps_list_what_the_analyst_has_not_given() -> None:
     )
     assert "No data type in the specification for 1 attribute(s): OPEN_DATE." in gaps(untyped)
 
-    record_input(session, ["asl_schema"], _msg("m2", "ASL: CUST_ID STRING"), replace=False, now=NOW)
+    record_input(
+        session,
+        _inputs("asl_schema", passage="ASL: CUST_ID STRING"),
+        _msg("m2", "ASL: CUST_ID STRING"),
+        replace=False,
+        now=NOW,
+    )
     assert gaps(session)[-1] == (
         "An ASL schema was recorded. Reconciling the Curated-to-ASL STTM against it is not "
         "supported yet; its names count only where they are set as values."
@@ -450,7 +848,9 @@ def test_a_new_specification_message_adds_its_attributes() -> None:
     session = _with_spec()
     more = "| Field Name | Data Type |\n|---|---|\n| BALANCE | DECIMAL(18,2) |"
 
-    result = record_input(session, ["specification"], _msg("m2", more), replace=False, now=NOW)
+    result = record_input(
+        session, _inputs("specification"), _msg("m2", more), replace=False, now=NOW
+    )
 
     assert result.recorded == ["Source specification"] and result.attributes_added == 1
     assert [a.name for a in session.attributes] == [
@@ -461,7 +861,9 @@ def test_a_new_specification_message_adds_its_attributes() -> None:
     ]
     assert (session.attributes[-1].data_type, session.attributes[-1].length) == ("DECIMAL", "18,2")
 
-    again = record_input(session, ["specification"], _msg("m2", more), replace=False, now=NOW)
+    again = record_input(
+        session, _inputs("specification"), _msg("m2", more), replace=False, now=NOW
+    )
     assert again.already == ["Source specification"] and again.recorded == []
     assert len(session.attributes) == 4
 
@@ -480,7 +882,7 @@ def test_replacing_the_specification_drops_the_old_attributes_and_their_values()
         "| BALANCE | DECIMAL(18,2) | |"
     )
 
-    record_input(session, ["specification"], _msg("m3", new_spec), replace=True, now=NOW)
+    record_input(session, _inputs("specification"), _msg("m3", new_spec), replace=True, now=NOW)
 
     assert [a.name for a in session.attributes] == ["ACCOUNT_NO", "BALANCE"]
     assert (session.details["primary_key"].value, session.details["primary_key"].source) == (
@@ -500,49 +902,57 @@ def test_a_replaced_specification_is_still_not_the_analysts_word() -> None:
     # specification, m1's tables still do not count: ACCOUNT_NO is only in them.
     session = _with_spec()
     new_spec = "| Field Name | Data Type | Key |\n|---|---|---|\n| ACCOUNT_NO | VARCHAR | PK |"
-    record_input(session, ["specification"], _msg("m3", new_spec), replace=True, now=NOW)
+    record_input(session, _inputs("specification"), _msg("m3", new_spec), replace=True, now=NOW)
 
     outcome = set_details(
-        session, {"primary_key": "ACCOUNT_NO"}, _msg("m4", "Go on."), proposed=False, now=NOW
+        session, {"join_keys": ["ACCOUNT_NO"]}, _msg("m4", "Go on."), proposed=False, now=NOW
     )
 
     assert outcome.changes == []
     assert outcome.refused == [
-        "Primary key: 'ACCOUNT_NO' is not in the analyst's messages to this session. Ask the "
+        "Join keys: 'ACCOUNT_NO' is not in the analyst's messages to this session. Ask the "
         "analyst, or propose it (source='draft') for the analyst to confirm at the input review."
     ]
 
-    # A message that held only the specification is left out entirely, notes too.
-    session = _new()
-    record_input(
-        session, ["source_system_instructions"], _msg("m1", _INSTRUCTIONS), replace=False, now=NOW
-    )
-    record_input(
-        session,
-        ["specification"],
-        _msg("m2", f"Confidential feed.\n{_SPEC}"),
-        replace=False,
-        now=NOW,
-    )
-    record_input(session, ["specification"], _msg("m3", _SPEC), replace=True, now=NOW)
-    outcome = _cells(
-        session,
-        ("dd", "CUSTOMER_ID", "classification", "Confidential"),
-        message=_msg("m4", "Go on."),
-    )
-    assert outcome.changes == [] and len(outcome.refused) == 1, outcome
+    # A message that held only the specification: the file it came in is left
+    # out, its notes too, and the words the analyst typed with it still count.
+    attached = _document("accounts.pdf", f"Confidential feed.\n{_SPEC}")
+    for text, said in [
+        (f"Confidential feed.\n{_SPEC}", True),
+        (f"Here is the specification.\n\n{attached}", False),
+    ]:
+        session = _new()
+        record_input(
+            session,
+            _inputs("source_system_instructions"),
+            _msg("m1", _INSTRUCTIONS),
+            replace=False,
+            now=NOW,
+        )
+        record_input(session, _inputs("specification"), _msg("m2", text), replace=False, now=NOW)
+        record_input(session, _inputs("specification"), _msg("m3", _SPEC), replace=True, now=NOW)
+        outcome = _cells(
+            session,
+            ("dd", "CUSTOMER_ID", "classification", "Confidential"),
+            message=_msg("m4", "Go on."),
+        )
+        assert (len(outcome.changes), len(outcome.refused)) == ((1, 0) if said else (0, 1)), text
 
 
 def test_a_pasted_specification_is_not_the_analysts_word() -> None:
     session = _new()
     record_input(
-        session, ["source_system_instructions"], _msg("m1", _INSTRUCTIONS), replace=False, now=NOW
+        session,
+        _inputs("source_system_instructions"),
+        _msg("m1", _INSTRUCTIONS),
+        replace=False,
+        now=NOW,
     )
     spec = (
         "| Field Name | Data Type | Description |\n|---|---|---|\n"
         "| CUSTOMER_ID | VARCHAR | Confidential PII, carry to curated |"
     )
-    record_input(session, ["specification"], _msg("m2", spec), replace=False, now=NOW)
+    record_input(session, _inputs("specification"), _msg("m2", spec), replace=False, now=NOW)
 
     outcome = _cells(
         session,
@@ -556,9 +966,10 @@ def test_a_pasted_specification_is_not_the_analysts_word() -> None:
     assert outcome.refused == [
         "Data Dictionary, CUSTOMER_ID, classification: 'Confidential' is not in the analyst's "
         "instructions or feedback to this session (a pasted specification does not count). "
-        "Ask the analyst.",
+        "Use their words for it exactly as written, or ask the analyst.",
         "Data Dictionary, CUSTOMER_ID, pii_pci: 'PII' is not in the analyst's instructions or "
-        "feedback to this session (a pasted specification does not count). Ask the analyst.",
+        "feedback to this session (a pasted specification does not count). Use their words for "
+        "it exactly as written, or ask the analyst.",
         "Data Dictionary, CUSTOMER_ID, carry_to_curated: the analyst has not said anything "
         "about carry to curated in their instructions or feedback to this session (a pasted "
         "specification does not count). Ask the analyst.",
@@ -601,7 +1012,7 @@ def test_an_inherited_specification_table_is_not_the_analysts_word() -> None:
         message=_msg("m5", "Now the monthly balances file."),
         now=NOW,
     )
-    record_input(second, ["specification"], _msg("m6", _SPEC), replace=False, now=NOW)
+    record_input(second, _inputs("specification"), _msg("m6", _SPEC), replace=False, now=NOW)
 
     outcome = set_details(
         second, {"primary_key": "ACCOUNT_NO"}, _msg("m7", "Go on."), proposed=False, now=NOW
@@ -612,12 +1023,320 @@ def test_an_inherited_specification_table_is_not_the_analysts_word() -> None:
     )
 
 
+# -- passages --------------------------------------------------------------------
+
+
+def test_a_passage_is_found_only_as_words_copied_from_the_message() -> None:
+    text = "Source system: CoreBank. Source: daily accounts feed."
+
+    # Case, punctuation and spacing aside; the message's own text comes back.
+    assert find_passage("source system corebank source", text) == "Source system: CoreBank. Source"
+    assert find_passage("SOURCE  system - corebank; source daily", text) == (
+        "Source system: CoreBank. Source: daily"
+    )
+    assert find_passage("customer id is the key", "So CUSTOMER_ID is the key.") == (
+        "CUSTOMER_ID is the key"
+    )
+    # Too short to tell, a word left out, a word cut short, a restatement.
+    for passage in [
+        "",
+        "Source system CoreBank",
+        "Source system CoreBank daily accounts",
+        "system CoreBan Source daily",
+        "The source system is CoreBank",
+    ]:
+        assert find_passage(passage, text) is None, passage
+
+
+def test_an_input_is_recorded_only_if_its_passage_is_found() -> None:
+    session = _new()
+    instructions = {"kind": "source_system_instructions", "passage": _INSTRUCTIONS}
+    not_said = {"kind": "source_instructions", "passage": "The file arrives daily at six."}
+    reason = (
+        "The passage for Source instructions is missing, under 4 words, or not in the analyst's "
+        "message. Give each input but a specification with words of the message that hold it, "
+        "copied exactly. If the message does not hold that input, do not record it: ask the "
+        "analyst for it."
+    )
+
+    error = _refused(
+        lambda: record_input(session, [not_said], _msg("m1", _INSTRUCTIONS), replace=False, now=NOW)
+    )
+
+    assert error == f"Nothing was recorded. {reason}"
+    assert session.inputs == [] and "m1" not in session.messages
+
+    # One input refused does not hold back the others.
+    recorded = record_input(
+        session, [instructions, not_said], _msg("m1", _INSTRUCTIONS), replace=False, now=NOW
+    )
+
+    passage = "Source-system instructions: CoreBank, daily accounts feed"
+    assert (recorded.recorded, recorded.refused, recorded.reasons) == (
+        ["Source-system instructions"],
+        ["Source instructions"],
+        [reason],
+    )
+    assert recorded.passages == {"Source-system instructions": passage}
+    assert [(r.kind, r.passage) for r in session.inputs] == [
+        ("source_system_instructions", passage)
+    ]
+    assert "m1" in session.messages
+
+    # Sent again, the recorded one is already in and the other is still refused.
+    again = record_input(
+        session, [instructions, not_said], _msg("m1", _INSTRUCTIONS), replace=False, now=NOW
+    )
+
+    assert (again.recorded, again.already, again.refused) == (
+        [],
+        ["Source-system instructions"],
+        ["Source instructions"],
+    )
+    assert len(session.inputs) == 1
+
+
+def test_the_request_cannot_pass_for_instructions() -> None:
+    session = _new()
+    request = (
+        "Start an STTM session for the CoreBank accounts in the fast review mode. Build the Data "
+        "Dictionary and the STTMs, then give me both workbooks."
+    )
+    # The instructions share the request's line, not its sentences.
+    message = _msg("m1", f"{request} {_INSTRUCTIONS}\nDerived fields: none.")
+    refusal = (
+        "The passage for {} is in the analyst's request (a sentence that asks for a session, its "
+        "review mode or the workbooks), not in instructions on how the data is to be handled. If "
+        "the message has no such instructions, do not record the input: ask the analyst for them."
+    )
+
+    for passage in [request, "for the CoreBank accounts", "Build the Data Dictionary and"]:
+        error = _refused(
+            lambda passage=passage: record_input(
+                session,
+                [{"kind": "source_system_instructions", "passage": passage}],
+                message,
+                replace=False,
+                now=NOW,
+            )
+        )
+        assert error == "Nothing was recorded. " + refusal.format("Source-system instructions")
+    assert session.inputs == []
+
+    recorded = record_input(
+        session,
+        [
+            {"kind": "source_system_instructions", "passage": _INSTRUCTIONS},
+            {"kind": "source_instructions", "passage": "in the fast review mode"},
+            {"kind": "derived_fields", "passage": "Derived fields: none"},
+        ],
+        message,
+        replace=False,
+        now=NOW,
+    )
+
+    assert (recorded.recorded, recorded.refused) == (
+        ["Source-system instructions"],
+        ["Source instructions", "Derived-field definitions"],
+    )
+    # A "none" is not an input either, and the refusal says what it is.
+    assert recorded.reasons[1:] == [
+        (
+            "When the analyst says there are no derived fields, that is "
+            "sttm_update(no_derived_fields=True), not an input."
+        ),
+        refusal.format("Source instructions"),
+    ]
+
+
+def test_a_specification_row_cannot_pass_for_the_instructions() -> None:
+    session = _new()
+    row = "CUSTOMER_ID VARCHAR 20 Y Customer identifier"
+    message = _msg("m1", f"Here is the specification.\n{_SPEC}")
+    refusal = (
+        "The passage for Source-system instructions is missing, under 4 words, or not in the "
+        "analyst's message (for instructions and derived fields, outside the specification's "
+        "tables)."
+    )
+    instructions = {"kind": "source_system_instructions", "passage": row}
+
+    recorded = record_input(
+        session, [instructions, {"kind": "specification"}], message, replace=False, now=NOW
+    )
+
+    assert (recorded.recorded, recorded.refused) == (
+        ["Source specification"],
+        ["Source-system instructions"],
+    )
+    assert recorded.reasons[0].startswith(refusal)
+    # No passage at all is refused the same way.
+    again = record_input(
+        session,
+        [{"kind": "source_system_instructions"}, {"kind": "specification"}],
+        message,
+        replace=False,
+        now=NOW,
+    )
+    assert (again.recorded, again.already, again.refused) == (
+        [],
+        ["Source specification"],
+        ["Source-system instructions"],
+    )
+    assert again.reasons[0].startswith(refusal)
+
+    # Once recorded as the specification, the message keeps its tables out of a later passage.
+    error = _refused(lambda: record_input(session, [instructions], message, replace=False, now=NOW))
+    assert error.startswith(f"Nothing was recorded. {refusal}")
+    assert [r.kind for r in session.inputs] == ["specification"]
+
+
+def test_instructions_count_only_where_the_analyst_names_them() -> None:
+    feed = "CoreBank sends a daily full extract."
+    named = [
+        f"Source-system instructions: {feed}",
+        f"Source-system instructions:\n\n{feed}\nDates are all UTC.",
+        f"## Source system instructions\n{feed}",
+        # A heading alone in its paragraph, as a document's heading pastes; and
+        # one over a heading of its own.
+        f"Source System Instructions\n\n{feed}",
+        f"Source-system instructions\n\nNotes from the data owner:\n{feed}",
+        _skill("Fast STTM", f"Source-system instructions for CoreBank:\n{feed}"),
+        _skill("CoreBank source system", feed),
+        "Here is the file.\n\n" + _document("corebank-source-system.pdf", feed),
+        "The source-system instructions are attached.\n\n" + _document("corebank.pdf", feed),
+        # A "no" that is part of them.
+        f"Source-system instructions: No nulls in key fields. {feed}",
+    ]
+    not_named = [
+        # Values for the tables under a heading of their own.
+        f"Start an STTM session for the CoreBank accounts.\n\nFile details:\n{feed}",
+        f"Source-system instructions\n\nStart with the accounts.\nKeys:\n{feed}",
+        # A skill's own opening line calls it instructions; the skill does not.
+        _skill("Fast STTM", feed),
+        "Here is the file.\n\n" + _document("corebank.pdf", feed),
+        # Words that say there are none.
+        f"No source-system instructions yet. {feed}",
+        f"Source-system instructions: none.\n{feed}",
+        f"Source-system instructions: N/A\n{feed}",
+        f"I don't have the instructions. {feed}",
+        "The instructions are not attached.\n\n" + _document("corebank.pdf", feed),
+    ]
+    instructions = [{"kind": "source_system_instructions", "passage": feed}]
+    reason = (
+        "Nothing in the analyst's message names the passage for Source-system instructions as "
+        'instructions: a heading or a line above it ("Source-system instructions: ..."), or, for '
+        "an attached document or a skill, its name or the analyst's typed text. Values under "
+        "another heading are values to record with sttm_update, not instructions. If no part of "
+        "the message is named so, do not record the input: ask the analyst to send the "
+        'instructions with a line naming them ("Source-system instructions:").'
+    )
+
+    for text in named:
+        recorded = record_input(_new(), instructions, _msg("m1", text), replace=False, now=NOW)
+        assert recorded.passages == {"Source-system instructions": feed[:-1]}, text
+    for text in not_named:
+        session = _new()
+        error = _refused(
+            lambda text=text, session=session: record_input(
+                session, instructions, _msg("m1", text), replace=False, now=NOW
+            )
+        )
+        assert error == f"Nothing was recorded. {reason}", text
+        assert session.inputs == []
+
+
+def test_an_asl_schema_passage_may_come_from_its_table() -> None:
+    session = _with_spec()
+    schema = "| Column | Type | Description |\n|---|---|---|\n| CUST_ID | STRING | Customer id |"
+
+    recorded = record_input(
+        session,
+        _inputs("asl_schema", passage="CUST_ID STRING Customer id"),
+        _msg("m2", schema),
+        replace=False,
+        now=NOW,
+    )
+
+    assert recorded.passages == {"ASL schema export": "CUST_ID | STRING | Customer id"}
+
+
+_RULES = "Source instructions: " + " ".join(f"rule {n} applies to the feed" for n in range(60))
+
+
+def test_a_long_passage_is_kept_up_to_its_cap() -> None:
+    session = _with_spec()
+
+    recorded = record_input(
+        session,
+        _inputs("source_instructions", passage=_RULES),
+        _msg("m2", _RULES),
+        replace=False,
+        now=NOW,
+    )
+
+    assert session.inputs[-1].passage == _RULES[:MAX_PASSAGE_CHARS] + "…"
+    assert recorded.passages == {"Source instructions": session.inputs[-1].passage}
+
+
+def test_the_inputs_and_the_summary_quote_each_passage() -> None:
+    first = _with_spec()
+    record_input(
+        first,
+        _inputs("source_instructions", passage=_RULES),
+        _msg("m2", _RULES),
+        replace=False,
+        now=NOW,
+    )
+    second, _ = start_session(
+        {first.id: first},
+        source_system="CoreBank",
+        source="monthly balances",
+        message=_msg("m5", "Now the monthly balances file."),
+        now=NOW,
+    )
+    instructions = '"Source-system instructions: CoreBank, daily accounts feed"'
+
+    def quoted(view: str) -> list[str]:
+        return [line for line in view.splitlines() if line.startswith("  - ") and '"' in line]
+
+    assert quoted(inputs_view(first)) == [
+        f"  - Passage: {instructions}",
+        f'  - Passage: "{_RULES[:MAX_PASSAGE_CHARS]}…"',
+    ]
+    assert quoted(summary_view(first)) == [
+        f"  - Source-system instructions: {instructions}",
+        f'  - Source instructions: "{_RULES[:160].rstrip()}…"',
+    ]
+    assert quoted(summary_view(second)) == [
+        f"  - Source-system instructions: {instructions}, carried over from session {first.id}"
+    ]
+    # The attribute count after the quotes is still the session's.
+    assert (
+        "- Attributes: 3 from the specification, 0 derived, 0 audit; 3 of 3 carried to Curated "
+        "(or not decided yet)"
+    ) in summary_view(first).splitlines()
+
+    # A session recorded before passages were kept.
+    first.inputs[0].passage = None
+    assert "  - Passage: no passage recorded" in inputs_view(first).splitlines()
+    assert "  - Source-system instructions: no passage recorded" in summary_view(first).splitlines()
+
+
 # -- nothing invented ------------------------------------------------------------
 
 
 def test_a_primary_key_comes_from_the_specification_or_the_analyst() -> None:
     session = _with_spec()
     assert session.details["primary_key"].value == "CUSTOMER_ID"
+
+    # The specification's own key, sent again where the analyst's words don't say it, is left
+    # as the specification gave it: nothing to refuse, nothing to ask the analyst.
+    for key in (["CUSTOMER_ID"], "customer_id"):
+        outcome = set_details(
+            session, {"primary_key": key}, _msg("m2", "Let's go on."), proposed=False, now=NOW
+        )
+        assert (outcome.changes, outcome.refused) == ([], []), key
+    assert session.details["primary_key"].source == "specification"
 
     outcome = set_details(
         session,
@@ -666,6 +1385,27 @@ def test_cells_are_never_added_for_an_attribute_the_session_does_not_have() -> N
         "Data Dictionary, MADE_UP, pii_pci: 'MADE_UP' is not a row of the Data Dictionary: it "
         "is not in the specification, the derived fields or the audit fields, and attributes "
         "are never added here."
+    ]
+    assert session.cells.get("data_dictionary", {}) == {}
+
+
+def test_values_for_attributes_wait_for_the_specification() -> None:
+    session = _new()
+    message = _msg("m1", f"{_INSTRUCTIONS} The key is CUSTOMER_ID; CUSTOMER_ID is PII.")
+    record_input(session, _inputs("source_system_instructions"), message, replace=False, now=NOW)
+    later = (
+        "No specification is recorded yet, so the tables have no rows: set it again once one is."
+    )
+
+    outcome = set_details(session, {"primary_key": "CUSTOMER_ID"}, message, proposed=False, now=NOW)
+    assert outcome.refused == [f"Primary key: CUSTOMER_ID is not an attribute yet. {later}"]
+
+    outcome = _cells(session, ("data_dictionary", "CUSTOMER_ID", "pii_pci", "PII"), message=message)
+    assert outcome.refused == [
+        (
+            "Data Dictionary, CUSTOMER_ID, pii_pci: 'CUSTOMER_ID' is not a row of the Data "
+            f"Dictionary yet. {later}"
+        )
     ]
     assert session.cells.get("data_dictionary", {}) == {}
 
@@ -818,7 +1558,7 @@ def test_a_governed_value_needs_the_analysts_words() -> None:
     assert outcome.refused == [
         "Data Dictionary, CUSTOMER_ID, classification: 'Confidential' is not in the analyst's "
         "instructions or feedback to this session (a pasted specification does not count). "
-        "Ask the analyst."
+        "Use their words for it exactly as written, or ask the analyst."
     ]
 
 
@@ -1047,7 +1787,7 @@ def test_validation_names_every_attribute_that_fails() -> None:
     assert list(results) == list(CHECKS)
     names = ("CUSTOMER_ID", "ACCOUNT_NO", "OPEN_DATE")
     assert results["carry_forward_in_r2c"].failing == [
-        f"{name}: carry_to_curated not set" for name in names
+        f"{name}: carry_to_curated not set in the Data Dictionary" for name in names
     ]
     assert results["pii_classified"].failing == [
         f"{name}: pii_pci, classification" for name in names
@@ -1399,6 +2139,7 @@ def test_cell_updates_are_checked_one_by_one() -> None:
         session,
         ("dd", "CUSTOMER_ID", "primary_key", "Y"),
         ("dd", "CUSTOMER_ID", "colour", "blue"),
+        ("r2c", "*", "Carry to Curated", "Y"),
         ("gold", "CUSTOMER_ID", "colour", "blue"),
         ("dd", "CUSTOMER_ID", "classification", "Internal"),
         ("dd", "CUSTOMER_ID", "carry_to_curated", "maybe"),
@@ -1414,7 +2155,15 @@ def test_cell_updates_are_checked_one_by_one() -> None:
         "Data Dictionary, CUSTOMER_ID, colour: unknown column; the columns are attribute_name, "
         "origin, primary_key, data_type, length, required, technical_description, "
         "business_description, classification, pii_pci, handling_method, carry_to_curated, "
-        "derivation_logic, join_key.",
+        "derivation_logic, join_key. The column is yours to choose: send the value again "
+        "under the one of these it is for, if any.",
+        (
+            "Raw-to-Curated STTM, *, Carry to Curated: unknown column; it is a column of the "
+            "Data Dictionary; the columns are attribute_name, raw_path, raw_file, intg_path, "
+            "intg_table, intg_column, intg_type, curated_path, curated_table, curated_column, "
+            "curated_type, transformation_rule, logic_type, pii_pci. The column is yours to "
+            "choose: send the value again under the one of these it is for, if any."
+        ),
         "Unknown table 'gold'; use: data_dictionary, raw_to_curated, curated_to_asl.",
         "Data Dictionary, CUSTOMER_ID, classification: a governed column takes values from "
         "analyst or rule, not draft.",
@@ -1436,6 +2185,24 @@ def test_cell_updates_are_checked_one_by_one() -> None:
     )
     assert outcome.refused == [
         "Data Dictionary, CUSTOMER_ID, carry_to_curated: 'maybe' is not Y or N."
+    ]
+
+    # The mark for a value not decided yet is no value, though "review" and "?" are said.
+    outcome = _cells(
+        session,
+        ("c2a", "*", "sensitivity", "REVIEW"),
+        ("dd", "CUSTOMER_ID", "business_description", "?"),
+        message=_msg("m4", "Use the fast review mode. What is still open?"),
+    )
+    assert outcome.refused == [
+        (
+            "Curated-to-ASL STTM, *, sensitivity: 'REVIEW' marks a value not decided yet; leave "
+            "it unset."
+        ),
+        (
+            "Data Dictionary, CUSTOMER_ID, business_description: '?' marks a value not decided "
+            "yet; leave it unset."
+        ),
     ]
 
     assert _refused(

@@ -6,11 +6,15 @@ writes it back with a :class:`Command`. ``sttm_workbook`` builds a session's
 workbooks (:mod:`.workbook`): it keeps their layout steps in the
 ``sttm_layouts`` channel, and the files in the platform's store for the analyst
 to download (:mod:`.files`), never in the state. What a tool records is the
-analyst's message as the task quotes it between ``<analyst_message>`` tags,
-never the model's restatement of it, and a value said to be the analyst's has
-to be found in those words. The message is keyed on the turn's run id, so every
-task in a turn shares it, and a review opened in one turn can only be accepted
-in a later one.
+analyst's latest message as they sent it, with the text of any PDF attached to
+it, never the model's restatement of it: the sttm-agent reads it from the
+conversation in code (:mod:`v1.core.subagents.sttm.runnable`) and hands it to
+the tools in the run's config (:data:`MESSAGE_KEY`). A value said to be the
+analyst's has to be found in those words, and an input other than a
+specification has to come with the words of the message that hold it. The
+message keeps its id (the turn's run id when it has none), so every task in a
+turn shares it, and a review opened in one turn can only be accepted in a later
+one.
 
 An answer says what changed, what was refused and why, and what comes next. A
 call that changes nothing answers without touching state. No STTM call runs
@@ -24,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import traceback
 from collections import OrderedDict
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -31,7 +36,7 @@ from typing import Any, Literal, Required
 
 from deepagents.backends.utils import create_file_data
 from langchain.tools import ToolRuntime
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command
 
@@ -40,7 +45,13 @@ from typing_extensions import TypedDict
 
 from v1.core.middlewares.user_context import caller_field
 from v1.core.tools.sttm.export import export_session
-from v1.core.tools.sttm.files import KeptFile, download_url, keep_file
+from v1.core.tools.sttm.files import (
+    KeptFile,
+    download_url,
+    keep_file,
+    new_file_id,
+    workbook_file_id,
+)
 from v1.core.tools.sttm.render import (
     attributes_view,
     change_text,
@@ -49,6 +60,7 @@ from v1.core.tools.sttm.render import (
     summary_view,
     table_view,
     unresolved_required,
+    unset_optional,
     validation_view,
 )
 from v1.core.tools.sttm.rules import available_rule_files
@@ -68,6 +80,7 @@ from v1.core.tools.sttm.session import (
     approve,
     ensure_editable,
     gaps,
+    input_blockers,
     log_message,
     new_version,
     record_input,
@@ -117,13 +130,23 @@ View = Literal[
 ]
 # Changes and refusals listed in one answer; the rest are counted.
 MAX_LISTED = 30
-# The task quotes the analyst's latest message between these; the rest of the
-# task is the orchestrator's context, which records nothing.
-MESSAGE_OPEN, MESSAGE_CLOSE = "<analyst_message>", "</analyst_message>"
+# Where the sttm-agent puts the analyst's latest message in the run's config
+# (subagents/sttm/runnable.py): its id, its text with any attached PDF's, and
+# notes on the files not read. A "__" key is not copied into the run's metadata.
+MESSAGE_KEY = "__sttm_message"
 # Orchestrator steps whose claim (_claim) is remembered; the oldest are forgotten.
 MAX_CLAIMS = 1024
 # The arguments with which sttm_workbook changes a layout; without them it only builds.
 LAYOUT_ARGS = ("steps", "remove_steps", "reset")
+
+
+class InputItem(TypedDict, total=False):
+    """One input the analyst's message holds."""
+
+    kind: Required[InputKind]
+    # The words of the message that hold it, copied exactly; for a specification,
+    # only when the message holds several sources' tables (its table's heading or row).
+    passage: str
 
 
 class DerivedFieldInput(TypedDict, total=False):
@@ -180,6 +203,58 @@ class LayoutStepInput(TypedDict, total=False):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _build_label(session: Session | None, session_id: str | None, thread_id: str | None) -> str:
+    """Which session and thread a workbook build's log line is about."""
+
+    if session is None:
+        about = f"session {session_id or '(the latest)'}"
+    else:
+        about = (
+            f"session {session.id} v{session.version} ({session.status}, "
+            f"{len(session.attributes)} attribute(s))"
+        )
+    return f"{about}, thread {thread_id or '(none)'}"
+
+
+def _built_line(built: Built) -> str:
+    """Each built workbook: from the template or generic (and why), and its size."""
+
+    parts = []
+    for workbook in built.workbooks:
+        how = "from the template" if workbook.template else f"generic ({workbook.reason})"
+        parts.append(f"{workbook.key} {how}, {len(workbook.content)} bytes")
+    return "; ".join(parts)
+
+
+def _error_line(error: BaseException) -> str:
+    """``error`` in one line: type, message, where it was raised and its notes.
+
+    Container log viewers show each line of a traceback as its own row, so the
+    line that reports a failure says what is needed to place it; the traceback
+    still follows. A library's frame is followed by the last one of ours.
+    """
+
+    message = " ".join(str(error).split())[:300]
+    frames = traceback.extract_tb(error.__traceback__)
+    ours = [frame for frame in frames if _source(frame.filename).startswith("v1/")]
+    shown = frames[-1:] + [frame for frame in ours[-1:] if frame is not frames[-1]]
+    where = " via ".join(f"{_source(f.filename)}:{f.lineno} in {f.name}" for f in shown)
+    line = f"{type(error).__name__}: {message}"
+    if where:
+        line += f" at {where}"
+    return line + "".join(f", {note}" for note in getattr(error, "__notes__", ()))
+
+
+def _source(filename: str) -> str:
+    """``filename`` from its package down (``v1/...``, ``openpyxl/...``)."""
+
+    path = filename.replace("\\", "/")
+    for marker in ("/site-packages/", "/src/"):
+        if marker in path:
+            return path.rsplit(marker, 1)[1]
+    return path.rsplit("/", 1)[-1]
 
 
 # The STTM task that may change the sessions in each orchestrator step, by the
@@ -261,33 +336,33 @@ def _sessions(runtime: ToolRuntime, *, changes: bool) -> dict[str, Session]:
 
 
 def _message(runtime: ToolRuntime) -> Mapping[str, Any]:
-    """The analyst's latest message, as the task quotes it, keyed on the turn's run id.
+    """The analyst's latest message, as the sttm-agent read it from the conversation.
 
-    Every task in one turn quotes the same message, so they share its id, and a
-    review it opens can only be accepted in a later turn.
+    It keeps the message's id, or takes the turn's run id when it has none, so
+    every task in one turn shares it, and a review it opens can only be accepted
+    in a later turn.
     """
 
-    messages = (runtime.state or {}).get("messages") or []
-    task = next((m.text for m in messages if isinstance(m, HumanMessage)), "")
-    start = task.find(MESSAGE_OPEN)
-    end = task.rfind(MESSAGE_CLOSE)
-    if start < 0 or end < start + len(MESSAGE_OPEN):
+    config = runtime.config or {}
+    configurable = config.get("configurable") or {}
+    message = configurable.get(MESSAGE_KEY)
+    if not isinstance(message, Mapping):
         raise SessionError(
-            f"The task does not quote the analyst's message between {MESSAGE_OPEN} tags, so "
-            "nothing can be recorded. Answer that the task has to quote the analyst's latest "
-            "message, exactly as they sent it, between those tags."
+            "The analyst's message did not reach this tool, so nothing can be recorded. This is "
+            "a configuration problem: tell the analyst, and do not retry."
         )
     # The run id reaches a subagent's tools in the metadata, as ai_search reads it.
-    config = runtime.config or {}
-    turn = (config.get("metadata") or {}).get("run_id") or (config.get("configurable") or {}).get(
-        "run_id"
+    turn = (
+        message.get("id")
+        or (config.get("metadata") or {}).get("run_id")
+        or configurable.get("run_id")
     )
     if not turn:
         raise SessionError(
             "This run has no run id to tell the analyst's messages apart, so nothing can be "
             "recorded. This is a configuration problem: tell the analyst, and do not retry."
         )
-    return {"id": str(turn), "text": task[start + len(MESSAGE_OPEN) : end].strip("\r\n")}
+    return {**message, "id": str(turn)}
 
 
 def _pick(sessions: Mapping[str, Session], session_id: str | None) -> Session:
@@ -442,9 +517,11 @@ def _generated_text(session: Session, stage: str) -> str:
     for table in built:
         missing = unresolved_required(tables, table)
         open_ = ", ".join(f"{column} ({count} row(s))" for column, count in missing.items())
+        optional = unset_optional(tables, table)
         lines.append(
             f"- {TABLES[table]}: {len(tables.rows(table))} row(s); required, not decided yet: "
             f"{open_ or 'nothing'}"
+            + (f"; optional, still empty: {', '.join(optional)}" if optional else "")
         )
     present = ", ".join(available_rule_files())
     rules = (
@@ -469,6 +546,10 @@ def _step_text(session: Session, step: Step) -> str:
         if questions:
             lines.append("Ask the analyst about these at the same time:")
             lines += _listed(questions)
+        lines.append(
+            "Meanwhile, set the values the analyst gave (sttm_update). If they asked for the "
+            "workbooks, build them now (sttm_workbook): what is missing does not stop a build."
+        )
         return "\n".join(lines)
     if step.kind == "gate":
         if step.reminder:
@@ -653,6 +734,9 @@ def _workbook_text(
         "[label](path) form (the chat cannot open a bare path), and until when they work. The "
         "files hold the session as it is now: build them again after a change."
     )
+    blockers = input_blockers(session)
+    if blockers:
+        lines.append(f"Not complete yet (tell the analyst, with the links): {' '.join(blockers)}")
     if changes:
         lines.append(" ".join([*changes, _SHOW_LAYOUT]))
     lines += _layout_lines(layout, inherited)
@@ -680,13 +764,16 @@ def sttm_start_session(
     source: str = "",
     review_mode: ReviewMode | None = None,
     new_version_of: str | None = None,
+    new_session: bool = False,
 ) -> Command | str:
     """Start an STTM session for one source, or a new version of an approved session.
 
     One session covers one source's Data Dictionary and both STTMs. A new session
     carries over the latest source-system and source instructions recorded in this
     conversation for the same source system and source. An approved session is
-    read-only: changing it takes a new version, which starts as a copy of it.
+    read-only: changing it takes a new version, which starts as a copy of it. A
+    source with a session not approved yet gets no second one unless the analyst
+    asks for it: carry on with that session instead.
 
     Args:
         source_system: The source system, as the analyst names it.
@@ -695,6 +782,8 @@ def sttm_start_session(
             name; default stops at every review.
         new_version_of: The id of an approved session to start a new version of; leave
             source_system and source empty.
+        new_session: True only when the analyst asked for a new session for a source that
+            already has one not approved yet.
     """
 
     try:
@@ -713,23 +802,34 @@ def sttm_start_session(
                 "sttm_advance to the final summary for approval."
             )
         else:
+            same = sorted(
+                (
+                    other
+                    for other in sessions.values()
+                    if not other.locked
+                    and normalize_name(other.source_system) == normalize_name(source_system)
+                    and normalize_name(other.source) == normalize_name(source)
+                ),
+                key=lambda other: (other.updated_at, other.revision, other.id),
+            )
+            if same and not new_session:
+                raise SessionError(
+                    f"{source_system.strip()} / {source.strip()} already has session(s) "
+                    f"{', '.join(other.id for other in same)}, not approved yet, so no new "
+                    f"session was started. Carry on with session {same[-1].id}: record this "
+                    f"message's inputs and changes with session_id={same[-1].id}. Only if the "
+                    "analyst asked for a new session, call again with new_session=true."
+                )
             session, notes = start_session(
                 sessions, source_system=source_system, source=source, message=message, now=now
             )
             opening = (
                 f"Started STTM session {session.id} for {session.source_system} / {session.source}."
             )
-            same = [
-                other.id
-                for other in sessions.values()
-                if not other.locked
-                and normalize_name(other.source_system) == normalize_name(session.source_system)
-                and normalize_name(other.source) == normalize_name(session.source)
-            ]
             if same:
                 notes.append(
-                    f"Session(s) {', '.join(same)} for the same source are not approved yet; "
-                    "carry on with one of them unless the analyst asked for a new session."
+                    f"Session(s) {', '.join(other.id for other in same)} for the same source are "
+                    "not approved yet; the analyst asked for a new one."
                 )
         if review_mode is not None:
             try:
@@ -752,45 +852,77 @@ def sttm_start_session(
 @tool
 def sttm_record_input(
     runtime: ToolRuntime,
-    kinds: list[InputKind],
+    inputs: list[InputItem],
     replace: bool = False,
     session_id: str | None = None,
 ) -> Command | str:
     """Record the analyst's current message, exactly as they sent it, as session inputs.
 
-    The tool reads the message your task quotes between <analyst_message> tags
-    itself: never paste or restate it. A message holding several inputs
-    (instructions and a specification, say) is recorded once with all their kinds.
-    A specification has to be a table with a header row, pipe- or tab-separated; its
+    The tool reads the analyst's message itself, with the text of the PDFs they
+    attached: never paste or restate it. A message holding several inputs
+    (instructions and a specification, say) is recorded once, with an item for each.
+    Each input but a specification needs its passage: a sentence or so of the input
+    itself, copied exactly from where the message holds it (the typed text, a skill
+    block or an attached document; at least 4 words in a row, not from the
+    specification's table). A sentence that only says where an input is ("the
+    instructions are in the attached PDF") is not its passage. Instructions count only
+    where the analyst names them so: under a heading or after a line such as
+    "Source-system instructions:", or in a file or skill named for them; values for the
+    tables under other headings are for sttm_update. An input whose passage is not
+    found is not recorded; the others are. A specification has to be a table with a
+    header row, pipe- or tab-separated (a PDF's ruled table is read as one); its
     attributes are read exactly as written, and a specification sent over several
-    messages adds up. An attached file cannot be read: ask the analyst to paste the
-    content as text.
+    messages adds up. A message with several sources' specifications is recorded in
+    each source's session, each with the passage of its own table.
 
     Args:
-        kinds: What the message holds: source_system_instructions, source_instructions,
-            specification, derived_fields, asl_schema.
+        inputs: The inputs the message holds, each with a kind and its passage. The
+            kinds: source_system_instructions (how the source system's data is to be
+            handled), source_instructions (how this one source's data is to be handled;
+            often not given), specification, derived_fields, asl_schema. A
+            specification's passage only when the message holds several sources'
+            tables: the heading above this source's table or a row of it. The analyst's
+            request (a session to start, its source and review mode, what to build) is
+            none of them.
         replace: True when the message replaces what earlier messages gave for these kinds
-            (a corrected specification, say) instead of adding to it.
+            (a corrected specification, say) instead of adding to it, or records this
+            message again (with another passage).
         session_id: The session; by default the one changed last.
     """
 
     try:
         message = _message(runtime)
-        session = _pick(_sessions(runtime, changes=True), session_id)
+        sessions = _sessions(runtime, changes=True)
+        session = _pick(sessions, session_id)
         now = _now()
-        result = record_input(session, list(kinds), message, replace=replace, now=now)
+        others = [other for other in sessions.values() if other.id != session.id]
+        result = record_input(
+            session, list(inputs), message, replace=replace, now=now, others=others
+        )
     except SessionError as error:
         return f"Not done: {error}"
+    refusals = (
+        [f"Not recorded: {', '.join(result.refused)}.", *_listed(result.reasons)]
+        if result.refused
+        else []
+    )
     if not result.recorded:
-        return (
-            f"Session {session.id}: this message is already recorded as "
-            f"{', '.join(result.already)}; nothing changed."
+        return "\n".join(
+            [
+                (
+                    f"Session {session.id}: this message is already recorded as "
+                    f"{', '.join(result.already)}; nothing changed."
+                ),
+                *refusals,
+            ]
         )
     lines = [
         f"Session {session.id}: recorded the analyst's message as {', '.join(result.recorded)}."
     ]
+    lines += _listed([f'{label}, from: "{text}"' for label, text in result.passages.items()])
     if result.already:
         lines.append(f"Already recorded as: {', '.join(result.already)}.")
+    lines += refusals
     if INPUT_KINDS["specification"] in result.recorded:
         lines.append(
             f"Specification: {result.attributes_added} attribute(s) read from this message, "
@@ -820,7 +952,7 @@ def sttm_record_input(
         )
         for label in result.recorded
     ]
-    _record_feedback(session, message, "Inputs", changes, [], now)
+    _record_feedback(session, message, "Inputs", changes, result.refused, now)
     return _saved(session, runtime, "\n".join(lines), now=now)
 
 
@@ -1099,9 +1231,16 @@ async def sttm_workbook(
         session_id: The session; by default the one changed last.
     """
 
+    configurable = (runtime.config or {}).get("configurable") or {}
+    thread_id = str(configurable.get("thread_id") or "") or None
     owner = str(caller_field("identity") or "")
     store = runtime.store
     if not owner or store is None:
+        logger.warning(
+            "STTM workbooks not built (thread %s): the run has %s",
+            thread_id or "(none)",
+            "no signed-in user" if not owner else "no store",
+        )
         return (
             "Not done: this run has no signed-in user or no store to keep files in, so no "
             "workbook can be offered for download. This is a configuration problem: tell the "
@@ -1109,6 +1248,8 @@ async def sttm_workbook(
         )
     given = list(steps or [])
     now = _now()
+    session: Session | None = None
+    layout: list[dict[str, Any]] = []
     try:
         sessions = _sessions(runtime, changes=bool(given or remove_steps or reset))
         session = _pick(sessions, session_id)
@@ -1133,20 +1274,30 @@ async def sttm_workbook(
         except StepError as error:
             raise SessionError(_step_refusal(error, kept)) from None
     except SessionError as error:
+        logger.info(
+            "STTM workbooks not built for %s: %s",
+            _build_label(session, session_id, thread_id),
+            error,
+        )
         return f"Not done: {error}"
-    except Exception:  # a bug, or a template openpyxl cannot write: the turn goes on
-        logger.exception("Could not build the workbooks of an STTM session")
+    except Exception as error:  # a bug, or a template openpyxl cannot write: the turn goes on
+        logger.exception(
+            "Could not build the workbooks of STTM %s, with %d layout step(s): %s",
+            _build_label(session, session_id, thread_id),
+            len(layout),
+            _error_line(error),  # noqa: TRY401 - the traceback lands on rows of its own
+        )
         return (
             "Not done: the workbooks could not be built, because of a problem on our side, so "
             "nothing was changed. Tell the analyst, and do not retry."
         )
-    configurable = (runtime.config or {}).get("configurable") or {}
-    thread_id = str(configurable.get("thread_id") or "") or None
+    build_id = new_file_id()
     files: list[KeptFile] = []
     try:
         for workbook in built.workbooks:
             kept_file = await keep_file(
                 store,
+                file_id=workbook_file_id(build_id, workbook.key),
                 owner=owner,
                 name=workbook.name,
                 media_type=MEDIA_TYPE,
@@ -1157,12 +1308,23 @@ async def sttm_workbook(
                 version=session.version,
             )
             files.append(kept_file)
-    except Exception:  # the store is down, or refused the files
-        logger.exception("Could not keep the workbooks of STTM session %s", session.id)
+    except Exception as error:  # the store is down, or refused the files
+        logger.exception(
+            "Could not keep the workbooks of STTM %s (%s): %s",
+            _build_label(session, session_id, thread_id),
+            _built_line(built),
+            _error_line(error),  # noqa: TRY401 - the traceback lands on rows of its own
+        )
         return (
             "Not done: the workbooks were built but could not be kept for download, because of a "
             "problem on our side, so nothing was changed. Tell the analyst, and do not retry now."
         )
+    logger.info(
+        "Built the workbooks of STTM %s, with %d layout step(s): %s",
+        _build_label(session, session_id, thread_id),
+        len(layout),
+        _built_line(built),
+    )
     changes: list[str] = []
     if reset and current:
         changes.append(f"Dropped the {len(current)} kept step(s).")

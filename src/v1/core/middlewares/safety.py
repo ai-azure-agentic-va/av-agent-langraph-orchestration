@@ -396,14 +396,17 @@ class SafetyGateMiddleware(AgentMiddleware):
     """Input gate: refuse secret/destructive requests and prompt-extraction /
     jailbreak attempts before any orchestrator model call.
 
-    Three layers, in order of precedence (first line first):
+    Three layers:
+      * Layer 2a — deterministic phrase filters (:func:`assess_input_safety`),
+        checked first because they are instant: a hit refuses with no network call.
       * Layer 3 — Azure Content Safety Prompt Shields (:func:`_prompt_shields_flags_attack`),
-        the first line of defense; off by default until its RBAC role is granted.
-      * Layer 2a — deterministic phrase filters (:func:`assess_input_safety`).
+        off by default until its RBAC role is granted.
       * Layer 2b — LLM classifier (:func:`_llm_flags_malicious`).
-    Any match ends the turn with the same generic :data:`CLEAN_REFUSAL`. Layer 3
-    and 2b fail open, so a dependency outage degrades to the remaining layers
-    rather than blocking legitimate traffic.
+    Layers 3 and 2b run concurrently, so the gate costs one round trip instead
+    of two before the first model call; the first to flag refuses and the other
+    is cancelled. Any match ends the turn with the same generic
+    :data:`CLEAN_REFUSAL`. Layers 3 and 2b fail open, so a dependency outage
+    degrades to the remaining layers rather than blocking legitimate traffic.
     """
 
     @hook_config(can_jump_to=["end"])
@@ -412,20 +415,27 @@ class SafetyGateMiddleware(AgentMiddleware):
     ) -> Optional[dict[str, Any]]:
         message = _last_user_text(state)
 
-        # Layer 3 (first line): Azure Content Safety Prompt Shields.
-        if await _prompt_shields_flags_attack(message):
-            logger.info("SafetyGate blocked request (prompt shields)")
-            return _refusal()
-
         # Layer 2a: deterministic phrase filters.
         safe, reasons = assess_input_safety(message)
         if not safe:
             logger.info("SafetyGate blocked request (rules): %s", ", ".join(reasons))
             return _refusal()
 
-        # Layer 2b: LLM classifier.
-        if await _llm_flags_malicious(message):
-            logger.info("SafetyGate blocked request (llm classifier)")
-            return _refusal()
+        # Layers 3 and 2b together; both fail open, so neither ever raises.
+        checks = {
+            asyncio.create_task(_prompt_shields_flags_attack(message)): "prompt shields",
+            asyncio.create_task(_llm_flags_malicious(message)): "llm classifier",
+        }
+        pending = set(checks)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    if task.result():
+                        logger.info("SafetyGate blocked request (%s)", checks[task])
+                        return _refusal()
+        finally:
+            for task in pending:
+                task.cancel()
 
         return None

@@ -49,7 +49,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -70,7 +70,8 @@ from pydantic import (
     model_validator,
 )
 
-from v1.core.config import get_settings
+from v1.core.config import databricks_registered, get_settings
+from v1.core.databricks_workspaces import DATABRICKS_SUBAGENT_NAME, visible_workspaces
 from v1.utils.group_routing import groups_from_config
 
 logger = logging.getLogger(__name__)
@@ -297,9 +298,31 @@ def caller_access(groups: Iterable[str] | None = None) -> CallerAccess:
     """What the policy gives the caller in ``groups``, by default this run's caller.
 
     Outside a run, or with no authenticated groups, only the global lists apply.
+    The databricks-agent is also blocked for a caller who sees no Databricks
+    workspace (:func:`databricks_unavailable`): every one of its tools would refuse.
     """
 
-    return get_access_policy().resolve(groups_from_config() if groups is None else groups)
+    groups = tuple(groups_from_config() if groups is None else groups)
+    access = get_access_policy().resolve(groups)
+    if DATABRICKS_SUBAGENT_NAME not in access.blocked_subagents and databricks_unavailable(
+        groups
+    ):
+        access = replace(
+            access, blocked_subagents=access.blocked_subagents | {DATABRICKS_SUBAGENT_NAME}
+        )
+    return access
+
+
+def databricks_unavailable(groups: Iterable[str]) -> bool:
+    """Whether the registered databricks-agent has no workspace for a caller in ``groups``.
+
+    The file can block the databricks-agent for a group like any subagent; which
+    workspaces a caller sees is decided by the workspace registry instead, which
+    changes at runtime, so it is checked here on every call. False when the
+    databricks-agent is not registered: then it is not offered to anyone.
+    """
+
+    return databricks_registered() and not visible_workspaces(tuple(groups))
 
 
 def check_blocked_names(

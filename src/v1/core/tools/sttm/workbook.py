@@ -34,6 +34,7 @@ import io
 import logging
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -882,6 +883,12 @@ _R2C_FIELDS = (
         _spec_rows_only(_session_cell("raw_to_curated", "attribute_name")),
         ("raw_to_curated", "attribute_name"),
     ),
+    # The raw file holds the source's own type, as the specification gives it.
+    _Field(
+        "raw_datatype",
+        _spec_rows_only(_session_cell("data_dictionary", "data_type")),
+        ("data_dictionary", "data_type"),
+    ),
     _r2c("int_path", "intg_path"),
     _r2c("int_table_name", "intg_table"),
     _r2c("int_column", "intg_column"),
@@ -896,6 +903,7 @@ _R2C_FIELDS = (
     _r2c("cur_column", "curated_column"),
     _r2c("cur_datatype", "curated_type"),
     _r2c("cur_logic", "transformation_rule"),
+    _r2c("cur_logictype", "logic_type"),
     _Field(
         "PII/PCI",
         _session_cell("raw_to_curated", "pii_pci", _YES_OR_NO),
@@ -1288,16 +1296,24 @@ def _generic(key: str, ctx: _Context, reason: str) -> _Book:
 def _open(key: str, ctx: _Context, folder: Path) -> _Book:
     path = folder / TEMPLATE_FILES[key]
     if not path.is_file():
+        logger.info("STTM template %s is not in this deployment, so the %s is generic", path, key)
         return _generic(key, ctx, f"the template {path.name} is not in this deployment")
     try:
         # rich_text keeps text that mixes fonts in one cell as the template has it.
         wb = load_workbook(path, rich_text=True)
-    except Exception:
-        logger.exception("STTM template %s could not be read", path.name)
+    except Exception as error:
+        logger.exception(
+            "STTM template %s could not be read (%s: %s), so the %s is generic",
+            path.name,
+            type(error).__name__,
+            error,  # noqa: TRY401 - the traceback lands on rows of its own
+            key,
+        )
         return _generic(key, ctx, f"the template {path.name} could not be read")
     try:
         return _from_template(key, ctx, path, wb)
     except _NoTemplate as problem:
+        logger.warning("STTM template %s %s, so the %s is generic", path, problem, key)
         return _generic(key, ctx, f"the template {path.name} {problem}")
 
 
@@ -2038,23 +2054,47 @@ def build_workbooks(
     """Both workbooks of ``session``, with the layout ``steps`` applied in order.
 
     Raises :class:`StepError` for a step that does not fit the workbooks and
-    :class:`~.session.SessionError` for a workbook over :data:`MAX_BYTES`.
+    :class:`~.session.SessionError` for a workbook over :data:`MAX_BYTES`. Any
+    other error carries a note saying what the build was doing.
     """
 
     checked = normalize_steps(steps)
-    ctx = _context(session)
+    with _while(f"reading session {session.id}"):
+        ctx = _context(session)
     folder = TEMPLATES_DIR if templates_dir is None else templates_dir
-    books = [_open(key, ctx, folder) for key in WORKBOOKS]
+    books: list[_Book] = []
+    for key in WORKBOOKS:
+        with _while(f"opening the {key} workbook from {folder / TEMPLATE_FILES[key]}"):
+            books.append(_open(key, ctx, folder))
     notes: list[str] = []
     for number, step in enumerate(checked, start=1):
         try:
-            matched = _apply(books, step)
+            with _while(f"applying layout step {number} ({describe_step(step)})"):
+                matched = _apply(books, step)
         except _Refused as refused:
             where = f"{step['op']} on '{step['sheet']}'" if "sheet" in step else step["op"]
             raise StepError(number, f" ({where}): {refused}") from None
         if matched == 0:
             notes.append(f"Step {number} ({describe_step(step)}) matched no rows.")
-    return Built(tuple(_render(book, ctx, now) for book in books), tuple(notes))
+    built: list[BuiltWorkbook] = []
+    for book in books:
+        source = f"the template {book.template}" if book.template else "the session's own columns"
+        with _while(f"writing the {book.key} workbook, laid out from {source}"):
+            built.append(_render(book, ctx, now))
+    return Built(tuple(built), tuple(notes))
+
+
+@contextmanager
+def _while(doing: str) -> Iterator[None]:
+    """Note on an unexpected error what the build was ``doing``, for the line that logs it."""
+
+    try:
+        yield
+    except (_Refused, SessionError):
+        raise
+    except Exception as error:
+        error.add_note(f"while {doing}")
+        raise
 
 
 __all__ = [

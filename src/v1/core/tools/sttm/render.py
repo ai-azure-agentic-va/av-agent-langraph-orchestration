@@ -28,6 +28,7 @@ from v1.core.tools.sttm.session import (
     Change,
     CheckResult,
     Column,
+    InputRecord,
     Resolved,
     Session,
     SessionError,
@@ -147,6 +148,19 @@ def unresolved_required(tables: Tables, table: str) -> dict[str, int]:
     return counts
 
 
+def unset_optional(tables: Tables, table: str) -> list[str]:
+    """Optional columns of ``table`` that only the analyst or a rule file gives, unset in every row."""
+
+    rows = tables.rows(table)
+    return [
+        column.key
+        for column in COLUMNS[table]
+        if column.kind == "governed"
+        and not column.required
+        and all(tables.resolve(table, row, column.key).value is None for row in rows)
+    ]
+
+
 def table_view(
     session: Session,
     table: str,
@@ -234,6 +248,21 @@ def attributes_view(session: Session, *, offset: int = 0, limit: int = DEFAULT_L
     return "\n".join(lines)
 
 
+# How much of an input's passage the final summary shows.
+PASSAGE_CHARS = 160
+
+
+def _passage_text(record: InputRecord, limit: int | None = None) -> str:
+    """The words an input was found in, quoted, or that none were recorded."""
+
+    if not record.passage:
+        return "no passage recorded"
+    passage = " ".join(record.passage.split())
+    if limit is not None and len(passage) > limit:
+        passage = passage[:limit].rstrip() + "…"
+    return f'"{passage}"'
+
+
 def inputs_view(session: Session) -> str:
     lines = [f"### Inputs (session {session.id})"]
     if not session.inputs:
@@ -246,6 +275,8 @@ def inputs_view(session: Session) -> str:
         if record.inherited_from:
             line += f", carried over from session {record.inherited_from}"
         lines.append(line + (f': "{excerpt}"' if excerpt else ""))
+        if record.kind != "specification" or record.passage:
+            lines.append(f"  - Passage: {_passage_text(record)}")
         lines += [f"  - {table}" for table in record.tables]
         lines += [f"  - Note: {note}" for note in record.notes]
     recorded = {record.kind for record in session.inputs}
@@ -407,6 +438,17 @@ def summary_view(session: Session, *, results: list[CheckResult] | None = None) 
         f"- Inputs: {given or 'none yet'}"
         + (f"; still needed: {', '.join(missing)}" if missing else "")
     )
+    # What each input was recorded from, for the analyst to check (a specification
+    # only when its passage chose one of a message's tables).
+    for record in session.inputs:
+        if record.kind == "specification" and not record.passage:
+            continue
+        inherited = (
+            f", carried over from session {record.inherited_from}" if record.inherited_from else ""
+        )
+        lines.append(
+            f"  - {INPUT_KINDS[record.kind]}: {_passage_text(record, PASSAGE_CHARS)}{inherited}"
+        )
     lines.append(
         f"- Attributes: {origins['specification']} from the specification, "
         f"{origins['derived']} derived, {origins['audit']} audit; "

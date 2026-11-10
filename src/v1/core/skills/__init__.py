@@ -16,7 +16,8 @@ stays in memory.
 Skills under ``adf/`` belong to the adf-agent subagent alone. ``adf/`` has no
 ``SKILL.md`` of its own, so the loader (one level deep) skips it and the
 orchestrator never lists them; the subagent's prompt names each file's path
-for it to ``read_file`` when the rule that needs it applies.
+for it to ``read_file`` when the rule that needs it applies. Skills under
+``databricks/`` belong to the databricks-agent alone, the same way.
 """
 
 from __future__ import annotations

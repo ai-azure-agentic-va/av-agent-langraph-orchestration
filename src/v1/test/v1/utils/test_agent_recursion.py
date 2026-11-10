@@ -51,12 +51,16 @@ def test_build_agent_sets_recursion_limit_from_config() -> None:
         "get_azure_chat_model": agent_mod.get_azure_chat_model,
         "build_backend": agent_mod.build_backend,
         "ensure": agent_mod._ensure_harness_profiles_registered,
+        "build_sttm_graph": agent_mod.build_sttm_graph,
+        "install": agent_mod.install,
     }
     try:
         agent_mod.create_deep_agent = lambda **kwargs: tiny
         agent_mod.get_azure_chat_model = lambda: None
         agent_mod.build_backend = lambda: None
         agent_mod._ensure_harness_profiles_registered = lambda: None
+        agent_mod.build_sttm_graph = lambda *args: tiny
+        agent_mod.install = lambda graph: None
 
         built = agent_mod._build_agent_sync(checkpointer=None)
 
@@ -69,6 +73,8 @@ def test_build_agent_sets_recursion_limit_from_config() -> None:
         agent_mod.get_azure_chat_model = saved["get_azure_chat_model"]
         agent_mod.build_backend = saved["build_backend"]
         agent_mod._ensure_harness_profiles_registered = saved["ensure"]
+        agent_mod.build_sttm_graph = saved["build_sttm_graph"]
+        agent_mod.install = saved["install"]
 
 
 def _main() -> int:

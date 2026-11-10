@@ -657,6 +657,8 @@ def test_the_orchestrator_checks_its_answer_against_the_whole_conversation() -> 
             "get_azure_chat_model",
             "build_backend",
             "_ensure_harness_profiles_registered",
+            "build_sttm_graph",
+            "install",
         )
     }
     try:
@@ -666,6 +668,8 @@ def test_the_orchestrator_checks_its_answer_against_the_whole_conversation() -> 
         agent_mod.get_azure_chat_model = lambda: None
         agent_mod.build_backend = lambda: None
         agent_mod._ensure_harness_profiles_registered = lambda: None
+        agent_mod.build_sttm_graph = lambda *args: None
+        agent_mod.install = lambda graph: None
         agent_mod._build_agent_sync(checkpointer=None)
     finally:
         for name, value in saved.items():

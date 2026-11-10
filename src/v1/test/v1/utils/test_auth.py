@@ -700,6 +700,45 @@ def test_authenticate_email_prefers_email_claim_and_skips_non_email_usernames() 
     assert "email" not in principal.to_langgraph_user()
 
 
+def test_jwt_principal_carries_raw_oid() -> None:
+    principal = _profile_principal(oid="11111111-2222-3333-4444-555555555555")
+    user = principal.to_langgraph_user()
+    assert user["object_id"] == "11111111-2222-3333-4444-555555555555"
+    # The hashed identity is unchanged: the raw oid never leaks into it or the repr.
+    assert user["identity"].startswith("user:") and "11111111" not in user["identity"]
+    assert "11111111" not in repr(principal)
+
+
+def test_no_oid_means_no_object_id_key() -> None:
+    auth = JwtAuthenticator(_e2e_config())
+    claims = {
+        "iss": "https://idp/",
+        "aud": "api://app",
+        "exp": int(time.time()) + 3600,
+        "sub": "user-sub",
+        "scp": "api.read",
+    }
+    token = jwt.encode(claims, _RSA_PRIV, algorithm="RS256", headers={"kid": _RSA_KID})
+    with _env(APP_ENV="local", AGENT_AUTH_GRAPH_GROUPS_FALLBACK="false"):
+        principal = auth.authenticate_authorization("Bearer " + token)
+    assert principal.object_id is None
+    assert "object_id" not in principal.to_langgraph_user()
+
+
+def test_dev_principal_has_no_object_id() -> None:
+    principal = JwtAuthenticator(AuthConfig(mode="dev")).authenticate_authorization(None, {})
+    assert principal.object_id is None
+    assert "object_id" not in principal.to_langgraph_user()
+
+
+def test_no_databricks_token_fields() -> None:
+    principal = _profile_principal()
+    user = principal.to_langgraph_user()
+    assert "databricks_token_handle" not in user and "databricks_access_error" not in user
+    assert not hasattr(principal, "databricks_token_handle")
+    assert not hasattr(principal, "databricks_access_error")
+
+
 def test_dev_principal_reads_profile_headers() -> None:
     auth = JwtAuthenticator(AuthConfig(mode="dev"))
     principal = auth.authenticate_authorization(
