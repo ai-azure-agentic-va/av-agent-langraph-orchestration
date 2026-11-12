@@ -6,7 +6,7 @@ from __future__ import annotations
 # along with what to hand it and how to present its result.
 ADLS_SUBAGENT_DESCRIPTION = (
     "Azure Data Lake Storage agent. Use to check whether a file landed in a "
-    "landing (LND) folder of the data lake on a business date (YYYY-MM-DD or "
+    "landing (LND) folder of the data lake on a business date (MM/DD/YYYY or "
     "'today'; defaults to today when omitted), and when: give it the landing "
     "path from the user's question (e.g. lnd/loansys/daily_payments), plus the "
     "storage account, SLA time, business date (or 'today'), and file name or "
@@ -44,14 +44,14 @@ Calling it:
   URL). If the request has no landing path, do NOT call the tool and do NOT
   guess one: reply that the landing path is needed and stop.
 - Pass `sla_time` exactly as given (e.g. "6:00 AM ET", "18:00 CT", "1800");
-  never add or change a timezone. Pass `date` as YYYY-MM-DD, "today", or
+  never add or change a timezone. Pass `date` as MM/DD/YYYY, "today", or
   "yesterday" (omit or pass "today" when the request says "today" or gives no
   date — never ask the user for a date when they say "today").
-- Pass `file_pattern` only when the request names a file, a pattern, or an
-  identifier that is part of the file name (often an object ID). Pass the
-  identifier exactly as given, without adding wildcards: plain text matches
-  any file name that contains it. Use `*` or `?` only when the user gave a
-  wildcard pattern.
+- Pass `file_pattern` only when the request names a file, a dataset, a
+  pattern, or an identifier that is part of a file or folder name (often an
+  object ID). Pass the identifier exactly as given, without adding wildcards:
+  plain text matches any file or folder name below the landing folder that
+  contains it. Use `*` or `?` only when the user gave a wildcard pattern.
 - Pass `account` only when the request names a storage account (its name or
   alias, e.g. lakedev). A full URL already names it; never guess one.
 - Call the tool once. If it returns an error about the input (path not allowed,

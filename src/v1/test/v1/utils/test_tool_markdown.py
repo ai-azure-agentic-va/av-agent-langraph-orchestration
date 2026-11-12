@@ -88,7 +88,7 @@ FILE_ARRIVAL = """\
 
 Folders checked:
   archive: 1 file(s)
-    - lnd/src/feed/archive/FEED_20261012.csv | 152 bytes | created 2026-10-12 06:25 EDT (10:25 UTC)
+    - lnd/src/feed/archive/FEED_20261012.csv | 152 bytes | created 10/12/2026 06:25 EDT (10:25 UTC)
   error: none"""
 
 SAMPLES = (RECOVERY, TRIGGERS, DISCOVERY, RUN_TREE, FILE_ARRIVAL)
@@ -201,7 +201,7 @@ def test_a_file_arrival_check_keeps_its_folders_apart() -> None:
         "",
         "- **archive:** 1 file(s)",
         (
-            "  - lnd/src/feed/archive/FEED_20261012.csv | 152 bytes | created 2026-10-12 06:25 EDT "
+            "  - lnd/src/feed/archive/FEED_20261012.csv | 152 bytes | created 10/12/2026 06:25 EDT "
             "(10:25 UTC)"
         ),
         "- **error:** none",

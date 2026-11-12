@@ -1,6 +1,6 @@
 [project]
 name = "deepagent-copilotkit-agui-backend"
-version = "3.6.0"
+version = "3.7.0"
 description = "FastAPI + LangGraph DeepAgent + CopilotKit AG-UI + Postgres checkpointer demo"
 requires-python = ">=3.11"
 dependencies = [
@@ -109,10 +109,6 @@ dependencies = [
   "pdfminer.six==20260107",
   "pypdfium2==5.15.2",
   "pillow==13.0.0",
-  "databricks-sdk==0.156.0",
-  "sqlglot==30.24.0",
-  # Reads the per-environment workspace seed file (DATABRICKS_WORKSPACES_SEED_FILE).
-  "pyyaml==6.0.3",
 ]
 
 [build-system]
@@ -122,10 +118,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["v1*"]
-
-# The workspace registry's migrations are read next to their module at runtime.
-[tool.setuptools.package-data]
-"v1.core.workspace_registry" = ["migrations/*.sql"]
 
 [tool.ruff]
 line-length = 100

@@ -50,15 +50,6 @@ def _split_csv(value: Any) -> Any:
     return value
 
 
-_OBJECT_ID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-
-
-def is_object_id(value: str) -> bool:
-    """Whether ``value`` has the shape of an Entra object ID (a GUID)."""
-
-    return bool(_OBJECT_ID_RE.fullmatch(value))
-
-
 def truthy(value: str | None) -> bool:
     """Return True for the common truthy strings ('1', 'true', 'yes', 'on')."""
 

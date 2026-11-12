@@ -6,6 +6,7 @@ import asyncio
 import fnmatch
 import logging
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from time import perf_counter
@@ -13,7 +14,7 @@ from urllib.parse import unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from azure.storage.blob import BlobProperties
-from azure.storage.blob.aio import BlobServiceClient, ContainerClient
+from azure.storage.blob.aio import BlobPrefix, BlobServiceClient, ContainerClient
 from langchain_core.tools import tool
 
 from v1.core.config import get_settings
@@ -32,6 +33,9 @@ _FOLDER_STATUS = {
     "inbound": "File received; still being processed",
 }
 _WILDCARDS = frozenset("*?[")
+# A date folder: 2026-10-12, 20261012 or a run stamp such as 20261012102500.
+_DATE_FOLDER = re.compile(r"(\d{4})-?(\d{2})-?(\d{2})(?:[T_-]?\d{4,6})?")
+_US_DATE = re.compile(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})")
 _ET = ZoneInfo("America/New_York")
 _SLA_ZONES = {
     **dict.fromkeys(("ET", "EST", "EDT", "EASTERN"), ("ET", _ET)),
@@ -82,10 +86,20 @@ class _Request:
         return start.astimezone(UTC), end.astimezone(UTC)
 
 
+@dataclass(frozen=True)
+class _Dataset:
+    """A Spark ``*.parquet/`` folder reported as one file."""
+
+    name: str
+    size: int
+    creation_time: datetime
+    last_modified: datetime
+
+
 @dataclass
 class _FolderResult:
     folder: str
-    files: list[BlobProperties] = field(default_factory=list)  # newest first
+    files: list[BlobProperties | _Dataset] = field(default_factory=list)  # newest first
     seen: bool = False  # the listing returned anything, folder placeholders included
     truncated: bool = False
     error: str = ""
@@ -120,10 +134,12 @@ async def check_file_arrival(
         sla_time: Expected arrival time exactly as the user gave it, e.g. ``6:00 AM ET``,
                   ``18:00 CT`` or ``1800``. No timezone means ET; only ET, CT and PT
                   are accepted. Leave empty when the user gave none.
-        date: Business date ``YYYY-MM-DD``, ``today`` or ``yesterday``. Empty = today.
-        file_pattern: Optional file name filter, case-insensitive. Plain text such as
-                      an object ID matches any file name that contains it; use
-                      ``*`` or ``?`` only for a wildcard pattern, e.g. ``PMT_*.csv``.
+        date: Business date ``MM/DD/YYYY`` (``YYYY-MM-DD`` also works), ``today`` or
+              ``yesterday``. Empty = today.
+        file_pattern: Optional filter, case-insensitive. Plain text such as an object ID
+                      matches any file or folder name below the landing folder that
+                      contains it; use ``*`` or ``?`` only for a wildcard pattern,
+                      e.g. ``PMT_*.csv``.
         account: Storage account the user named (its alias or account name), e.g. ``lakedev``.
                  Leave empty when they named none; a full URL already names it.
     """
@@ -448,15 +464,16 @@ def _resolve_date(text: str, zone: ZoneInfo) -> date:
         return today
     if raw in ("yesterday", "yesterdays"):
         return today - timedelta(days=1)
+    us = _US_DATE.fullmatch(raw)
     try:
-        day = date.fromisoformat(raw)
+        day = date(int(us[3]), int(us[1]), int(us[2])) if us else date.fromisoformat(raw)
     except ValueError as exc:
         raise _InputError(
-            f"[adls-agent] Could not read the date '{text}'. Pass it as YYYY-MM-DD or 'today'."
+            f"[adls-agent] Could not read the date '{text}'. Pass it as MM/DD/YYYY or 'today'."
         ) from exc
     if day > today:
         raise _InputError(
-            f"[adls-agent] The date {day} is in the future; no file can have landed yet."
+            f"[adls-agent] The date {day:%m/%d/%Y} is in the future; no file can have landed yet."
         )
     return day
 
@@ -503,10 +520,9 @@ async def _list_folder(container: ContainerClient, request: _Request, folder: st
     listing = f"{request.prefix}/{folder}/"
     result, scanned = _FolderResult(folder), 0
     try:
-        async for blob in container.list_blobs(name_starts_with=listing, include=["metadata"]):
-            result.seen = True
+        async for blob in _folder_blobs(container, listing, request.day, result):
             # Gen2 folder placeholders (hdi_isfolder) are not files.
-            if (blob.metadata or {}).get("hdi_isfolder") == "true":
+            if (blob.metadata or {}).get("hdi_isfolder") == "true" or _ignored(blob.name):
                 continue
             scanned += 1
             if scanned > _MAX_LISTED:
@@ -520,23 +536,97 @@ async def _list_folder(container: ContainerClient, request: _Request, folder: st
             modified = blob.last_modified
             if modified is None or not start <= modified < end:
                 continue
-            if _name_matches(blob.name, request.pattern):
+            if _name_matches(blob.name[len(listing) :], request.pattern):
                 result.files.append(blob)
     except Exception as exc:  # noqa: BLE001 - reported to the model as a partial result
         result.error = _error_code(exc)
         logger.warning(
             "ADLS listing of %r failed (%s): %s", listing, type(exc).__name__, _truncate(exc)
         )
+    result.files = _as_datasets(result.files)
     result.files.sort(key=lambda blob: blob.last_modified, reverse=True)
     return result
 
 
-def _name_matches(name: str, pattern: str) -> bool:
-    """File-name match: wildcard when the filter has ``*``/``?``/``[``, otherwise "contains"."""
-    name, pattern = name.rsplit("/", 1)[-1].lower(), pattern.lower()
+async def _folder_blobs(
+    container: ContainerClient, root: str, day: date, result: _FolderResult
+) -> AsyncIterator[BlobProperties]:
+    """Blobs under ``root``, skipping date folders more than a day away from ``day``."""
+    folders, skipped = [], False
+    async for item in container.walk_blobs(name_starts_with=root, include=["metadata"]):
+        result.seen = True
+        if not isinstance(item, BlobPrefix):
+            yield item
+        elif _far_date_folder(item.name[len(root) :], day):
+            skipped = True
+        else:
+            folders.append(item.name)
+    if folders and not skipped:
+        # One listing of the folder is cheaper than one per subfolder.
+        async for blob in container.list_blobs(name_starts_with=root, include=["metadata"]):
+            if "/" in blob.name[len(root) :]:
+                yield blob
+        return
+    for folder in folders:
+        async for blob in container.list_blobs(name_starts_with=folder, include=["metadata"]):
+            yield blob
+
+
+def _far_date_folder(name: str, day: date) -> bool:
+    """Whether ``name`` is a date folder more than one day from ``day``."""
+    match = _DATE_FOLDER.fullmatch(name.rstrip("/"))
+    if not match:
+        return False
+    try:
+        folder_day = date(int(match[1]), int(match[2]), int(match[3]))
+    except ValueError:
+        return False
+    return abs((folder_day - day).days) > 1
+
+
+def _ignored(name: str) -> bool:
+    """Whether the file name matches ADLS_IGNORED_FILE_PATTERNS, e.g. ``*.sig``."""
+    name = name.rsplit("/", 1)[-1].lower()
+    return any(fnmatch.fnmatchcase(name, p.lower()) for p in settings.adls_ignored_file_patterns)
+
+
+def _name_matches(path: str, pattern: str) -> bool:
+    """Filter on the path below the landing folder: a wildcard per name, else "contains"."""
+    path, pattern = path.lower(), pattern.lower()
     if _WILDCARDS.intersection(pattern):
-        return fnmatch.fnmatchcase(name, pattern)
-    return pattern in name
+        return any(fnmatch.fnmatchcase(part, pattern) for part in (path, *path.split("/")))
+    return pattern in path
+
+
+def _as_datasets(blobs: list[BlobProperties]) -> list[BlobProperties | _Dataset]:
+    """Spark part files reported as their ``*.parquet/`` folder."""
+    files, parts = [], {}
+    for blob in blobs:
+        if folder := _dataset_folder(blob.name):
+            parts.setdefault(folder, []).append(blob)
+        else:
+            files.append(blob)
+    for folder, members in parts.items():
+        files.append(
+            _Dataset(
+                name=folder,
+                size=sum(blob.size or 0 for blob in members),
+                creation_time=min(
+                    getattr(blob, "creation_time", None) or blob.last_modified for blob in members
+                ),
+                last_modified=max(blob.last_modified for blob in members),
+            )
+        )
+    return files
+
+
+def _dataset_folder(name: str) -> str:
+    """The ``….parquet/`` folder holding a file, or "" when there is none."""
+    folders = name.split("/")[:-1]
+    for i, folder in enumerate(folders):
+        if folder.lower().endswith(".parquet"):
+            return "/".join(folders[: i + 1]) + "/"
+    return ""
 
 
 async def _path_exists(container: ContainerClient, prefix: str) -> bool:
@@ -587,7 +677,7 @@ def _render(request: _Request, results: list[_FolderResult], exists: bool) -> st
             "landing path",
             f"{request.prefix} (account {request.alias}, container {request.filesystem})",
         ),
-        _field("business date", f"{request.day} ({request.zone.key})"),
+        _field("business date", f"{request.day:%m/%d/%Y} ({request.zone.key})"),
         _field("SLA given", _sla_line(request.sla)),
     ]
     if request.pattern:
@@ -643,7 +733,7 @@ def _miss_status(request: _Request, results: list[_FolderResult], exists: bool) 
     matching = f"matching '{request.pattern}' " if request.pattern else ""
     return (
         f"File not found for this date — no file {matching}under inbound, "
-        f"error or archive was last modified on {request.day}"
+        f"error or archive was last modified on {request.day:%m/%d/%Y}"
     )
 
 
@@ -692,7 +782,7 @@ def _sla_status(modified: datetime, sla: _Sla) -> str:
 def _format_time(moment: datetime, zone: ZoneInfo, sla: _Sla | None = None) -> str:
     local = moment.astimezone(zone)
     also = f"; {moment.astimezone(sla.due.tzinfo):%H:%M %Z}" if sla and sla.label != "ET" else ""
-    return f"{local:%Y-%m-%d %H:%M %Z} ({moment.astimezone(UTC):%H:%M} UTC{also})"
+    return f"{local:%m/%d/%Y %H:%M %Z} ({moment.astimezone(UTC):%H:%M} UTC{also})"
 
 
 def _clock(moment: datetime) -> str:

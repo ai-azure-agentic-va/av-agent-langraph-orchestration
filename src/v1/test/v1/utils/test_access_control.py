@@ -152,20 +152,15 @@ def _configured_path(value: str) -> Iterator[None]:
 
 @contextmanager
 def _caller(policy: AccessPolicy, *groups: str) -> Iterator[None]:
-    """Run with ``policy`` in force for a caller in ``groups``.
+    """Run with ``policy`` in force for a caller in ``groups``."""
 
-    The Databricks workspace rule (``databricks_unavailable``) is held off: these tests
-    are about the file, and whether Databricks is on depends on the local environment.
-    """
-
-    saved = (ac.get_access_policy, ac.groups_from_config, ac.databricks_unavailable)
+    saved = (ac.get_access_policy, ac.groups_from_config)
     ac.get_access_policy = lambda: policy
     ac.groups_from_config = lambda: groups
-    ac.databricks_unavailable = lambda _groups: False
     try:
         yield
     finally:
-        ac.get_access_policy, ac.groups_from_config, ac.databricks_unavailable = saved
+        ac.get_access_policy, ac.groups_from_config = saved
 
 
 @contextmanager
@@ -832,66 +827,10 @@ def _rejected(policy: AccessPolicy) -> str:
 
 def test_the_catalog_has_every_tool_and_subagent_the_backend_can_expose() -> None:
     tools, subagents = _known()
-    assert subagents == {_SERVICENOW, _ADF, _ADLS, _STTM, "databricks-agent"}
+    assert subagents == {_SERVICENOW, _ADF, _ADLS, _STTM}
     assert {"ls", "grep", "read_file", "task", "ai_search_tool", "read_url"} <= tools
     assert {"servicenow_search_knowledge", "find_pipelines", "check_file_arrival"} <= tools
     assert "sttm_start_session" in tools
-    assert {"search_tables", "run_sql", "find_failed_runs"} <= tools
-
-
-def test_a_caller_blocked_from_databricks_never_builds_its_client() -> None:
-    """A group the file blocks from databricks-agent never reaches the app's Databricks
-    client, though the same delegation does for a caller the file allows."""
-
-    from types import SimpleNamespace
-
-    import v1.core.tools.databricks.sql.tools as sql_tools
-    from v1.core.databricks_workspaces import Workspace
-    from v1.core.subagents import DATABRICKS_SUBAGENT
-    from v1.core.tools.databricks.sql.scope import DataScope
-    from v1.utils import databricks_client
-
-    hosts: list[str] = []
-
-    async def app_workspace_client(host: str) -> object:
-        hosts.append(host)
-        raise RuntimeError("stop here")
-
-    workspace = Workspace(alias="main", label="Databricks", host="https://ws",
-                          sql_warehouse_id="wh", data_allowlist=None, scope=DataScope(),
-                          jobs_enabled=True, groups=())
-    settings = SimpleNamespace(databricks_sql_timeout_seconds=5,
-                               databricks_sql_poll_interval_seconds=1,
-                               databricks_sql_max_rows_to_model=5,
-                               databricks_sql_max_rows_to_ui=5)
-    [run_sql] = [t for t in sql_tools.build_sql_tools(settings) if t.name == "run_sql"]
-    user = {"identity": "user:a", "object_id": "o1"}
-
-    async def delegate(_request: _ToolCallRequest) -> str:
-        # Stands in for the databricks-agent running its first tool.
-        return await run_sql.ainvoke({"query": "SELECT 1"})
-
-    roster = [SERVICENOW_SUBAGENT, DATABRICKS_SUBAGENT]
-    policy = _policy({_TEAM_A: {"blocked_subagents": ["databricks-agent"]}, _TEAM_B: {}})
-    saved = (sql_tools.app_workspace_client, sql_tools.run_workspace,
-             databricks_client.get_config)
-    sql_tools.app_workspace_client = app_workspace_client
-    sql_tools.run_workspace = lambda: (workspace, False)
-    databricks_client.get_config = lambda: {"configurable": {"langgraph_auth_user": user}}
-    try:
-        for group, reached in ((_TEAM_A, False), (_TEAM_B, True)):
-            hosts.clear()
-            with _caller(policy, group):
-                out = asyncio.run(
-                    AccessControlMiddleware(task_subagents=roster).awrap_tool_call(
-                        _delegation("databricks-agent", "call_30"), delegate
-                    )
-                )
-            assert (hosts == ["https://ws"]) is reached, (group, hosts)
-            assert isinstance(out, ToolMessage) is not reached, (group, out)
-    finally:
-        (sql_tools.app_workspace_client, sql_tools.run_workspace,
-         databricks_client.get_config) = saved
 
 
 def test_a_blocked_tool_the_backend_does_not_have_is_rejected() -> None:

@@ -33,7 +33,7 @@ except Exception:  # pragma: no cover - validated at runtime when signatures are
 from v1.utils.langsmith import public_auth_metadata
 from v1.utils.azure_key_vault import resolve_env_secret
 from v1.utils.graph_groups import GraphGroup, graph_groups_enabled, resolve_groups_via_graph
-from v1.utils.helper import hash_identifier, is_object_id, token_fingerprint, truthy
+from v1.utils.helper import hash_identifier, token_fingerprint, truthy
 
 try:  # pragma: no cover - exercised whenever langgraph_sdk is installed.
     from langgraph_sdk import Auth as _LangGraphAuth
@@ -190,9 +190,6 @@ class AuthenticatedPrincipal:
     # Kept out of `claims` and LangSmith metadata, which stay PII-free.
     name: str | None = field(default=None, repr=False)
     email: str | None = field(default=None, repr=False)
-    # Raw Entra object ID (``oid``), carried only for Databricks audit (query tags and
-    # the app log line). JWT path only; the dev principal leaves it None.
-    object_id: str | None = field(default=None, repr=False)
 
     @property
     def identity(self) -> str:
@@ -215,8 +212,6 @@ class AuthenticatedPrincipal:
             user["name"] = self.name
         if self.email:
             user["email"] = self.email
-        if self.object_id:
-            user["object_id"] = self.object_id
         return user
 
 
@@ -339,7 +334,6 @@ class JwtAuthenticator:
             token_fingerprint=token_fingerprint(token),
             name=_claim_str(claims, "name"),
             email=_claim_email(claims),
-            object_id=_claim_str(claims, "oid"),
         )
 
     def _dev_principal(
@@ -621,42 +615,10 @@ def _mapped_groups(
     policy = _access_policy()
     if policy is None:
         return ()
-    exported = policy.export_groups(
+    return policy.export_groups(
         [*claim_groups, *(group.id for group in graph_groups)],
         {group.id: group.display_name for group in graph_groups},
     )
-    return tuple(sorted({*exported, *_databricks_groups(claim_groups, graph_groups)}))
-
-
-def _databricks_groups(
-    claim_groups: Sequence[str], graph_groups: Sequence[GraphGroup] = ()
-) -> set[str]:
-    """The caller's groups that Databricks decides on, each in its configured form.
-
-    Databricks workspaces and admin rights are granted by group in the workspace
-    registry, not in the access-control file, so those groups are exported too
-    (see ``v1.core.databricks_workspaces.databricks_group_keys``). A workspace may
-    name a group by object id or display name. A display name shaped like an
-    object id is not used: anyone can name a group after another group's id,
-    which would then pass for that group downstream.
-    """
-
-    try:
-        from v1.core.databricks_workspaces import databricks_group_keys
-
-        keys = {key.strip().lower(): key for key in databricks_group_keys()}
-    except Exception:  # noqa: BLE001 - group export must never break auth
-        logger.warning("Databricks workspace groups unavailable; exporting none", exc_info=True)
-        return set()
-    if not keys:
-        return set()
-    candidates = [*claim_groups]
-    for graph_group in graph_groups:
-        candidates.append(graph_group.id)
-        name = (graph_group.display_name or "").strip()
-        if name and not (is_object_id(name) and name.lower() != graph_group.id.lower()):
-            candidates.append(name)
-    return {keys[key] for c in candidates if (key := c.strip().lower()) in keys}
 
 
 def _dev_groups(values: Sequence[str]) -> tuple[str, ...]:
@@ -669,7 +631,7 @@ def _dev_groups(values: Sequence[str]) -> tuple[str, ...]:
     policy = _access_policy()
     if policy is None:
         return ()
-    return tuple(sorted({*policy.dev_groups(values), *_databricks_groups(values)}))
+    return policy.dev_groups(values)
 
 
 def _claim_email(claims: Mapping[str, Any]) -> str | None:

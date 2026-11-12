@@ -9,11 +9,14 @@ import os
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from azure.storage.blob.aio import BlobPrefix
+
 import v1.core.tools.adls.tools as adls
 
 ET = ZoneInfo("America/New_York")
 FEED = "lnd/loansys/daily_payments"
 DAY = "2026-10-12"
+US_DAY = "10/12/2026"
 ON_DAY = datetime(2026, 10, 12, 10, 25, tzinfo=UTC)  # 06:25 EDT
 DAY_BEFORE = datetime(2026, 10, 11, 23, 0, tzinfo=UTC)  # 19:00 EDT on the 11th
 LATE_EVENING = datetime(2026, 10, 13, 3, 30, tzinfo=UTC)  # 23:30 EDT on the 12th
@@ -38,11 +41,13 @@ class _Settings:
         allowed: list[str] | None = None,
         default: str | None = None,
         timezone: str = "America/New_York",
+        ignored: list[str] | None = None,
     ) -> None:
         self.adls_account_mapping = {"datalake": _ACCOUNT} if mapping is None else mapping
         self.adls_allowed_path_prefixes = ["lnd/"] if allowed is None else allowed
         self.adls_default_account = default
         self.adls_business_timezone = timezone
+        self.adls_ignored_file_patterns = ["*.sig"] if ignored is None else ignored
 
 
 class _FakeBlob:
@@ -73,6 +78,8 @@ class _FakeContainer:
         self._files = files
         self._failing = failing_prefixes
         self.list_calls = 0
+        self.existence_checks = 0
+        self.prefixes: list[str] = []
         self.opened: list[tuple[str, str]] = []
 
     def _entries(self) -> list[_FakeBlob]:
@@ -92,6 +99,8 @@ class _FakeContainer:
         results_per_page: int | None = None,
     ):
         self.list_calls += 1
+        self.existence_checks += results_per_page == 1
+        self.prefixes.append(name_starts_with)
 
         async def _gen():
             if any(name_starts_with.startswith(prefix) for prefix in self._failing):
@@ -99,6 +108,31 @@ class _FakeContainer:
             for blob in self._entries():
                 if blob.name.startswith(name_starts_with):
                     yield blob
+
+        return _gen()
+
+    def walk_blobs(
+        self, name_starts_with: str = "", include: list[str] | None = None, delimiter: str = "/"
+    ):
+        """One level: files and folder placeholders as blobs, deeper folders as BlobPrefix."""
+        self.list_calls += 1
+        self.prefixes.append(name_starts_with)
+
+        async def _gen():
+            if any(name_starts_with.startswith(prefix) for prefix in self._failing):
+                raise _StorageError()
+            folders: set[str] = set()
+            for blob in self._entries():
+                if not blob.name.startswith(name_starts_with):
+                    continue
+                rest = blob.name[len(name_starts_with) :]
+                if delimiter not in rest:
+                    yield blob
+                elif (
+                    folder := name_starts_with + rest.split(delimiter)[0] + delimiter
+                ) not in folders:
+                    folders.add(folder)
+                    yield BlobPrefix(prefix=folder)
 
         return _gen()
 
@@ -180,7 +214,7 @@ def test_status_follows_the_landing_folder() -> None:
         {
             "name": "previous_day_file_is_not_counted",
             "files": {f"{FEED}/archive/x/DAILY_PAYMENTS_20261011.csv": DAY_BEFORE},
-            "expected": f"File not found for this date — no file under inbound, error or archive was last modified on {DAY}",
+            "expected": f"File not found for this date — no file under inbound, error or archive was last modified on {US_DAY}",
         },
         {
             "name": "existing_empty_feed_is_not_found",
@@ -200,8 +234,8 @@ def test_arrival_and_sla_are_reported_as_facts() -> None:
             "args": {"sla_time": "6:00 AM ET"},
             "expected": [
                 "  SLA given    : 6:00 AM ET → 6:00 AM ET",
-                "  business date: 2026-10-12 (America/New_York)",
-                "  arrived      : 2026-10-12 06:25 EDT (10:25 UTC)",
+                "  business date: 10/12/2026 (America/New_York)",
+                "  arrived      : 10/12/2026 06:25 EDT (10:25 UTC)",
                 "  SLA status   : Late by 25 min",
             ],
             "absent": [],
@@ -235,7 +269,7 @@ def test_arrival_and_sla_are_reported_as_facts() -> None:
             "args": {"sla_time": "7:00 AM CST"},
             "expected": [
                 "  SLA given    : 7:00 AM CST → 7:00 AM CT (8:00 AM ET)",
-                "  arrived      : 2026-10-12 06:25 EDT (10:25 UTC; 05:25 CDT)",
+                "  arrived      : 10/12/2026 06:25 EDT (10:25 UTC; 05:25 CDT)",
                 "  SLA status   : On time",
             ],
             "absent": ["Late by"],
@@ -245,7 +279,7 @@ def test_arrival_and_sla_are_reported_as_facts() -> None:
             "args": {"sla_time": "5 AM PT"},
             "expected": [
                 "  SLA given    : 5 AM PT → 5:00 AM PT (8:00 AM ET)",
-                "  arrived      : 2026-10-12 06:25 EDT (10:25 UTC; 03:25 PDT)",
+                "  arrived      : 10/12/2026 06:25 EDT (10:25 UTC; 03:25 PDT)",
                 "  SLA status   : On time",
             ],
             "absent": ["Late by"],
@@ -288,7 +322,7 @@ def test_winter_times_use_standard_time() -> None:
     files = {f"{FEED}/archive/x/DAILY_PAYMENTS_20251104.csv": winter}
     out = _check(_FakeContainer(files), date="2025-11-04", sla_time="7:00 AM CT")
     assert "  SLA given    : 7:00 AM CT → 7:00 AM CT (8:00 AM ET)" in out, out
-    assert "  arrived      : 2025-11-04 09:00 EST (14:00 UTC; 08:00 CST)" in out, out
+    assert "  arrived      : 11/04/2025 09:00 EST (14:00 UTC; 08:00 CST)" in out, out
 
 
 def test_daylight_saving_days_use_the_local_day() -> None:
@@ -392,8 +426,8 @@ def test_rejected_inputs_never_touch_storage() -> None:
         },
         {
             "name": "bad_date_format",
-            "args": {"date": "10/12/2026"},
-            "expected": "Pass it as YYYY-MM-DD",
+            "args": {"date": "12.10.2026"},
+            "expected": "Pass it as MM/DD/YYYY",
         },
         {
             "name": "impossible_date",
@@ -797,8 +831,8 @@ def test_refusals_failures_and_outcomes_are_logged() -> None:
         {
             "name": "input_mistake_is_info_only",
             "container": _FakeContainer({}),
-            "args": {"date": "10/12/2026"},
-            "expected": [(logging.INFO, "Could not read the date '10/12/2026'")],
+            "args": {"date": "12.10.2026"},
+            "expected": [(logging.INFO, "Could not read the date '12.10.2026'")],
         },
         {
             "name": "unreadable_folder_warns_and_outcome_names_it",
@@ -873,8 +907,8 @@ def test_file_listing_details() -> None:
             "args": {},
             "expected": [
                 (
-                    f"    - {FEED}/error/PMT.csv | 152 bytes | created 2026-10-12 06:25 EDT (10:25 UTC) "
-                    "| lastModified 2026-10-12 06:25 EDT (10:25 UTC)"
+                    f"    - {FEED}/error/PMT.csv | 152 bytes | created 10/12/2026 06:25 EDT (10:25 UTC) "
+                    "| lastModified 10/12/2026 06:25 EDT (10:25 UTC)"
                 )
             ],
             "absent": [],
@@ -952,7 +986,7 @@ def test_file_filter_matches_object_ids_by_contains() -> None:
             "expected": [
                 (
                     "status       : File not found for this date — no file matching 'zz9999' under "
-                    f"inbound, error or archive was last modified on {DAY}"
+                    f"inbound, error or archive was last modified on {US_DAY}"
                 )
             ],
             "absent": ["Incorrect path", "  file         :"],
@@ -978,7 +1012,7 @@ def test_file_filter_matches_object_ids_by_contains() -> None:
             "absent": ["  file         :"],
         },
         {
-            "name": "folder_names_are_not_matched",
+            "name": "landing_path_folders_are_not_matched",
             "pattern": "loansys",
             "expected": ["status       : File not found for this date — no file matching 'loansys'"],
             "absent": ["  file         :"],
@@ -992,10 +1026,210 @@ def test_file_filter_matches_object_ids_by_contains() -> None:
             assert line not in out, (test_data["name"], line)
 
 
+def test_date_folders_far_from_the_day_are_not_read() -> None:
+    old = {f"{FEED}/archive/2026-09-{day:02d}/old.csv": DAY_BEFORE for day in range(1, 7)}
+    test_cases = [
+        {
+            "name": "todays_folder_is_reached",
+            "files": {**old, f"{FEED}/archive/2026-10-12/today.csv": ON_DAY},
+            "expected": f"{FEED}/archive/2026-10-12/today.csv",
+        },
+        {
+            "name": "next_days_folder_is_read",
+            "files": {**old, f"{FEED}/archive/2026-10-13/late.csv": LATE_EVENING},
+            "expected": f"{FEED}/archive/2026-10-13/late.csv",
+        },
+        {
+            "name": "previous_days_folder_is_read",
+            "files": {**old, f"{FEED}/archive/2026-10-11/reloaded.csv": ON_DAY},
+            "expected": f"{FEED}/archive/2026-10-11/reloaded.csv",
+        },
+        {
+            "name": "timestamp_folders_count_as_dates",
+            "files": {
+                **{
+                    f"{FEED}/archive/202609{day:02d}101500/old.csv": DAY_BEFORE
+                    for day in range(1, 7)
+                },
+                f"{FEED}/archive/20261012102500/today.csv": ON_DAY,
+            },
+            "expected": f"{FEED}/archive/20261012102500/today.csv",
+        },
+        {
+            "name": "other_folders_are_still_read",
+            "files": {**old, f"{FEED}/archive/manual/today.csv": ON_DAY},
+            "expected": f"{FEED}/archive/manual/today.csv",
+        },
+    ]
+    saved, adls._MAX_LISTED = adls._MAX_LISTED, 3
+    try:
+        for test_data in test_cases:
+            container = _FakeContainer(test_data["files"])
+            out = _check(container)
+            assert f"  file         : {test_data['expected']}" in out, (test_data["name"], out)
+            assert "Partial result" not in out, (test_data["name"], out)
+            read = [p for p in container.prefixes if "/2026-09-" in p or "/202609" in p]
+            assert not read, (test_data["name"], read)
+    finally:
+        adls._MAX_LISTED = saved
+
+
+def test_each_file_is_listed_once() -> None:
+    test_cases = [
+        {
+            "name": "top_level_and_subfolder",
+            "files": {f"{FEED}/archive/top.csv": ON_DAY, f"{FEED}/archive/sub/deep.csv": ON_DAY},
+        },
+        {
+            "name": "top_level_beside_date_folders",
+            "files": {
+                f"{FEED}/archive/top.csv": ON_DAY,
+                f"{FEED}/archive/2026-10-12/today.csv": ON_DAY,
+                f"{FEED}/archive/2026-09-01/old.csv": ON_DAY,
+            },
+        },
+    ]
+    for test_data in test_cases:
+        out = _check(_FakeContainer(test_data["files"]))
+        assert "  archive: 2 file(s)" in out, (test_data["name"], out)
+
+
+def test_filter_matches_folders_below_the_landing_folder() -> None:
+    dataset = f"{FEED}/archive/2026-10-12/sales_activities_20261012_000000.parquet/"
+    files = {
+        f"{dataset}part-00000-a1.snappy.parquet": ON_DAY,
+        f"{FEED}/inbound/12345/data.csv": ON_DAY + timedelta(minutes=5),
+        f"{FEED}/error/OTHER_20261012.csv": ON_DAY,
+    }
+    test_cases = [
+        {"name": "dataset_folder", "args": {"file_pattern": "sales_activities"}, "file": dataset},
+        {"name": "dataset_wildcard", "args": {"file_pattern": "sales_*.parquet"}, "file": dataset},
+        {"name": "dataset_path", "args": {"path": dataset.rstrip("/")}, "file": dataset},
+        {
+            "name": "object_id_in_a_folder",
+            "args": {"file_pattern": "12345"},
+            "file": f"{FEED}/inbound/12345/data.csv",
+        },
+    ]
+    for test_data in test_cases:
+        out = _check(_FakeContainer(files), **test_data["args"])
+        assert f"  file         : {test_data['file']}" in out, (test_data["name"], out)
+        assert "OTHER_20261012.csv" not in out, (test_data["name"], out)
+
+
+def test_spark_datasets_are_shown_as_one_item() -> None:
+    dataset = f"{FEED}/archive/2026-10-12/sales_loans_20261012_000000.parquet/"
+    single = f"{FEED}/archive/2026-10-12/snapshot_x.parquet"
+    files = {
+        f"{dataset}part-00000-a1.snappy.parquet": ON_DAY,
+        f"{dataset}part-00001-a1.snappy.parquet": ON_DAY + timedelta(seconds=20),
+        f"{dataset}_SUCCESS": ON_DAY + timedelta(seconds=30),
+        single: ON_DAY - timedelta(minutes=1),
+    }
+    lines = _check(_FakeContainer(files)).splitlines()
+    assert f"  file         : {dataset}" in lines, lines
+    assert "  archive: 2 file(s)" in lines, lines
+    assert any(line.startswith(f"    - {dataset} | 456 bytes |") for line in lines), lines
+    assert any(line.startswith(f"    - {single} | 152 bytes |") for line in lines), lines
+    assert not any("part-0000" in line or "_SUCCESS" in line for line in lines), lines
+
+
+def test_sla_is_measured_on_the_latest_file() -> None:
+    older = f"{FEED}/error/DAILY_PAYMENTS_20261012.csv"
+    newer = f"{FEED}/archive/x/DAILY_PAYMENTS_20261012.csv"
+    files = {older: ON_DAY - timedelta(minutes=25), newer: ON_DAY}
+    out = _check(_FakeContainer(files), sla_time="6:10 AM ET")
+    assert "  status       : File received and processed successfully" in out, out
+    assert f"  file         : {newer}" in out, out
+    assert "  SLA status   : Late by 15 min" in out, out
+    assert f"    - {older} |" in out, out
+
+
+def test_signature_files_are_never_listed() -> None:
+    data = f"{FEED}/archive/2026-10-12/snapshot_x.parquet"
+    sig = f"{FEED}/archive/2026-10-12/snapshot_x.sig"
+    test_cases = [
+        {
+            "name": "newer_sig_is_not_the_file_or_the_sla",
+            "files": {data: ON_DAY, sig: ON_DAY + timedelta(seconds=13)},
+            "settings": _Settings(),
+            "expected": [
+                f"  file         : {data}",
+                "  SLA status   : On time",
+                "  archive: 1 file(s)",
+            ],
+            "absent": ["snapshot_x.sig"],
+        },
+        {
+            "name": "any_case",
+            "files": {data: ON_DAY, sig.replace(".sig", ".SIG"): ON_DAY + timedelta(seconds=13)},
+            "settings": _Settings(),
+            "expected": [f"  file         : {data}"],
+            "absent": ["snapshot_x.SIG"],
+        },
+        {
+            "name": "only_a_sig_landed",
+            "files": {sig: ON_DAY},
+            "settings": _Settings(),
+            "expected": ["  status       : File not found for this date"],
+            "absent": ["Incorrect path", "snapshot_x.sig"],
+        },
+        {
+            "name": "patterns_come_from_settings",
+            "files": {data: ON_DAY, f"{FEED}/archive/2026-10-12/_SUCCESS": ON_DAY},
+            "settings": _Settings(ignored=["*.sig", "_SUCCESS"]),
+            "expected": ["  archive: 1 file(s)"],
+            "absent": ["_SUCCESS"],
+        },
+        {
+            "name": "empty_setting_lists_everything",
+            "files": {data: ON_DAY, sig: ON_DAY + timedelta(seconds=13)},
+            "settings": _Settings(ignored=[]),
+            "expected": [f"  file         : {sig}", "  archive: 2 file(s)"],
+            "absent": [],
+        },
+    ]
+    for test_data in test_cases:
+        out = _check(
+            _FakeContainer(test_data["files"]), test_data["settings"], sla_time="6:25 AM ET"
+        )
+        for line in test_data["expected"]:
+            assert line in out, (test_data["name"], line, out)
+        for line in test_data["absent"]:
+            assert line not in out, (test_data["name"], line, out)
+
+
+def test_signature_files_are_ignored_by_default() -> None:
+    from v1.core.config import Settings
+
+    env = {
+        "ADLS_ACCOUNT_MAPPING": json.dumps({"datalake": _ACCOUNT}),
+        "ADLS_ALLOWED_PATH_PREFIXES": "lnd/",
+    }
+    saved = {key: os.environ.get(key) for key in (*env, "ADLS_IGNORED_FILE_PATTERNS")}
+    os.environ.update(env)
+    os.environ.pop("ADLS_IGNORED_FILE_PATTERNS", None)
+    try:
+        settings = Settings(_env_file=None)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    files = {
+        f"{FEED}/archive/x/data.csv": ON_DAY,
+        f"{FEED}/archive/x/data.sig": ON_DAY + timedelta(seconds=5),
+    }
+    out = _check(_FakeContainer(files), settings)
+    assert f"  file         : {FEED}/archive/x/data.csv" in out, out
+    assert "data.sig" not in out, out
+
+
 def test_existence_is_checked_only_when_the_folders_list_nothing() -> None:
     not_found = (
         "File not found for this date — no file under inbound, error or archive was last "
-        f"modified on {DAY}"
+        f"modified on {US_DAY}"
     )
     test_cases = [
         {
@@ -1003,14 +1237,14 @@ def test_existence_is_checked_only_when_the_folders_list_nothing() -> None:
             "files": {f"{FEED}/archive/x/OLD.csv": DAY_BEFORE},
             "failing": (),
             "status": not_found,
-            "calls": 3,
+            "checks": 0,
         },
         {
             "name": "feed_with_empty_landing_folders_exists",
             "files": {f"{FEED}/readme.txt": DAY_BEFORE},
             "failing": (),
             "status": not_found,
-            "calls": 4,
+            "checks": 1,
         },
         {
             "name": "nothing_under_the_path",
@@ -1020,21 +1254,24 @@ def test_existence_is_checked_only_when_the_folders_list_nothing() -> None:
                 f"Incorrect path — nothing exists under '{FEED}/'. The landing path given is "
                 "wrong, not the file missing; ask the user to check the path."
             ),
-            "calls": 4,
+            "checks": 1,
         },
         {
             "name": "unreadable_path_is_not_an_incorrect_path",
             "files": {},
             "failing": (f"{FEED}/",),
             "status": "Partial result — no file found in the folders that could be read",
-            "calls": 4,
+            "checks": 1,
         },
     ]
     for test_data in test_cases:
         container = _FakeContainer(test_data["files"], test_data["failing"])
         lines = _check(container).splitlines()
         assert f"  status       : {test_data['status']}" in lines, (test_data["name"], lines)
-        assert container.list_calls == test_data["calls"], (test_data["name"], container.list_calls)
+        assert container.existence_checks == test_data["checks"], (
+            test_data["name"],
+            container.existence_checks,
+        )
 
 
 def test_the_whole_report_is_laid_out_exactly() -> None:
@@ -1054,11 +1291,11 @@ def test_the_whole_report_is_laid_out_exactly() -> None:
         [
             "[adls-agent] File arrival check",
             f"  landing path : {FEED} (account datalake, container adls)",
-            "  business date: 2026-10-12 (America/New_York)",
+            "  business date: 10/12/2026 (America/New_York)",
             "  SLA given    : 5:00 AM CT → 5:00 AM CT (6:00 AM ET)",
             "  file filter  : name contains 'daily_payments' (case-insensitive)",
             "  status       : File received and processed successfully",
-            "  arrived      : 2026-10-12 07:05 EDT (11:05 UTC; 06:05 CDT)",
+            "  arrived      : 10/12/2026 07:05 EDT (11:05 UTC; 06:05 CDT)",
             "  SLA status   : Late by 65 min",
             f"  file         : {newer}",
             (
@@ -1069,12 +1306,12 @@ def test_the_whole_report_is_laid_out_exactly() -> None:
             "Folders checked:",
             "  archive: 2 file(s)",
             (
-                f"    - {newer} | 152 bytes | created 2026-10-12 07:05 EDT (11:05 UTC) "
-                "| lastModified 2026-10-12 07:05 EDT (11:05 UTC)"
+                f"    - {newer} | 152 bytes | created 10/12/2026 07:05 EDT (11:05 UTC) "
+                "| lastModified 10/12/2026 07:05 EDT (11:05 UTC)"
             ),
             (
-                f"    - {older} | 152 bytes | created 2026-10-12 06:25 EDT (10:25 UTC) "
-                "| lastModified 2026-10-12 06:25 EDT (10:25 UTC)"
+                f"    - {older} | 152 bytes | created 10/12/2026 06:25 EDT (10:25 UTC) "
+                "| lastModified 10/12/2026 06:25 EDT (10:25 UTC)"
             ),
             "  error: could not be read (AuthorizationPermissionMismatch, HTTP 403)",
             "  inbound: none",
@@ -1166,9 +1403,28 @@ def test_relative_dates() -> None:
     ]
     for test_data in test_cases:
         out = _check(_FakeContainer({}), date=test_data["date"])
-        assert f"  business date: {test_data['expected']} (America/New_York)" in out, test_data[
-            "name"
-        ]
+        expected = f"  business date: {test_data['expected']:%m/%d/%Y} (America/New_York)"
+        assert expected in out, test_data["name"]
+
+
+def test_us_dates_are_read_and_shown() -> None:
+    files = {f"{FEED}/archive/x/DAILY_PAYMENTS_20261012.csv": ON_DAY}
+    for given in ("10/12/2026", "10-12-2026", "on 10/12/2026.", "2026-10-12"):
+        out = _check(_FakeContainer(files), date=given)
+        assert f"  business date: {US_DAY} (America/New_York)" in out, (given, out)
+        assert f"  arrived      : {US_DAY} 06:25 EDT (10:25 UTC)" in out, (given, out)
+    out = _check(_FakeContainer({}), date="1/5/2026")
+    assert "  business date: 01/05/2026 (America/New_York)" in out, out
+    test_cases = [
+        {
+            "date": "13/01/2026",
+            "expected": "Could not read the date '13/01/2026'. Pass it as MM/DD/YYYY",
+        },
+        {"date": "01/01/2999", "expected": "The date 01/01/2999 is in the future"},
+    ]
+    for test_data in test_cases:
+        out = _check(_FakeContainer({}), date=test_data["date"])
+        assert test_data["expected"] in out, (test_data["date"], out)
 
 
 def test_tool_is_the_only_adls_tool_and_wired_on_the_subagent() -> None:

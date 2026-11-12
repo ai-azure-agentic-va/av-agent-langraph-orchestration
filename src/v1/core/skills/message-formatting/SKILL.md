@@ -6,8 +6,7 @@ description: >-
   answer-first readability (the status or outcome on the first line, in bold,
   then scannable detail), document/inventory lists, URL and hyperlink rules,
   ServiceNow incident list rows and full detail cards (reproduced verbatim),
-  relayed Data Factory answers, relayed Databricks job run answers (ending with
-  their "Run and task details" block), data-lake file arrival results, ASCII diagrams, [n] citation mechanics,
+  relayed Data Factory answers, data-lake file arrival results, ASCII diagrams, [n] citation mechanics,
   synthesis/non-repetition, and the closing follow-up block. Use whenever an answer reports a status or outcome
   (is it running, did it succeed or fail, was it recovered, is the SLA met, are
   the triggers in the expected state), lists documents or workbooks, shows one
@@ -92,8 +91,6 @@ Where the first line is already fixed, it wins over this section:
   below);
 - a Data Factory answer is relayed whole, and its first line already states the
   outcome (see "Data Factory answers" below);
-- a Databricks job run answer is relayed whole, and its first line
-  already states the outcome (see "Databricks job run answers" below);
 - a refusal stays the brief refusal the system prompt prescribes.
 
 ## Data Factory answers — relayed whole
@@ -124,28 +121,13 @@ it.
   you keep an `[open Monitor]` link, keep the subagent's note about widening the
   time range with it.
 
-## Databricks job run answers — relayed whole
-
-When your reply carries a Databricks job run answer, the subagent has already
-written it in order: a bold outcome line naming the run, its workspace
-and the result ("**Run 987654321098765 in dbw-ops failed.**"), then the cause
-and a suggested fix, then the "Run and task details" block. Carry it into your
-reply as written — bold outcome line first, then the explanation, then the
-"Run and task details" block verbatim (every line, value and link, in the same
-order) — and add only the follow-up block after it.
-
-- Do not put a headline, title or summary of your own above it, and do not move
-  its outcome line down or merge it into a sentence.
-- Never turn the block into a table or into prose, and never drop its Workspace
-  line. Run IDs, job IDs, links, state messages and error text stay verbatim.
-
 ## Data Lake answers — file arrival checks
 
 When your reply carries a data-lake file arrival result:
 
 - **First line:** the status in bold, then the file and where and when it
   landed: "**Processed successfully** — `DAILY_PAYMENTS_20261012.csv` arrived
-  2026-10-12 06:25 EDT in `lnd/loansys/daily_payments/archive`". Use the tool's
+  10/12/2026 06:25 EDT in `lnd/loansys/daily_payments/archive`". Use the tool's
   status: Processed successfully (archive), Processing failed (error), Still
   being processed (inbound), Not found for this date, Incorrect path, or
   Partial result.
@@ -155,6 +137,8 @@ When your reply carries a data-lake file arrival result:
 - Copy the tool's `SLA given`, `SLA status`, and `arrived` values whole (ET
   equivalent, "read as ET" note, CT or PT arrival time).
 - Keep paths, file names, byte counts and timestamps verbatim. No tables.
+- Write every date as MM/DD/YYYY, as the tool gives it; never rewrite one as
+  YYYY-MM-DD. Dates inside folder and file names stay exactly as stored.
 - **Incorrect path:** say the path is incorrect, quote it, and ask the user to
   check it. Never call it a missing file and never suggest another path.
 
@@ -240,10 +224,6 @@ document**:
   your answer, with that time, and never in the follow-up block. They are not
   sources: they never become `[n]` markers. Never write, shorten or complete
   such a link yourself; a file with no link has none.
-- **EXCEPTION — Databricks run details:** the `Run URL:` line of a Databricks
-  job run answer's "Run and task details" block stays exactly as given, as the
-  bare URL; never turn it into a `[text](url)` link, and don't add a second link
-  for the run elsewhere.
 
 ## Diagrams
 

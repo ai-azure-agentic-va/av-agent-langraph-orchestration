@@ -338,27 +338,6 @@ def _acquire_obo_graph_token(user_assertion: str, timeout: float) -> str:
     handler returns ``()`` and logs the cause. Never logs the secret or assertion.
     """
 
-    try:
-        payload = acquire_obo_token(user_assertion, _obo_scope(), timeout)
-    except urllib.error.HTTPError as exc:
-        detail = json.dumps(exc.aad_error, default=str)  # type: ignore[attr-defined]
-        logger.warning("OBO token exchange failed HTTP %s: %s", exc.code, detail)
-        raise
-
-    access_token = payload.get("access_token")
-    if not isinstance(access_token, str) or not access_token:
-        raise RuntimeError("OBO token response missing access_token")
-    return access_token
-
-
-def acquire_obo_token(user_assertion: str, scope: str, timeout: float) -> dict[str, Any]:
-    """Exchange the caller's access token on-behalf-of for ``scope``; return the token response.
-
-    Raises on misconfiguration, a non-JSON-object response, or an Entra error; an
-    ``HTTPError`` carries the parsed Entra error (``_read_aad_error``) as ``exc.aad_error``,
-    since its body can be read only once. Logs nothing; callers log without the assertion.
-    """
-
     tenant = _obo_tenant()
     client_id = _obo_client_id()
     client_secret = _obo_client_secret()
@@ -373,7 +352,7 @@ def acquire_obo_token(user_assertion: str, scope: str, timeout: float) -> dict[s
             "client_id": client_id,
             "client_secret": client_secret,
             "assertion": user_assertion,
-            "scope": scope,
+            "scope": _obo_scope(),
             "requested_token_use": "on_behalf_of",
         }
     ).encode("ascii")
@@ -388,11 +367,18 @@ def acquire_obo_token(user_assertion: str, scope: str, timeout: float) -> dict[s
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        exc.aad_error = _read_aad_error(exc)  # type: ignore[attr-defined]
+        detail = _read_aad_error(exc)
+        logger.warning(
+            "OBO token exchange failed HTTP %s: %s",
+            exc.code,
+            json.dumps(detail, default=str),
+        )
         raise
-    if not isinstance(payload, dict):
-        raise RuntimeError("OBO token response is not a JSON object")
-    return payload
+
+    access_token = payload.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise RuntimeError("OBO token response missing access_token")
+    return access_token
 
 
 def _read_aad_error(exc: urllib.error.HTTPError) -> dict[str, Any]:
@@ -456,7 +442,6 @@ def _decode_token_identity(token: str) -> dict[str, Any]:
 
 __all__ = [
     "GraphGroup",
-    "acquire_obo_token",
     "graph_groups_enabled",
     "obo_configured",
     "resolve_groups_via_graph",

@@ -1,28 +1,11 @@
 
 from __future__ import annotations
-import os
-from collections.abc import Sequence
 from functools import lru_cache
 from typing import Annotated, Any
-from dotenv import dotenv_values
 from pydantic import Field, AliasChoices, BeforeValidator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
-from v1.utils.helper import _split_csv, is_object_id
+from v1.utils.helper import _split_csv
 StringList = Annotated[list[str], BeforeValidator(_split_csv), NoDecode]
-
-# Databricks settings no longer read: workspaces live in the registry (seeded from
-# DATABRICKS_WORKSPACES_SEED_FILE, edited on the admin page), and Databricks calls
-# authenticate as the app, so there is no user-token key or CLI profile. Startup names
-# any still set.
-RETIRED_DATABRICKS_SETTINGS = (
-    "DATABRICKS_WORKSPACES",
-    "DATABRICKS_HOST",
-    "DATABRICKS_SQL_WAREHOUSE_ID",
-    "DATABRICKS_DATA_ALLOWLIST",
-    "DATABRICKS_JOBS_ENABLED",
-    "DATABRICKS_TOKEN_ENCRYPTION_KEY",
-    "DATABRICKS_CONFIG_PROFILE",
-)
 
 class Settings(BaseSettings):
     """Runtime configuration for the demo backend."""
@@ -153,55 +136,10 @@ class Settings(BaseSettings):
         alias="ADLS_BUSINESS_TIMEZONE",
         description="IANA timezone that defines the business day for ADLS checks.",
     )
-    # Databricks (databricks-agent). Every call authenticates as the app (shared Azure
-    # credential); the caller is recorded in query tags and the app log.
-    databricks_switch: bool = Field(
-        default=False,
-        alias="DATABRICKS_ENABLED",
-        description=(
-            "Turns the databricks-agent on. Its workspaces come from the registry "
-            "(see v1.core.databricks_workspaces), not from settings."
-        ),
-    )
-    databricks_workspaces_seed_file: str | None = Field(
-        default=None,
-        alias="DATABRICKS_WORKSPACES_SEED_FILE",
-        description="YAML file of workspaces to seed the registry with. Unset: no seed.",
-    )
-    databricks_admin_groups: StringList = Field(
-        default_factory=list,
-        alias="DATABRICKS_ADMIN_GROUPS",
-        description=(
-            "Comma-separated Entra group object IDs (GUIDs) that may manage the "
-            "Databricks workspaces. Display names are ignored (logged at startup): "
-            "anyone can create a group with a given name."
-        ),
-    )
-    databricks_registry_poll_seconds: float = Field(
-        default=30,
-        gt=0,
-        alias="DATABRICKS_REGISTRY_POLL_SECONDS",
-        description="How often each process re-reads the workspace registry.",
-    )
-    databricks_legacy_workspace: str | None = Field(
-        default=None,
-        alias="DATABRICKS_LEGACY_WORKSPACE",
-        description=(
-            "Alias of the workspace that chats with no saved workspace (or alias "
-            "'default') belong to. Unset: the caller's default workspace, with the "
-            "chat's saved tables dropped."
-        ),
-    )
-    databricks_sql_timeout_seconds: float = Field(default=50, alias="DATABRICKS_SQL_TIMEOUT_SECONDS")
-    databricks_sql_poll_interval_seconds: float = Field(default=1, alias="DATABRICKS_SQL_POLL_INTERVAL_SECONDS")
-    databricks_sql_max_rows_to_model: int = Field(default=50, ge=1, alias="DATABRICKS_SQL_MAX_ROWS_TO_MODEL")
-    databricks_sql_max_rows_to_ui: int = Field(default=200, ge=1, alias="DATABRICKS_SQL_MAX_ROWS_TO_UI")
-    databricks_jobs_timeout_seconds: float = Field(default=30, alias="DATABRICKS_JOBS_TIMEOUT_SECONDS")
-    databricks_explain_timeout_seconds: float = Field(default=60, alias="DATABRICKS_EXPLAIN_TIMEOUT_SECONDS")
-    redis_uri: str | None = Field(
-        default=None,
-        alias="REDIS_URI",
-        description="Redis for the LangGraph server, which reads REDIS_URI itself; no app code uses it.",
+    adls_ignored_file_patterns: StringList = Field(
+        default_factory=lambda: ["*.sig"],
+        alias="ADLS_IGNORED_FILE_PATTERNS",
+        description="Comma-separated file-name patterns the adls-agent never lists, e.g. '*.sig'.",
     )
     #Openai Config
     # Reasoning effort for gpt-5.x deployments. "none" turns the model into a
@@ -602,25 +540,6 @@ class Settings(BaseSettings):
         return self.sttm_agent_enabled
 
     @property
-    def databricks_config_problem(self) -> str | None:
-        """The first Databricks setting that is missing or invalid, or ``None``.
-
-        Always ``None`` now: Databricks authenticates as the app through the shared
-        Azure credential, so ``DATABRICKS_ENABLED`` needs no other setting. Workspaces
-        are not checked here: they come from the registry, which validates every write.
-        Kept so callers (``v1.core.agent``) have one place to ask; a future problem
-        would switch off only the databricks-agent.
-        """
-
-        return None
-
-    @property
-    def databricks_enabled(self) -> bool:
-        """Whether the Databricks subagent is switched on with a valid config."""
-
-        return self.databricks_switch and self.databricks_config_problem is None
-
-    @property
     def unconfigured_capabilities(self) -> tuple[tuple[str, str], ...]:
         """(subagent name, setting that would enable it) for each capability off here.
 
@@ -639,67 +558,11 @@ class Settings(BaseSettings):
                     self.adls_enabled,
                 ),
                 ("sttm-agent", "STTM_AGENT_ENABLED", self.sttm_enabled),
-                ("databricks-agent", "DATABRICKS_ENABLED", self.databricks_enabled),
             )
             if not enabled
         )
 
 
-def admin_object_ids(entries: Sequence[str]) -> frozenset[str]:
-    """The ``DATABRICKS_ADMIN_GROUPS`` entries that are Entra object IDs, lowercased.
-
-    Only these grant workspace admin: a display name is not unique, so anyone who can
-    create a group could take it. The other entries are ignored (``start_registry``
-    logs how many).
-    """
-
-    return frozenset(g.strip().lower() for g in entries if is_object_id(g.strip()))
-
-
-def ignored_admin_entries(entries: Sequence[str]) -> int:
-    """How many non-blank ``DATABRICKS_ADMIN_GROUPS`` entries are not object IDs."""
-
-    return sum(1 for g in entries if g.strip() and not is_object_id(g.strip()))
-
-
-def databricks_local_dev() -> bool:
-    """True for local dev auth (``AGENT_AUTH_MODE`` dev/mock/local) on a local box
-    (``APP_ENV=local``). Read from the environment, as ``v1.utils.auth`` does.
-
-    Only the workspace registry reads it, to allow the in-memory store locally
-    (``v1.core.workspace_registry.store``). Databricks authentication does not: it
-    uses the same app credential everywhere (``az login`` locally).
-    """
-
-    mode = (os.environ.get("AGENT_AUTH_MODE") or "").strip().lower()
-    return mode in {"dev", "mock", "local"} and os.environ.get("APP_ENV") == "local"
-
-
-def retired_databricks_settings() -> tuple[str, ...]:
-    """The retired Databricks settings still set (non-blank) in the environment or the
-    ``.env`` file, in :data:`RETIRED_DATABRICKS_SETTINGS` order. They are ignored."""
-
-    env_file = dotenv_values(".env")
-    return tuple(
-        name
-        for name in RETIRED_DATABRICKS_SETTINGS
-        if (os.environ.get(name) or "").strip() or (env_file.get(name) or "").strip()
-    )
-
-
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
-
-@lru_cache
-def databricks_registered() -> bool:
-    """Whether this process runs the databricks-agent, decided once.
-
-    The roster, tools and access gate all read this, so they can't disagree. It
-    never depends on the workspace list, which changes at runtime: the
-    gate turns the subagent off for a caller who sees no workspace. Tests reset it
-    with ``databricks_registered.cache_clear()``.
-    """
-
-    return get_settings().databricks_enabled
